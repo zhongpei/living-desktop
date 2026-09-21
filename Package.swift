@@ -7,6 +7,11 @@ let package = Package(
         // macOS 14：mlx-swift-lm（本地大脑运行时）的下限要求（brain-local.md §5.1）
         .macOS(.v14)
     ],
+    products: [
+        .library(name: "MyPetCore", targets: ["MyPetCore"]),
+        .library(name: "CNeedle", targets: ["CNeedle"]),
+        .executable(name: "LivingDesktop", targets: ["MyPet"]),
+    ],
     dependencies: [
         // 本地 Student Brain（brain-local.md）。Swift 6.4 可构建 mlx-swift 0.31.6；
         // 固定 revision，确保 MLXGuidedGeneration/XGrammar API 可复现。
