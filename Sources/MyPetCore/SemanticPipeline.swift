@@ -1367,9 +1367,25 @@ public struct ScenarioGenerator {
 
 public struct DataSimulationSnapshot: Codable, Equatable, Sendable {
     public var scenario: HarnessScenario
-    public var kernel: KernelSnapshot
+    public let runtimeCheckpoint: GameRuntimeCheckpoint?
     public var desktop: VirtualDesktop
     public var pipeline: SemanticPipelineSnapshot?
+    private var legacyKernel: KernelSnapshot?
+
+    public var kernel: KernelSnapshot { runtimeCheckpoint?.kernel ?? legacyKernel! }
+
+    public init(
+        scenario: HarnessScenario,
+        runtimeCheckpoint: GameRuntimeCheckpoint,
+        desktop: VirtualDesktop,
+        pipeline: SemanticPipelineSnapshot?
+    ) {
+        self.scenario = scenario
+        self.runtimeCheckpoint = runtimeCheckpoint
+        self.desktop = desktop
+        self.pipeline = pipeline
+        self.legacyKernel = nil
+    }
 
     public init(
         scenario: HarnessScenario,
@@ -1378,9 +1394,39 @@ public struct DataSimulationSnapshot: Codable, Equatable, Sendable {
         pipeline: SemanticPipelineSnapshot?
     ) {
         self.scenario = scenario
-        self.kernel = kernel
+        self.runtimeCheckpoint = nil
         self.desktop = desktop
         self.pipeline = pipeline
+        self.legacyKernel = kernel
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case scenario, runtimeCheckpoint, kernel, desktop, pipeline
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        scenario = try values.decode(HarnessScenario.self, forKey: .scenario)
+        runtimeCheckpoint = try values.decodeIfPresent(GameRuntimeCheckpoint.self, forKey: .runtimeCheckpoint)
+        legacyKernel = try values.decodeIfPresent(KernelSnapshot.self, forKey: .kernel)
+        guard runtimeCheckpoint != nil || legacyKernel != nil else {
+            throw DecodingError.keyNotFound(CodingKeys.runtimeCheckpoint,
+                .init(codingPath: values.codingPath, debugDescription: "Missing runtime checkpoint"))
+        }
+        desktop = try values.decode(VirtualDesktop.self, forKey: .desktop)
+        pipeline = try values.decodeIfPresent(SemanticPipelineSnapshot.self, forKey: .pipeline)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(scenario, forKey: .scenario)
+        if let runtimeCheckpoint {
+            try values.encode(runtimeCheckpoint, forKey: .runtimeCheckpoint)
+        } else if let legacyKernel {
+            try values.encode(legacyKernel, forKey: .kernel)
+        }
+        try values.encode(desktop, forKey: .desktop)
+        try values.encodeIfPresent(pipeline, forKey: .pipeline)
     }
 }
 
@@ -1402,7 +1448,8 @@ public final class DataSimulation {
 
     public init(snapshot: DataSimulationSnapshot) {
         self.scenario = snapshot.scenario
-        self.runtime = GameRuntime(snapshot: snapshot.kernel)
+        self.runtime = snapshot.runtimeCheckpoint.map(GameRuntime.init(checkpoint:))
+            ?? GameRuntime(snapshot: snapshot.kernel)
         self.desktop = snapshot.desktop
         if let configuration = snapshot.scenario.pipeline {
             let pipeline = SemanticPipeline(configuration: configuration)
@@ -1435,7 +1482,7 @@ public final class DataSimulation {
     public func snapshot() -> DataSimulationSnapshot {
         DataSimulationSnapshot(
             scenario: scenario,
-            kernel: runtime.snapshot(),
+            runtimeCheckpoint: runtime.checkpoint(),
             desktop: desktop,
             pipeline: pipeline?.snapshot())
     }
