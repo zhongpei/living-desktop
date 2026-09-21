@@ -758,6 +758,39 @@ final class GameTests: XCTestCase {
         XCTAssertNotEqual(isolated.path, Settings.storageURL(environment: [:]).path)
     }
 
+    func testCastSessionStopReleasesRuntimeAndPerceptionOwner() {
+        _ = NSApplication.shared
+        let pack = CastPack(
+            id: "logical", groupID: "test", displayName: "Logical", summary: "",
+            members: [CastMember(
+                id: "logical-actor", kind: .character, displayName: "Actor",
+                visualPackID: "invalid-pack", role: "lead")])
+        var settings = Settings()
+        settings.castSelection = CastSelection(
+            allGroupsEnabled: false, enabledGroupIDs: ["test"],
+            allMembersEnabled: true, maxActiveMembers: 1)
+        let hub = PerceptionHub()
+        let invalidURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("missing-\(UUID().uuidString)")
+        let session = CastSession(
+            settingsProvider: { settings }, library: [(id: "invalid-pack", url: invalidURL)], castPacks: [pack],
+            resolvedCastPacks: [], layoutCoordinator: SpatialLayoutCoordinator(),
+            perceptionHub: hub, sharedNeedle: NeedleBrain(),
+            sharedLocalBrain: LocalBrain(), sharedTeacherBrain: TeacherBrain())
+
+        session.start()
+        XCTAssertEqual(session.activeMemberIDs, ["logical-actor"])
+        XCTAssertNil(session.primaryController)
+        XCTAssertNil(hub.ownerID)
+        session.stop()
+        XCTAssertTrue(session.activeMemberIDs.isEmpty)
+        XCTAssertNil(hub.ownerID)
+        session.start()
+        XCTAssertEqual(session.activeMemberIDs, ["logical-actor"])
+        session.stop()
+        XCTAssertTrue(session.activeMemberIDs.isEmpty)
+    }
+
     // MARK: GoalDecision 气泡
 
     func testGoalDecisionClippedSpeech() {

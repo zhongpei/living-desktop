@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var settings: Settings?
     private var controller: PetController?
+    private var activeController: PetController? { castSession?.primaryController ?? controller }
     private var tray: Tray?
     private var settingsWindow: SettingsWindowController?
     private var brainLogWindow: BrainLogWindowController?
@@ -23,21 +24,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let sharedNeedle = NeedleBrain()
     private let sharedLocalBrain = LocalBrain()
     private let sharedTeacherBrain = TeacherBrain()
-    /// 角色组的事件时钟与面板集合；面板只跟随 Core 已确认的 alive 状态。
-    private var castRuntime: CastRuntime?
-    private var castControllers: [String: PetController] = [:]
-    /// Cast controllers share one SceneGraph so actor/hand/prop reparenting
-    /// has one spatial tree instead of one local tree per panel.
-    private let castSceneGraph = SceneGraph(rootID: "cast-scene")
-    /// 独立 prop/mech 浮层只消费 Core 投影；App 不持有 NSPanel 集合。
-    private let castOverlays = CastOverlayPresentation()
-    private var castTimer: Timer?
-    private var castFrameClock: FixedStepClock?
-    private var lastCastFrameAt = ProcessInfo.processInfo.systemUptime
-    /// Core 已确认离场后，渲染面板保留到 transition plan 完成。
-    private var castDepartureDeadlines: [String: Int64] = [:]
-    /// 缺视觉包的逻辑成员仍参与剧情；每次 Cast 会话只报告一次缺包。
-    private var reportedMissingCastVisuals = Set<String>()
+    /// 生产 Cast 的唯一时钟、面板和 Story 身体 owner。
+    private var castSession: CastSession?
     /// 发现的全部宠物包（id → 目录），按字母序。
     private var library: [(id: String, url: URL)] = []
     /// 发现的角色组与剧情包；它们独立于单个 petpack，可按设置动态启用。
@@ -140,7 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             settings.save()
             self.settings = settings
 
-            let spawn = controller?.petPosition
+            let spawn = activeController?.petPosition
             stopCastRuntime()
             controller?.stop()
             controller?.closePanel()
@@ -182,7 +170,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.updateVisibleControllers(preview)
             }
             win.localChatTester = { [weak self] in
-                guard let controller = self?.controller else {
+                guard let controller = self?.activeController else {
                     return LocalBrain.ChatTestResult(
                         text: nil, emotion: nil, latency: 0,
                         error: "宠物控制器未就绪")
@@ -210,12 +198,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         normalized.save()
         settings = normalized
         if normalized.castSelection.isRuntimeEnabled, !castPacks.isEmpty {
-            if castRuntime == nil {
-                startCastRuntime()
-            } else {
-                rebuildCastRuntime()
-            }
-        } else if castRuntime != nil {
+            startCastRuntime()
+        } else if castSession != nil {
             let fallback = normalized.currentPet.isEmpty ? (library.first?.id ?? "") : normalized.currentPet
             stopCastRuntime()
             if !fallback.isEmpty { activatePet(fallback) }
@@ -226,320 +210,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateVisibleControllers(_ settings: Settings) {
-        controller?.updateSettings(settings)
-        for pet in castControllers.values where pet !== controller {
-            pet.updateSettings(settings)
+        if let castSession {
+            castSession.updateSettings(settings)
+        } else {
+            controller?.updateSettings(settings)
         }
     }
 
     // MARK: 角色组运行时
 
     private func startCastRuntime() {
-        guard let settings, !castPacks.isEmpty else { return }
-        if castRuntime == nil, let old = controller {
+        guard settings != nil, !castPacks.isEmpty else { return }
+        if castSession == nil, let old = controller {
             old.stop()
             old.closePanel()
+            controller = nil
         }
-        stopCastRuntime()
-
-        let runtime: CastRuntime
-        if !resolvedCastPacks.isEmpty {
-            runtime = CastRuntime(
-                resolvedPacks: resolvedCastPacks,
-                selection: settings.castSelection,
-                seed: UInt64(Date().timeIntervalSince1970),
-                bodyExecutionMode: .external,
-                storyConfiguration: settings.storySettings.coreConfiguration)
-        } else {
-            runtime = CastRuntime(
-                packs: castPacks,
-                selection: settings.castSelection,
-                seed: UInt64(Date().timeIntervalSince1970),
-                bodyExecutionMode: .external,
-                storyConfiguration: settings.storySettings.coreConfiguration)
+        castSession?.stop()
+        let session = CastSession(
+            settingsProvider: { [weak self] in self?.settings },
+            library: library,
+            castPacks: castPacks,
+            resolvedCastPacks: resolvedCastPacks,
+            layoutCoordinator: layoutCoordinator,
+            perceptionHub: perceptionHub,
+            sharedNeedle: sharedNeedle,
+            sharedLocalBrain: sharedLocalBrain,
+            sharedTeacherBrain: sharedTeacherBrain)
+        session.onSync = { [weak self] activeIDs in
+            guard let self, let settings = self.settings else { return }
+            self.tray?.updatePets(self.library.map { $0.id }, current: settings.currentPet)
+            self.tray?.updateCastCatalog(
+                self.castPacks, selection: settings.castSelection, activeMemberIDs: activeIDs)
         }
-        castRuntime = runtime
-        _ = runtime.start()
-        _ = runtime.tick()
-        syncCastControllers()
-        castFrameClock = FixedStepClock(stepMilliseconds: runtime.clock.stepMilliseconds)
-        lastCastFrameAt = ProcessInfo.processInfo.systemUptime
-
-        let timer = Timer(timeInterval: 1.0 / 40.0, target: self,
-                          selector: #selector(tickCastRuntime), userInfo: nil, repeats: true)
-        RunLoop.main.add(timer, forMode: .common)
-        castTimer = timer
-    }
-
-    private func rebuildCastRuntime() {
-        guard castRuntime != nil else {
-            startCastRuntime()
-            return
-        }
-        startCastRuntime()
+        castSession = session
+        session.start()
     }
 
     private func stopCastRuntime() {
-        let wasCastActive = castRuntime != nil || !castControllers.isEmpty
-        castTimer?.invalidate()
-        castTimer = nil
-        castFrameClock = nil
-        for pet in castControllers.values {
-            pet.stop()
-            pet.closePanel()
-        }
-        castControllers.removeAll()
-        castSceneGraph.removeAll()
-        castOverlays.close()
-        castDepartureDeadlines.removeAll()
-        reportedMissingCastVisuals.removeAll()
-        castRuntime = nil
-        if wasCastActive {
-            controller = nil
-            perceptionHub.ownerID = nil
-        }
-    }
-
-    @objc private func tickCastRuntime() {
-        guard let runtime = castRuntime else { return }
-        let now = ProcessInfo.processInfo.systemUptime
-        let dt = min(0.25, max(0, now - lastCastFrameAt))
-        lastCastFrameAt = now
-        let steps = castFrameClock?.advance(elapsedSeconds: dt) ?? 0
-        if steps == 0 { syncCastControllers() }
-        for _ in 0..<steps {
-            _ = runtime.tick()
-            syncCastControllers()
-        }
-        let effects = runtime.runtime.drainPresentationEffects()
-        for (id, pet) in castControllers {
-            pet.tickFrame(presentationEffects: effects.filter { $0.actorID.raw == id })
-        }
-    }
-
-    private func syncCastControllers() {
-        guard let settings, let runtime = castRuntime else { return }
-        let activeIDs = Set(runtime.activeMemberIDs)
-        let nowTick = runtime.clock.tick
-
-        // 离场与入场都经过 Core 统一的表现计划。角色可能在过渡窗口内
-        // 被重新邀请；此时取消收起，继续使用原来的面板实例。
-        for id in activeIDs {
-            if castDepartureDeadlines.removeValue(forKey: id) != nil {
-                castControllers[id]?.cancelCastDeparture()
-            }
-        }
-        for id in Array(castControllers.keys) where !activeIDs.contains(id) {
-            guard let pet = castControllers[id] else { continue }
-            if castDepartureDeadlines[id] == nil {
-                let style = runtime.director.member(id)?.arrivalStyle
-                pet.playDeparture(style: style)
-                let duration = runtime.director.transitionPlan(
-                    for: id, phase: .departure)?.durationTicks
-                    ?? CastTransitionPlan.departure(for: style).durationTicks
-                castDepartureDeadlines[id] = nowTick + duration
-            }
-            guard nowTick >= (castDepartureDeadlines[id] ?? nowTick + 1) else { continue }
-            pet.stop()
-            pet.closePanel()
-            castControllers.removeValue(forKey: id)
-            castDepartureDeadlines.removeValue(forKey: id)
-        }
-
-        let orderedIDs = runtime.activeMemberIDs.sorted()
-        let renderableIDs = orderedIDs.filter { id in
-            guard let member = runtime.director.member(id),
-                  let visualID = member.visualPackID else { return false }
-            return library.contains { $0.id == visualID }
-        }
-        perceptionHub.ownerID = renderableIDs.first.map(EntityID.init)
-        for (index, id) in orderedIDs.enumerated() {
-            if castControllers[id] != nil { continue }
-            guard let member = runtime.director.member(id) else { continue }
-            guard let visualID = member.visualPackID,
-                  let entry = library.first(where: { $0.id == visualID }) else {
-                if reportedMissingCastVisuals.insert(id).inserted {
-                    if member.visualPackID == nil {
-                        NSLog("MyPet: 角色 %@ 已入场，但没有 visualPackID，暂不创建面板", member.id)
-                    } else {
-                        NSLog("MyPet: 角色 %@ 的视觉包 %@ 不存在，暂不创建面板", member.id, member.visualPackID ?? "")
-                    }
-                }
-                continue
-            }
-            do {
-                let pack = try ClipLibrary.load(from: entry.url)
-                let spawn = castSpawn(index: index, count: max(orderedIDs.count, 1))
-                let pet = PetController(
-                    library: pack,
-                    settings: settings,
-                    spawnAt: spawn,
-                    actorID: EntityID(id),
-                    layoutCoordinator: layoutCoordinator,
-                    perceptionHub: perceptionHub,
-                    gameplayRuntime: runtime.runtime,
-                    sceneGraph: castSceneGraph,
-                    characterDefinition: runtime.characterDefinition(for: id),
-                    capabilities: member.capabilities,
-                    needle: sharedNeedle,
-                    localBrain: sharedLocalBrain,
-                    teacherBrain: sharedTeacherBrain)
-                castControllers[id] = pet
-                pet.playArrival(style: member.arrivalStyle)
-                pet.start()
-            } catch {
-                if reportedMissingCastVisuals.insert(id).inserted {
-                    NSLog("MyPet: 角色 %@ 的视觉包加载失败 %@ — %@", id, entry.url.path, error.localizedDescription)
-                }
-            }
-        }
-
-        // 第二个角色入场会重新分配第一个角色的安全框；逐个回写 AppKit 面板。
-        for pet in castControllers.values { pet.relayout() }
-
-        let castLayout = makeCastLayout(runtime: runtime, settings: settings)
-        syncCastCharacterFrames(layout: castLayout)
-        syncCastOverlays(runtime: runtime, settings: settings, layout: castLayout)
-        let targetFrames = Dictionary(uniqueKeysWithValues: castLayout.entities.compactMap { entity -> (String, LayoutRect)? in
-            guard let frame = entity.frame, entity.renderable else { return nil }
-            return (entity.id.raw, frame)
-        })
-
-        // StoryDirector 的节拍在 Core 中先完成全员行为确认；StoryAction
-        // 只定位对应的 BodyCommand，身体参数一律以已授权命令为准。
-        // 没有视觉包的道具/机甲仍可参与规则和关系，
-        // 这里只跳过它们的渲染，不影响剧情提交。
-        for action in runtime.consumeStoryActions() {
-            guard let behaviorID = action.behaviorID,
-                  let command = runtime.runtime.takeBodyCommand(behaviorID: behaviorID) else { continue }
-            let targetX = command.target.flatMap { targetFrames[$0.entityID.raw] }
-                .map { CGFloat($0.x + $0.width / 2) }
-            guard let pet = castControllers[command.actorID.raw] else {
-                // A logic participant without a visual pack still completes
-                // deterministically; presentation absence is reported by the
-                // asset audit rather than corrupting the story state machine.
-                runtime.runtime.submitBodyResult(BodyResult(
-                    behaviorID: command.behaviorID,
-                    executionToken: command.executionToken,
-                    outcome: .completed))
-                continue
-            }
-            pet.performStoryIntent(command.intent, targetX: targetX) { success in
-                runtime.runtime.submitBodyResult(BodyResult(
-                    behaviorID: command.behaviorID,
-                    executionToken: command.executionToken,
-                    outcome: success ? .completed : .failed))
-            }
-        }
-
-        // A hand-off is a presentation cue emitted by Core at the successful
-        // release boundary. It animates from the currently projected prop to
-        // the receiver's shared attachment geometry; it never edits a slot or
-        // a SceneGraph parent in AppKit.
-        let now = ProcessInfo.processInfo.systemUptime
-        for event in runtime.consumeStoryHandoffEvents() {
-            guard let from = targetFrames[event.handoff.propID],
-                  let toActor = targetFrames[event.handoff.toActorID] else { continue }
-            castOverlays.beginHandoff(
-                propID: event.handoff.propID, from: from, toActorFrame: toActor,
-                now: now,
-                durationTicks: event.handoff.durationTicks,
-                stepMilliseconds: runtime.clock.stepMilliseconds)
-        }
-
-        // 逻辑上可以在场但没有 visualPackID 的机甲/道具不能轮询桌面感知；
-        // owner 必须始终落在真正可见的角色上，否则内容事件会被“隐形”实体消费。
-        perceptionHub.ownerID = renderableIDs.first.map(EntityID.init)
-        controller = activeIDs.sorted().compactMap { castControllers[$0] }.first
-        tray?.updatePets(library.map { $0.id }, current: settings.currentPet)
-        tray?.updateCastCatalog(
-            castPacks,
-            selection: settings.castSelection,
-            activeMemberIDs: runtime.activeMemberIDs)
-    }
-
-    /// 把 Core 的 CastVisualProjection 接入真实工作区。道具是独立浮层，
-    /// 不借用某个角色的 PropController，避免“角色走开后道具跟着走”的错误。
-    private func makeCastLayout(
-        runtime: CastRuntime,
-        settings: Settings
-    ) -> CastLayoutSnapshot {
-        let work = Screens.workBox(containing: .zero)
-        let bounds = LayoutRect(
-            x: Double(work.left), y: Double(work.top),
-            width: Double(work.width), height: Double(work.height))
-        let actorHeight = Double(settings.displayHeight)
-        let actorSizes = Dictionary(uniqueKeysWithValues: castControllers.compactMap {
-            id, controller -> (String, CastVisualSize)? in
-            let cell = controller.library.cellSize
-            guard cell.width > 0, cell.height > 0 else { return nil }
-            return (
-                id,
-                CastVisualSize(
-                    width: Double(cell.width / cell.height) * actorHeight,
-                    height: actorHeight))
-        })
-        return CastVisualProjection.project(
-            runtime: runtime,
-            in: bounds,
-            actorHeight: actorHeight,
-            actorSizes: actorSizes,
-            renderableMemberIDs: Set(castControllers.keys))
-    }
-
-    /// All visible cast characters, including attached pilots and social
-    /// contacts, consume the same frame that drives prop/mech overlays.
-    private func syncCastCharacterFrames(layout: CastLayoutSnapshot) {
-        let frames = Dictionary(uniqueKeysWithValues: layout.entities.compactMap {
-            entity -> (String, LayoutRect)? in
-            guard entity.kind == .actor, entity.renderable, let frame = entity.frame else { return nil }
-            return (entity.id.raw, frame)
-        })
-        for (id, pet) in castControllers {
-            pet.applyCastProjectionFrame(frames[id])
-        }
-    }
-
-    private func syncCastOverlays(
-        runtime: CastRuntime,
-        settings: Settings,
-        layout: CastLayoutSnapshot
-    ) {
-        let activeProps = Dictionary(uniqueKeysWithValues: runtime.activeProps.map { ($0.id, $0) })
-        let props: [CastPropVisual] = settings.propsEnabled ? layout.entities.compactMap { entity in
-            guard entity.kind == .prop, entity.renderable, let frame = entity.frame,
-                  let prop = activeProps[entity.id.raw] else { return nil }
-            let visualID = prop.visualPackID ?? prop.id
-            return CastPropVisual(
-                id: prop.id, visualID: visualID,
-                emoji: PropCatalog.def(visualID)?.emoji ?? "◼︎", frame: frame)
-        } : []
-        let mechs: [CastMechVisual] = layout.entities.compactMap { entity in
-            guard entity.kind == .mech, entity.visualPackID == nil,
-                  entity.renderable, let frame = entity.frame else { return nil }
-            let id = entity.id.raw
-            let pilotName = layout.entities.first {
-                $0.kind == .actor && $0.attachedToID?.raw == id
-            }?.displayName
-            return CastMechVisual(id: id, title: entity.displayName,
-                                  frame: frame, pilotName: pilotName)
-        }
-        castOverlays.apply(props: props, mechs: mechs,
-                           now: ProcessInfo.processInfo.systemUptime)
-    }
-
-    private func castSpawn(index: Int, count: Int) -> CGPoint {
-        let work = Screens.workBox(containing: .zero)
-        let fraction = CGFloat(index + 1) / CGFloat(count + 1)
-        let x = work.left + work.width * fraction
-        return CGPoint(x: x, y: work.bottom - (settings?.displayHeight ?? 110))
+        guard let session = castSession else { return }
+        session.stop()
+        castSession = nil
+        perceptionHub.ownerID = nil
     }
 
     // MARK: 菜单接线
 
     private func wireTray(_ tray: Tray) {
         tray.onSummonProp = { [weak self] id, placed in
-            self?.controller?.summonProp(id, placed: placed)
+            self?.activeController?.summonProp(id, placed: placed)
         }
         tray.onQuit = { NSApp.terminate(nil) }
         tray.onCastSelectionChange = { [weak self] selection in
@@ -549,7 +268,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         tray.onCastInvite = { [weak self] memberID in
             guard let self, var settings = self.settings else { return }
-            guard let runtime = self.castRuntime else {
+            guard let session = self.castSession else {
                 settings.castSelection.allMembersEnabled = false
                 settings.castSelection.enabledMemberIDs = [memberID]
                 settings.castSelection.maxActiveMembers = 1
@@ -558,14 +277,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.applySettings(settings)
                 return
             }
-            if runtime.activeMemberIDs.count >= settings.castSelection.maxActiveMembers {
+            if session.activeMemberIDs.count >= settings.castSelection.maxActiveMembers {
                 settings.castSelection.maxActiveMembers += 1
                 settings.save()
                 self.settings = settings
-                runtime.expandCapacity(to: settings.castSelection.maxActiveMembers)
+                session.expandCapacity(to: settings.castSelection.maxActiveMembers)
                 self.tray?.updateSettings(settings)
             }
-            if runtime.inviteManually(memberID: memberID) {
+            if session.inviteManually(memberID: memberID) {
                 NSLog("MyPet: 已排队手动入场角色 %@", memberID)
             } else {
                 NSLog("MyPet: 手动入场角色 %@ 被状态或同时人数上限拒绝", memberID)
@@ -579,12 +298,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let uniqueIDs = Array(Set(visualCharacters.map(\.id))).sorted()
             guard !uniqueIDs.isEmpty else { return }
             settings.castSelection.maxActiveMembers = uniqueIDs.count
-            if let runtime = self.castRuntime {
+            if let session = self.castSession {
                 settings.save()
                 self.settings = settings
-                runtime.expandCapacity(to: uniqueIDs.count)
-                for id in uniqueIDs where !runtime.activeMemberIDs.contains(id) {
-                    _ = runtime.inviteManually(memberID: id)
+                session.expandCapacity(to: uniqueIDs.count)
+                for id in uniqueIDs where !session.activeMemberIDs.contains(id) {
+                    _ = session.inviteManually(memberID: id)
                 }
                 self.tray?.updateSettings(settings)
             } else {
@@ -595,7 +314,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         tray.onCastDepart = { [weak self] memberID in
-            _ = self?.castRuntime?.depart(memberID: memberID)
+            _ = self?.castSession?.depart(memberID: memberID)
         }
         tray.onSingleRoleExit = { [weak self] in
             guard let self else { return }
@@ -625,7 +344,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         tray.onOpenLogs = { [weak self] in self?.showBrainLogs() }
         tray.brainAvailable = NeedleBrain.modelURL() != nil
         tray.statusLines = { [weak self] in
-            guard let self, let c = self.controller else { return [] }
+            guard let self, let c = self.activeController else { return [] }
             let r = c.statusReport()
             return ["角色：\(r.pet)", "目标：\(r.goal)", "场景：\(r.scene)",
                     r.needs, r.brains, "最近一句话：\(r.lastSpeech)"]
