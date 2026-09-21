@@ -1,5 +1,5 @@
-import AppKit
 import CoreGraphics
+import MyPetPlatform
 
 /// 窗口世界的唯一事实源。
 ///
@@ -14,96 +14,55 @@ final class WindowWorld {
     /// 前台应用变化时回调（切 App、或同一 App 内抬高另一扇窗口）。
     var onForegroundChanged: ((WindowEntity?) -> Void)?
 
-    private let ownPID = ProcessInfo.processInfo.processIdentifier
+    private let source: MacWindowSource
     private var lastForegroundID: CGWindowID = 0
 
+    init(source: MacWindowSource = MacWindowSource()) {
+        self.source = source
+    }
+
     /// 和真实窗口一起住在 layer 0 的系统家具，不是可栖息的平台。
-    static let skippedOwners: Set<String> = [
-        "Window Server", "Dock", "SystemUIServer", "Control Center",
-        "Notification Center", "Spotlight", "Wallpaper", "WindowManager",
-        "universalaccessd", "Screenshot"
-    ]
+    static let skippedOwners = MacWindowSource.defaultSkippedOwners
 
     /// 小于这个尺寸的窗口不配当平台（提示浮窗、小工具之类，站上去太挤）。
     static let minimumPlatformSize = CGSize(width: 220, height: 140)
 
     func poll() {
-        windows = Self.decodeWindows(ownPID: ownPID)
-        enrichActivities()
+        source.poll()
+        windows = source.windows.map(Self.project)
+        foreground = source.foreground.map(Self.project)
 
-        var fg: WindowEntity?
-        if let frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier {
-            fg = windows.first { $0.pid == frontPID }
-        }
-        foreground = fg
-
-        let fgID = fg?.id ?? 0
+        let fgID = foreground?.id ?? 0
         if fgID != lastForegroundID {
             lastForegroundID = fgID
-            onForegroundChanged?(fg)
+            onForegroundChanged?(foreground)
         }
     }
 
     /// 零权限语义注入：bundleID 来自运行中进程（免授权），owner 来自 CGWindowList。
     /// 窗口标题只有屏幕录制权限才拿得到，归类退化到 app 级；
     /// 标题级细分（浏览器里看视频 vs 看文档）由 OCR/AX 感知层喂给 BrainContextSnapshot。
-    private func enrichActivities() {
-        for i in windows.indices {
-            let bundleID = NSRunningApplication(processIdentifier: windows[i].pid)?.bundleIdentifier
-            windows[i].bundleID = bundleID
-            windows[i].activity = AppActivityCatalog.classify(
-                owner: windows[i].owner,
-                bundleID: bundleID,
-                windowTitle: windows[i].windowTitle).rawValue
-        }
+    private static func project(_ window: PlatformWindow) -> WindowEntity {
+        var projected = WindowEntity(
+            id: window.id, pid: window.pid, owner: window.owner,
+            bounds: window.bounds, windowTitle: window.title, bundleID: window.bundleID)
+        projected.activity = AppActivityCatalog.classify(
+            owner: window.owner, bundleID: window.bundleID,
+            windowTitle: window.title).rawValue
+        return projected
     }
 
     /// CGWindowList 字典 → [WindowEntity]。静态纯函数，离线可测。
     static func decodeWindows(ownPID: pid_t, list: [[String: Any]]? = nil) -> [WindowEntity] {
-        let raw: [[String: Any]]
-        if let list {
-            raw = list
-        } else {
-            let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
-            raw = (CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]]) ?? []
-        }
-        // 列表自带前后层叠序（最前在前）。
-        return raw.compactMap { decodeWindow($0, ownPID: ownPID) }
+        MacWindowSource.decodeWindows(
+            ownPID: ownPID, list: list, skippedOwners: skippedOwners,
+            minimumSize: minimumPlatformSize).map(project)
     }
 
     static func decodeWindow(_ d: [String: Any], ownPID: pid_t) -> WindowEntity? {
-        // 只要普通窗口层。
-        guard (d[kCGWindowLayer as String] as? Int) == 0 else { return nil }
-
-        let pid = (d[kCGWindowOwnerPID as String] as? Int) ?? 0
-        if pid == ownPID { return nil }
-
-        let owner = (d[kCGWindowOwnerName as String] as? String) ?? ""
-        if skippedOwners.contains(owner) { return nil }
-
-        if let alpha = d[kCGWindowAlpha as String] as? Double, alpha < 0.05 { return nil }
-
-        guard let b = d[kCGWindowBounds as String] as? [String: Any],
-              let x = b["X"] as? Double, let y = b["Y"] as? Double,
-              let w = b["Width"] as? Double, let h = b["Height"] as? Double,
-              w.isFinite, h.isFinite else { return nil }
-
-        let rect = CGRect(x: x, y: y, width: w, height: h)
-        guard rect.width >= minimumPlatformSize.width,
-              rect.height >= minimumPlatformSize.height else { return nil }
-
-        let id = (d[kCGWindowNumber as String] as? Int) ?? 0
-        guard id != 0 else { return nil }
-
-        let title = (d[kCGWindowName as String] as? String) ?? ""
-
-        return WindowEntity(
-            id: CGWindowID(id),
-            pid: pid_t(pid),
-            owner: owner,
-            bounds: rect,
-            windowTitle: String(title.prefix(120))
-        )
+        MacWindowSource.decodeWindow(
+            d, ownPID: ownPID, skippedOwners: skippedOwners,
+            minimumSize: minimumPlatformSize).map(project)
     }
 
     func window(_ id: CGWindowID) -> WindowEntity? {
@@ -113,15 +72,7 @@ final class WindowWorld {
     /// 直接向窗口服务器重取这扇窗口的实时 bounds，栖息其上的宠物因此能跟着窗口走。
     /// 窗口关闭 / 最小化 / 挪去别的 Space 时返回 nil —— 宠物该掉下来了。
     func liveBounds(_ id: CGWindowID) -> CGRect? {
-        guard id != 0 else { return nil }
-        guard let list = CGWindowListCopyWindowInfo(.optionIncludingWindow, id) as? [[String: Any]],
-              let d = list.first else { return nil }
-        // 最小化 / 隐藏的窗口干脆没有 kCGWindowIsOnscreen 这个键。
-        guard (d[kCGWindowIsOnscreen as String] as? Bool) == true else { return nil }
-        guard let b = d[kCGWindowBounds as String] as? [String: Any],
-              let x = b["X"] as? Double, let y = b["Y"] as? Double,
-              let w = b["Width"] as? Double, let h = b["Height"] as? Double else { return nil }
-        return CGRect(x: x, y: y, width: w, height: h)
+        source.liveBounds(id)
     }
 
     /// 一扇值得拜访的窗口：多半是前台的，偶尔换换口味。

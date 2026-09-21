@@ -2,7 +2,7 @@ import ApplicationServices
 import CoreGraphics
 import Foundation
 
-/// 一扇可通过 Accessibility 操纵的真实窗口。
+/// MyPetPlatform 内部可通过 Accessibility 操纵的真实窗口。
 ///
 /// 属性读写的调用模式提取自 Rectangle（MIT License, © 2019-2026 Ryan Hanson）
 /// 的 AXExtension.swift / AccessibilityElement.swift，按 MyPet 需求裁剪重写：

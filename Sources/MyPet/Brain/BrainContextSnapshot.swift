@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import MyPetCore
+import MyPetPlatform
 
 // BrainContextSnapshot v1 —— 大脑的唯一世界边界（下一阶段核心接口）。
 //

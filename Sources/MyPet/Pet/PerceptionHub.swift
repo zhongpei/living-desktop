@@ -1,5 +1,6 @@
 import Foundation
 import MyPetCore
+import MyPetPlatform
 
 /// 多角色共享的外界感知总线。
 ///
@@ -18,8 +19,7 @@ final class PerceptionHub {
     var ocrLinesAt: Double?
 
     private(set) var foregroundRevision = 0
-    private var nextEventSequence = 0
-    private var events: [(sequence: Int, event: GameEvent)] = []
+    private let eventBuffer = PlatformEventBuffer(capacity: 256)
 
     /// 启动时由 AppDelegate 指定；角色退场后可即时换 owner。
     var ownerID: EntityID?
@@ -47,15 +47,12 @@ final class PerceptionHub {
     }
 
     func appendInputEvent(_ event: GameEvent) {
-        nextEventSequence += 1
-        events.append((nextEventSequence, event))
-        // 只保留有限回放窗口；当前角色都会在主循环中及时消费。
-        if events.count > 256 { events.removeFirst(events.count - 256) }
+        eventBuffer.publish(PlatformEvent(event))
     }
 
-    var latestInputSequence: Int { nextEventSequence }
+    var latestInputSequence: Int64 { eventBuffer.latestSequence }
 
-    func inputEvents(after sequence: Int) -> (events: [GameEvent], latestSequence: Int) {
-        (events.filter { $0.sequence > sequence }.map(\.event), nextEventSequence)
+    func inputEvents(after sequence: Int64) -> (events: [PlatformEvent], latestSequence: Int64) {
+        eventBuffer.events(after: sequence)
     }
 }

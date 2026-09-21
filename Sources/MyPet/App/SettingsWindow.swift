@@ -1,4 +1,5 @@
 import AppKit
+import MyPetPlatform
 import MyPetCore
 
 /// 设置窗：完整配置的唯一入口（菜单只留快捷开关）。

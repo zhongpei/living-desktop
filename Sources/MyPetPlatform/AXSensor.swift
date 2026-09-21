@@ -13,16 +13,18 @@ import Foundation
 // app 元素 0.1s messaging timeout——目标应用卡死时单次调用最多损失 0.1s，
 // 决不阻塞 40fps 主循环。若 E0.5/E3 数据表明需要更强隔离，再切子进程 transport，
 // SensorContract 的数据形状不变。
-final class AXSensor {
+public final class AXSensor {
 
     private let queue = DispatchQueue(label: "mypet.ax-sensor", qos: .utility)
     private var nextRequestID = 1
 
-    var isEnabled: Bool { AXIsProcessTrusted() }
+    public init() {}
+
+    public var isEnabled: Bool { AXIsProcessTrusted() }
 
     /// 发起一次聚焦上下文感知。now 为调用方时钟（与决策节奏同源，供 TTL 比较）。
     /// 回调在主队列；返回 nil = 读取失败（无权限/无窗口）。
-    func sense(pid: pid_t, now: Double, completion: @escaping (SensorObservation?) -> Void) {
+    public func sense(pid: pid_t, now: Double, completion: @escaping (SensorObservation?) -> Void) {
         let requestID = nextRequestID
         nextRequestID += 1
         queue.async { [weak self] in

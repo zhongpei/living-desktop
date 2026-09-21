@@ -17,18 +17,24 @@ import Vision
 // - **本地原始记录**：OCR observation/input trace 保留识别到的原文；
 //   BrainContextSnapshot.visibleContext 的 ≤6 行×60 字符只是模型输入预算，不是脱敏规则。
 
-struct OCRProfile: Equatable {
+public struct OCRProfile: Equatable, Sendable {
     /// Vision 识别档位。中文一律 accurate（实测 fast 全乱码）。
-    var cropRightFraction: Double?
-    var cropLeftFraction: Double?
-    var languages: [String]
+    public var cropRightFraction: Double?
+    public var cropLeftFraction: Double?
+    public var languages: [String]
 
-    static func standard(languages: [String] = ["zh-Hans", "en-US"]) -> OCRProfile {
+    public init(cropRightFraction: Double?, cropLeftFraction: Double?, languages: [String]) {
+        self.cropRightFraction = cropRightFraction
+        self.cropLeftFraction = cropLeftFraction
+        self.languages = languages
+    }
+
+    public static func standard(languages: [String] = ["zh-Hans", "en-US"]) -> OCRProfile {
         OCRProfile(cropRightFraction: nil, cropLeftFraction: nil, languages: languages)
     }
 }
 
-enum OCRCatalog {
+public enum OCRCatalog {
 
     /// app profile 表。裁剪数值用 experiments/ocrprobe 按实测标定，别想当然。
     static let profiles: [(bundlePrefixes: [String], owners: [String], profile: OCRProfile)] = [
@@ -53,7 +59,7 @@ enum OCRCatalog {
          ["Chrome", "Safari", "Firefox", "Arc", "Edge", "Brave", "Vivaldi"], .standard()),
     ]
 
-    static func profile(owner: String, bundleID: String?) -> OCRProfile? {
+    public static func profile(owner: String, bundleID: String?) -> OCRProfile? {
         let loweredBundle = (bundleID ?? "").lowercased()
         for entry in profiles {
             if !loweredBundle.isEmpty, entry.bundlePrefixes.contains(where: { loweredBundle.hasPrefix($0) }) {
@@ -70,28 +76,29 @@ enum OCRCatalog {
     }
 }
 
-final class OCRSensor {
+public final class OCRSensor {
 
     private let queue = DispatchQueue(label: "mypet.ocr-sensor", qos: .utility)
 
     // MARK: 权限
 
-    static var permissionGranted: Bool { CGPreflightScreenCaptureAccess() }
+    public init() {}
+
+    public static var permissionGranted: Bool { CGPreflightScreenCaptureAccess() }
 
     /// 弹系统授权框（应用必须先调一次才会出现在屏幕录制列表里）。
-    static func requestPermission() { _ = CGRequestScreenCaptureAccess() }
+    public static func requestPermission() { _ = CGRequestScreenCaptureAccess() }
 
     // MARK: 感知
 
     /// 截取窗口 → 按 profile 裁剪 → Vision accurate → 文本行（≤maxLines×60 字符）。
     /// 回调主队列；nil = 无权限/截屏失败/无文本。
-    func sense(window: WindowEntity, profile: OCRProfile, maxLines: Int = 6,
+    public func sense(windowID: CGWindowID, profile: OCRProfile, maxLines: Int = 6,
                completion: @escaping ([String]?) -> Void) {
         guard Self.permissionGranted else {
             DispatchQueue.main.async { completion(nil) }
             return
         }
-        let windowID = window.id
         queue.async {
             let lines = Self.captureAndRecognize(windowID: windowID, profile: profile, maxLines: maxLines)
             DispatchQueue.main.async { completion(lines) }
@@ -114,7 +121,7 @@ final class OCRSensor {
 
     /// 按 profile 裁剪。cropRightFraction = 保留窗口**右侧**宽度比例
     /// （微信聊天区在右侧：0.44 = 保留右侧 44%）；cropLeftFraction 同理取左侧。
-    static func crop(_ image: CGImage, profile: OCRProfile) -> CGImage {
+    public static func crop(_ image: CGImage, profile: OCRProfile) -> CGImage {
         let w = image.width
         let h = image.height
         var rect = CGRect(x: 0, y: 0, width: w, height: h)

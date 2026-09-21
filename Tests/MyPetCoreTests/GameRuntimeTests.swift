@@ -2,6 +2,76 @@ import XCTest
 @testable import MyPetCore
 
 final class GameRuntimeTests: XCTestCase {
+    func testPlatformIngressKeepsControlEventsAndCoalescesLatestFacts() {
+        let ingress = PlatformEventBuffer(capacity: 2)
+        for index in 0..<5 {
+            let observation = InputObservation(
+                id: "ocr-\(index)", pluginID: "ocr", channel: .ocr,
+                appName: "Editor", text: "value-\(index)", capturedAtTick: 0)
+            ingress.publish(PlatformEvent(GameEvent(
+                kind: .contentObservation, inputObservation: observation)))
+        }
+        for index in 0..<3 {
+            ingress.publish(PlatformEvent(GameEvent(
+                kind: .userInteraction, actorID: EntityID("pet"),
+                userAction: "tap-\(index)")))
+        }
+
+        let events = ingress.drain().map(\.gameEvent)
+        XCTAssertEqual(events.filter { $0.kind == .userInteraction }.count, 3)
+        XCTAssertEqual(
+            events.compactMap(\.inputObservation).map(\.text),
+            ["value-4"])
+    }
+
+    func testPlatformIngressIsTheRuntimeBoundaryForRealAndVirtualAdapters() {
+        let runtime = GameRuntime()
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        runtime.submitPlatform(PlatformEvent(GameEvent(
+            kind: .registerEntity, entity: actor)))
+        runtime.submitPlatform(PlatformEvent(GameEvent(
+            kind: .userInteraction, actorID: actor.id, userAction: "tap")))
+
+        let report = try! XCTUnwrap(runtime.step())
+
+        XCTAssertEqual(report.appliedEvents, 2)
+        XCTAssertTrue(runtime.world.isAlive(actor.id))
+        XCTAssertEqual(runtime.world.planEpochs[actor.id.raw], 1)
+    }
+
+    func testPlatformCallbackNeverBlocksActivePulseAndAppliesNextTick() {
+        let runtime = GameRuntime()
+        let enteredPulse = DispatchSemaphore(value: 0)
+        let releasePulse = DispatchSemaphore(value: 0)
+        let pulseFinished = DispatchSemaphore(value: 0)
+        let callbackFinished = DispatchSemaphore(value: 0)
+
+        DispatchQueue.global().async {
+            _ = runtime.step { _ in
+                enteredPulse.signal()
+                _ = releasePulse.wait(timeout: .now() + 2)
+            }
+            pulseFinished.signal()
+        }
+        XCTAssertEqual(enteredPulse.wait(timeout: .now() + 2), .success)
+
+        DispatchQueue.global().async {
+            runtime.submitPlatform(PlatformEvent(GameEvent(
+                kind: .permissionChanged,
+                permissionDomain: "accessibility", permissionAvailable: true)))
+            callbackFinished.signal()
+        }
+        XCTAssertEqual(callbackFinished.wait(timeout: .now() + 0.2), .success)
+        releasePulse.signal()
+        XCTAssertEqual(pulseFinished.wait(timeout: .now() + 2), .success)
+
+        let report = try! XCTUnwrap(runtime.step())
+        XCTAssertEqual(report.appliedEvents, 1)
+        XCTAssertTrue(runtime.trace.contains {
+            $0.kind == "event" && $0.detail == "permissionChanged:accessibility:granted"
+        })
+    }
+
     func testStepAppliesExternalEventsBeforeSemanticWorkAndConsumesLateRequest() {
         let actor = EntityState(id: EntityID("actor"), kind: .actor)
         let runtime = GameRuntime(kernel: GameKernel())

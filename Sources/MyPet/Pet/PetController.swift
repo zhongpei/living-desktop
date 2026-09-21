@@ -2,6 +2,7 @@ import AppKit
 import CoreGraphics
 import CoreText
 import MyPetCore
+import MyPetPlatform
 
 /// WindowWorld + Screens + 系统空闲时间的生产装配，喂给 PetModel。
 final class SystemWorld: WorldReading {
@@ -34,8 +35,7 @@ final class SystemWorld: WorldReading {
 
     /// 用户无输入秒数（CGEventSource 硬件事件空闲计）。
     func idleSeconds() -> Double {
-        guard let anyEvent = CGEventType(rawValue: UInt32.max) else { return 0 }
-        return CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: anyEvent)
+        MacSystemActivity.idleSeconds()
     }
 }
 
@@ -111,7 +111,7 @@ final class PetController {
     private let layoutCoordinator: SpatialLayoutCoordinator?
     /// 窗口/AX/OCR 是桌面级感知；多角色只共享采集结果，不共享各自内核。
     private let perception: PerceptionHub
-    private var perceptionEventCursor = 0
+    private var perceptionEventCursor: Int64 = 0
     private var lastWindowTitleFingerprint: String?
     private var handledForegroundRevision = 0
     private let puller = WindowPuller()
@@ -893,10 +893,10 @@ final class PetController {
         pendingRuntimeActions.removeAll()
         if reason.localizedCaseInsensitiveContains("user") ||
             reason.localizedCaseInsensitiveContains("grab") {
-            gameplayRuntime.submit(GameEvent(
+            gameplayRuntime.submitPlatform(PlatformEvent(GameEvent(
                 kind: .userInteraction,
                 actorID: runtimeActorID,
-                userAction: reason))
+                userAction: reason)))
         }
         if let pendingTrace = pendingGoalTraceID {
             logGoalOutcome(goal: nil, scene: nil, stayed: 0,
@@ -1613,7 +1613,7 @@ final class PetController {
             isOwner: isPerceptionOwner)
         if mayPublishSharedEvent {
             for event in input.events {
-                gameplayRuntime.submit(event)
+                gameplayRuntime.submitPlatform(event)
             }
         }
         if !input.events.isEmpty {
@@ -1679,7 +1679,7 @@ final class PetController {
             if due {
                 perception.ocrPending = true
                 let hub = perception
-                perception.ocrSensor.sense(window: fg, profile: profile) { [weak self, hub] lines in
+                perception.ocrSensor.sense(windowID: fg.id, profile: profile) { [weak self, hub] lines in
                     guard let self else {
                         hub.ocrPending = false
                         return
@@ -1953,11 +1953,11 @@ final class PetController {
 
     private func handleForegroundChanged(_ window: WindowEntity?) {
         guard let window else { return }
-        gameplayRuntime.submit(GameEvent(
+        gameplayRuntime.submitPlatform(PlatformEvent(GameEvent(
             kind: .foregroundChanged,
             actorID: usesSharedGameplayKernel ? nil : runtimeActorID,
             entityID: EntityID(String(window.id))
-        ))
+        )))
         // 感知失效通知：前台换了，旧的聚焦上下文不可信。
         perception.senses.markDirty(now: clock)
         perception.ocrLines = []
@@ -2282,7 +2282,7 @@ final class PetController {
             return
         }
         pullWindow = w
-        puller.begin(window: w)
+        puller.begin(windowID: w.id, pid: w.pid)
     }
 
     private func updatePull(cursor: CGPoint) {

@@ -14,6 +14,7 @@ let package = Package(
     products: [
         .library(name: "MyPetCore", targets: ["MyPetCore"]),
         .library(name: "MyPetAI", targets: ["MyPetAI"]),
+        .library(name: "MyPetPlatform", targets: ["MyPetPlatform"]),
         .library(name: "CNeedle", targets: ["CNeedle"]),
         .executable(name: "LivingDesktop", targets: ["MyPet"]),
     ],
@@ -55,17 +56,22 @@ let package = Package(
                 .unsafeFlags(["-L", needleLibraryDirectory]),
             ]
         ),
+        .target(
+            name: "MyPetPlatform",
+            path: "Sources/MyPetPlatform"
+        ),
         .executableTarget(
             name: "MyPet",
             dependencies: [
                 "MyPetCore",
                 "MyPetAI",
+                "MyPetPlatform",
             ],
             path: "Sources/MyPet"
         ),
         .testTarget(
             name: "MyPetTests",
-            dependencies: ["MyPet", "MyPetCore"],
+            dependencies: ["MyPet", "MyPetCore", "MyPetPlatform"],
             path: "Tests/MyPetTests"
         ),
         .testTarget(
@@ -77,6 +83,11 @@ let package = Package(
             name: "MyPetAITests",
             dependencies: ["MyPetAI"],
             path: "Tests/MyPetAITests"
+        ),
+        .testTarget(
+            name: "MyPetPlatformTests",
+            dependencies: ["MyPetPlatform"],
+            path: "Tests/MyPetPlatformTests"
         )
     ]
 )

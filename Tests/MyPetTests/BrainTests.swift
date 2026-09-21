@@ -2,6 +2,7 @@ import XCTest
 import MyPetCore
 
 @testable import MyPet
+import MyPetPlatform
 
 /// 大脑层纯函数测试：BrainContextSnapshot 装配、BrainState 动力学、GoalDecision 解析校验、
 /// GoalBrain 传输链路（URLProtocol mock，离线）。

@@ -31,6 +31,7 @@ public struct RuntimeContext: Codable, Equatable, Sendable {
 /// the same world twice.
 public final class GameRuntime {
     public private(set) var kernel: GameKernel
+    private let platformIngress: PlatformEventBuffer
 
     // Semantic work is allowed to submit late events from inside `step`, hence
     // a recursive lock. The lock is held for the entire pulse so background
@@ -38,8 +39,9 @@ public final class GameRuntime {
     private let stateLock = NSRecursiveLock()
     private var stepping = false
 
-    public init(kernel: GameKernel = GameKernel()) {
+    public init(kernel: GameKernel = GameKernel(), platformIngressCapacity: Int = 256) {
         self.kernel = kernel
+        self.platformIngress = PlatformEventBuffer(capacity: platformIngressCapacity)
     }
 
     public convenience init(snapshot: KernelSnapshot) {
@@ -49,10 +51,16 @@ public final class GameRuntime {
     public var world: WorldState { withState { kernel.world } }
     public var clock: SimClock { withState { kernel.clock } }
     public var trace: [TraceEntry] { withState { kernel.trace } }
-    public var pendingEventCount: Int { withState { kernel.inbox.count } }
+    public var pendingEventCount: Int { withState { kernel.inbox.count + platformIngress.count } }
 
     public func submit(_ event: GameEvent, atTick: Int64? = nil) {
         withState { kernel.enqueue(event, atTick: atTick) }
+    }
+
+    /// Thread-safe external ingress. Unlike `submit`, this never waits for an
+    /// active pulse; events become visible at the next tick boundary.
+    public func submitPlatform(_ event: PlatformEvent) {
+        platformIngress.publish(event)
     }
 
     /// One atomic runtime pulse: external events, semantic work, late events,
@@ -72,7 +80,10 @@ public final class GameRuntime {
 
         let tick = kernel.clock.tick
         for event in events {
-            kernel.enqueue(event, atTick: tick)
+            platformIngress.publish(PlatformEvent(event))
+        }
+        for event in platformIngress.drain() {
+            kernel.enqueue(event.gameEvent, atTick: tick)
         }
         return kernel.tick {
             semanticWork?(self)
@@ -85,6 +96,7 @@ public final class GameRuntime {
         withState {
             guard !stepping else { return }
             kernel = GameKernel(snapshot: snapshot)
+            platformIngress.removeAll()
         }
     }
 

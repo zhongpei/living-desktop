@@ -11,65 +11,100 @@ import Foundation
 //   为将来 provider 兼具 act 能力（AXPress）预留 target 生命周期。
 
 /// 屏幕上的一个元素。字段刻意少：观察够用，act 靠 opaque id。
-struct AXElementDTO: Codable, Equatable {
-    var id: String
-    var role: String
-    var title: String = ""
-    var value: String = ""
-    var frame: [Double]?
-    var focused: Bool = false
+public struct AXElementDTO: Codable, Equatable, Sendable {
+    public var id: String
+    public var role: String
+    public var title: String = ""
+    public var value: String = ""
+    public var frame: [Double]?
+    public var focused: Bool = false
+
+    public init(id: String, role: String, title: String = "", value: String = "",
+                frame: [Double]? = nil, focused: Bool = false) {
+        self.id = id
+        self.role = role
+        self.title = title
+        self.value = value
+        self.frame = frame
+        self.focused = focused
+    }
 }
 
 /// 一次 sense 的完整观察结果（focused-context 范围）。
-struct SensorObservation: Codable, Equatable {
-    var requestID: Int
+public struct SensorObservation: Codable, Equatable, Sendable {
+    public var requestID: Int
     /// 控制器时钟秒（与决策节奏同源），用于 TTL。
-    var timestamp: Double
-    var app: String
-    var pid: Int
-    var windowTitle: String
-    var focused: AXElementDTO?
+    public var timestamp: Double
+    public var app: String
+    public var pid: Int
+    public var windowTitle: String
+    public var focused: AXElementDTO?
     /// 聚焦元素的祖先 role 链（由近到远，≤6）。
-    var ancestors: [String] = []
+    public var ancestors: [String] = []
     /// 同父兄弟中聚焦点附近 ±3 的有信息量元素。
-    var siblings: [AXElementDTO] = []
+    public var siblings: [AXElementDTO] = []
     /// 聚焦文本控件的选区文字（可能为空）。
-    var selectedText: String = ""
+    public var selectedText: String = ""
     /// 窗口内少量 salient 交互元素（按钮/链接，阅读序 ≤12）。
-    var salient: [AXElementDTO] = []
+    public var salient: [AXElementDTO] = []
     /// OCR 文本行（第二传感器；≤6 行×60 字符，与 AX 上下文共用 BrainContextSnapshot 预算）。
-    var ocrLines: [String] = []
+    public var ocrLines: [String] = []
     /// 命中预算被截断时置位（诚实标注不完整）。
-    var truncated: Bool = false
+    public var truncated: Bool = false
+
+    public init(requestID: Int, timestamp: Double, app: String, pid: Int,
+                windowTitle: String, focused: AXElementDTO? = nil,
+                ancestors: [String] = [], siblings: [AXElementDTO] = [],
+                selectedText: String = "", salient: [AXElementDTO] = [],
+                ocrLines: [String] = [], truncated: Bool = false) {
+        self.requestID = requestID
+        self.timestamp = timestamp
+        self.app = app
+        self.pid = pid
+        self.windowTitle = windowTitle
+        self.focused = focused
+        self.ancestors = ancestors
+        self.siblings = siblings
+        self.selectedText = selectedText
+        self.salient = salient
+        self.ocrLines = ocrLines
+        self.truncated = truncated
+    }
 }
 
 /// 感知失效通知（v1 只有前台变化这类确定性事件；AXObserver 待实验）。
-struct SensorEvent: Codable, Equatable {
-    enum Kind: String, Codable {
+public struct SensorEvent: Codable, Equatable, Sendable {
+    public enum Kind: String, Codable, Sendable {
         case foregroundAppChanged
         case windowClosed
     }
-    var kind: Kind
-    var timestamp: Double
+    public var kind: Kind
+    public var timestamp: Double
     /// 相关 pid（如有）。
-    var pid: Int?
+    public var pid: Int?
+
+    public init(kind: Kind, timestamp: Double, pid: Int? = nil) {
+        self.kind = kind
+        self.timestamp = timestamp
+        self.pid = pid
+    }
 }
 
 /// 契约的纯函数部分：DTO ↔ JSON、有界化。离线可测。
-enum SensorContract {
+public enum SensorContract {
 
     /// 文本截断上限（字符）。
-    static let textLimit = 48
+    public static let textLimit = 48
     /// senses 注入快照的字符预算（硬上限）。
-    static let budgetChars = 1200
+    public static let budgetChars = 1200
 
-    static func truncate(_ s: String, _ n: Int = textLimit) -> String {
+    public static func truncate(_ s: String, _ n: Int = textLimit) -> String {
         String(s.prefix(n))
     }
 
     /// observation → 注入大脑快照的 "senses" 段（JSON 对象文本）。
     /// 超预算时按 salient → nearby → ocr → ancestors 逐段丢弃（truncated 置位），绝不超限。
-    static func sensesJSON(_ o: SensorObservation, budget: Int = budgetChars) -> String? {
+    public static func sensesJSON(_ o: SensorObservation, budget: Int = budgetChars) -> String? {
         func build(_ o: SensorObservation, dropSalient: Bool, dropNearby: Bool,
                    dropOCR: Bool, dropAncestors: Bool) -> [String: Any] {
             var obj: [String: Any] = [
