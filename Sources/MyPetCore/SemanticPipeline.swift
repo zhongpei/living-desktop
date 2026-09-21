@@ -829,6 +829,30 @@ public final class ActionRuntime {
         self.assetCatalog = assetCatalog
     }
 
+    /// A menu click is resolved against the world *after* its userInteraction
+    /// event has advanced the plan epoch. It uses the same body command path
+    /// as other semantic actions, with direct-user arbitration priority.
+    public func executeUserDirect(
+        _ actionName: String?,
+        tick: Int64,
+        actorID: EntityID,
+        world: WorldState
+    ) -> ActionExecution {
+        let resolution = actionName.map(assetCatalog.resolve)
+        if resolution?.kind == .missing {
+            return ActionExecution(accepted: false, reason: "action_missing", resolution: resolution)
+        }
+        let id = "user-\(actorID.raw)-\(tick)-\(sequence)"
+        sequence += 1
+        return ActionExecution(accepted: true, request: BehaviorRequest(
+            id: id, actorID: actorID,
+            intent: actionName.map { "perform:\(resolution?.resolvedAction ?? $0)" } ?? "rest",
+            priority: .userDirect,
+            planEpoch: world.planEpochs[actorID.raw, default: 0],
+            completionMode: .body, durationTicks: 1, timeoutTicks: 400),
+            resolution: resolution)
+    }
+
     public func execute(
         _ action: SimulationNeedleAction,
         tick: Int64,

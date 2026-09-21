@@ -56,6 +56,7 @@ final class PetController {
     private enum PendingRuntimeAction {
         case semantic(NeedleBrain.SemanticAction)
         case random(PetIntent)
+        case menu(ActionIntent, String?)
         case scene(
             SimulationNeedleAction,
             (Bool, SceneBodyDriver.BodyResultReporter?) -> Void
@@ -106,6 +107,7 @@ final class PetController {
     /// 行动脑只提交语义请求。只有 Kernel 接受且计划世代仍有效时，
     /// 下一个 runtime pulse 才会让 AppKit 身体执行。
     private var pendingRuntimeActions: [String: PendingRuntimeAction] = [:]
+    private var pendingMenuAction: (intent: ActionIntent, clip: String?)?
 
     private let presentation: ActorPresentation
     /// 右键角色时的快速操作环；它只属于当前角色，不进入全局菜单。
@@ -544,7 +546,16 @@ final class PetController {
         // 右键操作环是一个短暂的直接操控态。角色停在当前位姿，自动脑、
         // 场景和移动都暂时让出控制权；关闭环后下一帧自然恢复规划。
         if actionRingOpen {
-            for _ in 0..<runtimeSteps { _ = gameplayRuntime.step() }
+            for _ in 0..<runtimeSteps {
+                _ = gameplayRuntime.step { [weak self] _ in
+                    self?.submitPendingMenuAction()
+                    self?.drainCommittedRuntimeActions()
+                }
+            }
+            if usesSharedGameplayKernel {
+                submitPendingMenuAction()
+                drainCommittedRuntimeActions()
+            }
             model.stopWalk()
             updatePresentationPose()
             renderFrame(dt: 0, effects: presentationEffects)
@@ -554,9 +565,16 @@ final class PetController {
         updateSleepState()
         for _ in 0..<runtimeSteps {
             _ = gameplayRuntime.step { [weak self] _ in
+                self?.submitPendingMenuAction()
                 self?.drainCommittedRuntimeActions()
                 self?.driveMind()
             }
+        }
+        if usesSharedGameplayKernel {
+            // AppDelegate has already pulsed CastRuntime and consumed Story
+            // commands. Only take commands belonging to this controller.
+            submitPendingMenuAction()
+            drainCommittedRuntimeActions()
         }
         tickStartle()
         tickSceneMove()
@@ -1115,6 +1133,7 @@ final class PetController {
     }
 
     private func cancelPendingRuntimeActions() {
+        pendingMenuAction = nil
         let pending = pendingRuntimeActions
         pendingRuntimeActions.removeAll()
         for (id, action) in pending {
@@ -1151,14 +1170,9 @@ final class PetController {
     /// 只消费 Engine 发出的一次性 BodyCommand。命令执行完毕后，生产身体
     /// 必须把结果送回同一事件入口；Kernel 不再用计时器冒充物理完成。
     private func drainCommittedRuntimeActions() {
-        for command in gameplayRuntime.drainBodyCommands(for: runtimeActorID) {
-            guard let action = pendingRuntimeActions.removeValue(forKey: command.behaviorID) else {
-                gameplayRuntime.submitBodyResult(BodyResult(
-                    behaviorID: command.behaviorID,
-                    executionToken: command.executionToken,
-                    outcome: .cancelled))
-                continue
-            }
+        for id in pendingRuntimeActions.keys.sorted() {
+            guard let command = gameplayRuntime.takeBodyCommand(behaviorID: id),
+                  let action = pendingRuntimeActions.removeValue(forKey: id) else { continue }
             guard gameplayRuntime.world.planEpochs[runtimeActorID.raw, default: 0]
                     == command.planEpoch else {
                 gameplayRuntime.submitBodyResult(BodyResult(
@@ -1208,6 +1222,20 @@ final class PetController {
         switch action {
         case .semantic(let semantic): executeCommitted(semantic, report: report)
         case .random(let intent): executeCommitted(intent, report: report)
+        case .menu(let intent, let clip):
+            if intent == .rest {
+                actions.cancelPerformance()
+                actions.clearPendingUserActions()
+                if model.state == .asleep { model.wake() } else { model.sleep() }
+                report(true)
+            } else if let clip {
+                model.wake()
+                model.stopWalk()
+                actions.inject(.perform(clip), userInitiated: true)
+                report(true)
+            } else {
+                report(false)
+            }
         case .scene(_, let completion): completion(true, report)
         }
     }
@@ -1919,24 +1947,23 @@ final class PetController {
            !declaredCapabilities.contains(required) {
             return
         }
-        if intent == .rest {
-            actions.cancelPerformance()
-            actions.clearPendingUserActions()
-            cancelGoalAndScene(reason: "user action")
-            if model.state == .asleep {
-                model.wake()
-            } else {
-                model.sleep()
-            }
-            return
-        }
-        model.wake()
-        model.stopWalk()
         cancelGoalAndScene(reason: "user action")
-        let key = ActionCatalog.resolve(intent, available: library.actionNames)
-            .flatMap(library.action(named:)) ?? idlePrimary
-        guard !key.isEmpty else { return }
-        actions.inject(.perform(key), userInitiated: true)
+        let clip = intent == .rest ? nil :
+            (ActionCatalog.resolve(intent, available: library.actionNames)
+                .flatMap(library.action(named:)) ?? idlePrimary)
+        guard intent == .rest || !(clip ?? "").isEmpty else { return }
+        // The userInteraction event above advances Core's plan epoch at the
+        // next pulse. Resolve and submit only after that boundary.
+        pendingMenuAction = (intent, clip)
+    }
+
+    private func submitPendingMenuAction() {
+        guard let pending = pendingMenuAction else { return }
+        pendingMenuAction = nil
+        let execution = semanticEngine.actionRuntime.executeUserDirect(
+            pending.clip, tick: gameplayRuntime.clock.tick,
+            actorID: runtimeActorID, world: gameplayRuntime.world)
+        submitRuntimeAction(.menu(pending.intent, pending.clip), execution: execution)
     }
 
     private func openActionRing(at cursor: CGPoint) {

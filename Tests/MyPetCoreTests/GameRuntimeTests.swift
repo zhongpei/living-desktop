@@ -345,6 +345,37 @@ final class GameRuntimeTests: XCTestCase {
         XCTAssertEqual(runtime.drainBodyCommands(for: actor.id).map(\.behaviorID), [request.id])
     }
 
+    func testUserDirectActionIsResolvedAfterInterruptionAndPreemptsBrainAction() {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let runtime = GameRuntime(bodyExecutionMode: .external)
+        _ = runtime.step(events: [GameEvent(kind: .registerEntity, entity: actor)])
+        let resolver = ActionRuntime(assetCatalog: AssetCatalog(exactActions: ["wave"]))
+        let brain = resolver.execute(
+            .perform("wave"), tick: runtime.clock.tick, actorID: actor.id,
+            world: runtime.world, context: RuntimeContext())
+        _ = runtime.submitAction(brain)
+        _ = runtime.step()
+
+        runtime.submitPlatform(PlatformEvent(GameEvent(
+            kind: .userInteraction, actorID: actor.id, userAction: "menu")))
+        _ = runtime.step()
+        let direct = resolver.executeUserDirect(
+            "wave", tick: runtime.clock.tick, actorID: actor.id, world: runtime.world)
+        let request = try! XCTUnwrap(direct.request)
+        XCTAssertEqual(request.priority, .userDirect)
+        XCTAssertEqual(request.planEpoch, runtime.world.planEpochs[actor.id.raw])
+        _ = runtime.submitAction(direct)
+        _ = runtime.step()
+
+        XCTAssertEqual(runtime.world.behaviors[request.id]?.status, .running)
+        XCTAssertEqual(runtime.drainBodyCommands(for: actor.id).last?.behaviorID, request.id)
+
+        let rest = resolver.executeUserDirect(
+            nil, tick: runtime.clock.tick, actorID: actor.id, world: runtime.world)
+        XCTAssertEqual(rest.request?.intent, "rest")
+        XCTAssertEqual(rest.request?.priority, .userDirect)
+    }
+
     func testNormalStepAndPlatformIngressRejectRawBehavior() {
         let actor = EntityState(id: EntityID("pet"), kind: .actor)
         let request = BehaviorRequest(
