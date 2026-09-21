@@ -129,7 +129,7 @@ public final class SemanticStoryExecutionProvider: StoryExecutionProvider {
     private let goalProvider: any SimulationGoalProvider
     private let needleProvider: any SimulationNeedleProvider
     private let actionRuntime: ActionRuntime
-    private let desktop: VirtualDesktop
+    private let context: RuntimeContext
     private var cachedGoalKey: String?
     private var cachedGoal: SimulationGoalDecision?
     public private(set) var trace: [PipelineTraceEntry] = []
@@ -138,12 +138,12 @@ public final class SemanticStoryExecutionProvider: StoryExecutionProvider {
         goalProvider: (any SimulationGoalProvider)? = nil,
         needleProvider: (any SimulationNeedleProvider)? = nil,
         actionRuntime: ActionRuntime = ActionRuntime(),
-        desktop: VirtualDesktop = VirtualDesktop()
+        context: RuntimeContext = RuntimeContext()
     ) {
         self.goalProvider = goalProvider ?? GoalBrain()
         self.needleProvider = needleProvider ?? NeedleBrain()
         self.actionRuntime = actionRuntime
-        self.desktop = desktop
+        self.context = context
     }
 
     public func plan(
@@ -165,7 +165,7 @@ public final class SemanticStoryExecutionProvider: StoryExecutionProvider {
             goal = cachedGoal
         } else {
             goal = goalProvider.decide(
-                tick: tick, desktop: desktop, world: world, actorID: actorID)
+                tick: tick, context: context, world: world, actorID: actorID)
             cachedGoalKey = goalKey
             cachedGoal = goal
         }
@@ -197,7 +197,7 @@ public final class SemanticStoryExecutionProvider: StoryExecutionProvider {
         guard let action = needleProvider.decide(
             step: step,
             tick: tick,
-            desktop: desktop,
+            context: context,
             world: world,
             actorID: actorID) else {
             trace.append(PipelineTraceEntry(

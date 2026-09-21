@@ -61,7 +61,7 @@ public protocol SimulationGoalProvider: AnyObject {
 
     func decide(
         tick: Int64,
-        desktop: VirtualDesktop,
+        context: RuntimeContext,
         world: WorldState,
         actorID: EntityID
     ) -> SimulationGoalDecision?
@@ -99,7 +99,7 @@ public final class GoalBrain {
         self.initialGoal = initialGoal
     }
 
-    public func decide(tick: Int64, desktop: VirtualDesktop, world: WorldState, actorID: EntityID) -> SimulationGoalDecision? {
+    public func decide(tick: Int64, context: RuntimeContext, world: WorldState, actorID: EntityID) -> SimulationGoalDecision? {
         guard world.isAlive(actorID) else { return nil }
         if !initialGoalConsumed, let initialGoal {
             initialGoalConsumed = true
@@ -112,11 +112,11 @@ public final class GoalBrain {
             return replayCommands.remove(at: index).decision
         }
 
-        if let window = desktop.focusedWindow {
+        if let window = context.focus {
             return SimulationGoalDecision(
                 goal: .joinUserActivity,
                 target: window.id.raw,
-                activity: window.content.activity ?? "unknown",
+                activity: window.activity ?? "unknown",
                 style: "quiet_companion",
                 issuedAtTick: tick,
                 source: "policy")
@@ -415,7 +415,7 @@ public protocol SimulationNeedleProvider: AnyObject {
     func decide(
         step: SimulationSceneStep,
         tick: Int64,
-        desktop: VirtualDesktop,
+        context: RuntimeContext,
         world: WorldState,
         actorID: EntityID
     ) -> SimulationNeedleAction?
@@ -445,7 +445,7 @@ public final class NeedleBrain {
     public func decide(
         step: SimulationSceneStep,
         tick: Int64,
-        desktop: VirtualDesktop,
+        context: RuntimeContext,
         world: WorldState,
         actorID: EntityID
     ) -> SimulationNeedleAction? {
@@ -457,7 +457,7 @@ public final class NeedleBrain {
         switch step.operation {
         case .moveTo(let anchor):
             if anchor == "floor" { return .moveTo(anchor) }
-            guard desktop.focusedWindow != nil else { return nil }
+            guard context.focus != nil else { return nil }
             return .moveTo(anchor)
         case .perform(let action): return .perform(action)
         case .wait: return .wait
@@ -596,19 +596,43 @@ public final class ActionRuntime {
         self.assetCatalog = assetCatalog
     }
 
+    /// Production and headless adapters share this final request gate. An
+    /// adapter may choose a semantic intent, but it cannot construct its own
+    /// plan epoch, request identity, claims or duration outside MyPetCore.
+    public func executeIntent(
+        _ intent: String,
+        tick: Int64,
+        actorID: EntityID,
+        world: WorldState,
+        priority: PriorityBand = .brainReactive,
+        claims: [String] = ["body"],
+        durationTicks: Int64 = 1
+    ) -> ActionExecution {
+        let request = BehaviorRequest(
+            id: "semantic-\(actorID.raw)-\(tick)-\(sequence)",
+            actorID: actorID,
+            intent: intent,
+            priority: priority,
+            planEpoch: world.planEpochs[actorID.raw, default: 0],
+            claims: claims,
+            durationTicks: durationTicks)
+        sequence += 1
+        return ActionExecution(accepted: true, request: request)
+    }
+
     public func execute(
         _ action: SimulationNeedleAction,
         tick: Int64,
         actorID: EntityID,
         world: WorldState,
-        desktop: VirtualDesktop
+        context: RuntimeContext
     ) -> ActionExecution {
         let epoch = world.planEpochs[actorID.raw, default: 0]
         let id = "semantic-\(actorID.raw)-\(tick)-\(sequence)"
         sequence += 1
         switch action {
         case .moveTo(let anchor):
-            let slot = slot(for: anchor, world: world, desktop: desktop)
+            let slot = slot(for: anchor, world: world, context: context)
             if anchor != "floor" && slot == nil {
                 return ActionExecution(accepted: false, reason: "anchor_missing")
             }
@@ -684,8 +708,8 @@ public final class ActionRuntime {
 
     public func restore(sequence: Int) { self.sequence = sequence }
 
-    private func slot(for anchor: String, world: WorldState, desktop: VirtualDesktop) -> SlotRef? {
-        guard anchor.hasPrefix("@activity."), let window = desktop.focusedWindow else { return nil }
+    private func slot(for anchor: String, world: WorldState, context: RuntimeContext) -> SlotRef? {
+        guard anchor.hasPrefix("@activity."), let window = context.focus else { return nil }
         let slotID = String(anchor.dropFirst("@activity.".count))
         return world.slots["\(window.id.raw)/\(slotID)"]?.ref
     }
@@ -791,14 +815,14 @@ public final class SemanticPipeline {
     /// Run the four semantic stages after this tick's environment events have
     /// been applied and before behavior advancement. Only the final
     /// ActionRuntime output crosses the GameEvent boundary.
-    public func beforeTick(kernel: GameKernel, desktop: VirtualDesktop) {
+    public func beforeTick(kernel: GameKernel, context: RuntimeContext) {
         guard configuration.enabled, pendingActionID == nil,
               kernel.world.isAlive(configuration.actorID) else { return }
         let tick = kernel.clock.tick
         if sceneRunner.status != .running {
             let provider = goalProvider ?? goalBrain
             guard let goal = provider.decide(
-                tick: tick, desktop: desktop, world: kernel.world, actorID: configuration.actorID) else { return }
+                tick: tick, context: context, world: kernel.world, actorID: configuration.actorID) else { return }
             trace.append(PipelineTraceEntry(
                 tick: tick, stage: "goal", detail: "\(provider.providerID):\(goal.goal.rawValue)"))
             guard sceneRunner.start(goal) else {
@@ -815,7 +839,7 @@ public final class SemanticPipeline {
         }
         let provider = needleProvider ?? needleBrain
         guard let action = provider.decide(
-                step: step, tick: tick, desktop: desktop,
+                step: step, tick: tick, context: context,
                 world: kernel.world, actorID: configuration.actorID) else {
             logicFailures.append("needle_no_legal_action")
             sceneRunner.cancel()
@@ -826,7 +850,7 @@ public final class SemanticPipeline {
             tick: tick, stage: "needle", detail: "\(provider.providerID):\(describe(action))"))
         let execution = actionRuntime.execute(
             action, tick: tick, actorID: configuration.actorID,
-            world: kernel.world, desktop: desktop)
+            world: kernel.world, context: context)
         if let resolution = execution.resolution {
             findings.append(SimulationContentFinding(
                 action: resolution.action,
@@ -1048,20 +1072,21 @@ public struct DataSimulationSnapshot: Codable, Equatable, Sendable {
 /// GoalBrain → SceneRunner → NeedleBrain → ActionRuntime.
 public final class DataSimulation {
     public let scenario: HarnessScenario
-    public private(set) var kernel: GameKernel
+    public private(set) var runtime: GameRuntime
+    public var kernel: GameKernel { runtime.kernel }
     public private(set) var desktop: VirtualDesktop
     public let pipeline: SemanticPipeline?
 
     public init(scenario: HarnessScenario) {
         self.scenario = scenario
-        self.kernel = GameKernel(scenario: scenario)
+        self.runtime = GameRuntime(kernel: GameKernel(scenario: scenario))
         self.desktop = scenario.desktop
         self.pipeline = scenario.pipeline.map { SemanticPipeline(configuration: $0) }
     }
 
     public init(snapshot: DataSimulationSnapshot) {
         self.scenario = snapshot.scenario
-        self.kernel = GameKernel(snapshot: snapshot.kernel)
+        self.runtime = GameRuntime(snapshot: snapshot.kernel)
         self.desktop = snapshot.desktop
         if let configuration = snapshot.scenario.pipeline {
             let pipeline = SemanticPipeline(configuration: configuration)
@@ -1074,14 +1099,12 @@ public final class DataSimulation {
 
     @discardableResult
     public func step() -> TickReport {
-        let tick = kernel.clock.tick
-        for event in desktop.advance(to: tick) {
-            kernel.enqueue(event, atTick: tick)
-        }
-        let report = kernel.tick {
-            self.pipeline?.beforeTick(kernel: self.kernel, desktop: self.desktop)
-        }
-        pipeline?.afterTick(kernel: kernel)
+        let tick = runtime.clock.tick
+        let events = desktop.advance(to: tick)
+        let report = runtime.step(events: events) { runtime in
+            self.pipeline?.beforeTick(kernel: runtime.kernel, context: self.desktop.runtimeContext)
+        }!
+        pipeline?.afterTick(kernel: runtime.kernel)
         return report
     }
 
@@ -1094,7 +1117,7 @@ public final class DataSimulation {
     public func snapshot() -> DataSimulationSnapshot {
         DataSimulationSnapshot(
             scenario: scenario,
-            kernel: kernel.snapshot(),
+            kernel: runtime.snapshot(),
             desktop: desktop,
             pipeline: pipeline?.snapshot())
     }

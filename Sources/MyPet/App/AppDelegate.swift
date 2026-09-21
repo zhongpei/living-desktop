@@ -295,6 +295,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let runtime = castRuntime else { return }
         _ = runtime.tick()
         syncCastControllers()
+        for pet in castControllers.values {
+            pet.tick()
+        }
     }
 
     private func syncCastControllers() {
@@ -355,7 +358,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     actorID: EntityID(id),
                     layoutCoordinator: layoutCoordinator,
                     perceptionHub: perceptionHub,
-                    gameplayKernel: runtime.kernel,
+                    gameplayRuntime: runtime.runtime,
                     sceneGraph: castSceneGraph,
                     characterDefinition: runtime.characterDefinition(for: id),
                     capabilities: member.capabilities,

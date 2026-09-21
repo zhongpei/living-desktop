@@ -327,7 +327,8 @@ public struct SimulationSuiteRunner {
         let actors = configuration.roles
             .filter { roleIDs.contains($0.id) }
             .map { EntityState(id: EntityID($0.id), kind: .actor) }
-        let kernel = GameKernel(scenario: HarnessScenario(id: scenario.id, entities: actors))
+        let game = GameRuntime(kernel: GameKernel(
+            scenario: HarnessScenario(id: scenario.id, entities: actors)))
         for (index, step) in scenario.steps.enumerated() {
             guard let role = configuration.roles.first(where: { $0.id == step.role }),
                   let action = configuration.actions.first(where: { $0.id == step.action }) else {
@@ -335,7 +336,7 @@ public struct SimulationSuiteRunner {
             }
             let execution: ExecutionResult
             if supports(action, role: role) {
-                execution = execute(action: action.id, role: role, kernel: kernel)
+                execution = execute(action: action.id, role: role, runtime: game)
             } else {
                 execution = ExecutionResult(status: .unsupported, resolvedAction: nil, completed: false)
             }
@@ -370,12 +371,12 @@ public struct SimulationSuiteRunner {
     private func execute(action: String, role: SimulationRoleDefinition) -> ExecutionResult {
         let actor = EntityState(id: EntityID(role.id), kind: .actor)
         let scenario = HarnessScenario(id: "matrix/\(role.id)/\(action)", entities: [actor])
-        let kernel = GameKernel(scenario: scenario)
-        return execute(action: action, role: role, kernel: kernel)
+        let runtime = GameRuntime(kernel: GameKernel(scenario: scenario))
+        return execute(action: action, role: role, runtime: runtime)
     }
 
     private func execute(
-        action: String, role: SimulationRoleDefinition, kernel: GameKernel
+        action: String, role: SimulationRoleDefinition, runtime game: GameRuntime
     ) -> ExecutionResult {
         let actorID = EntityID(role.id)
         let exact = role.assets.exactMode == .all
@@ -384,8 +385,8 @@ public struct SimulationSuiteRunner {
         let runtime = ActionRuntime(assetCatalog: AssetCatalog(
             exactActions: exact, fallbackActions: role.assets.fallbackActions ?? [:]))
         let execution = runtime.execute(
-            .perform(action), tick: kernel.clock.tick, actorID: actorID,
-            world: kernel.world, desktop: VirtualDesktop())
+            .perform(action), tick: game.clock.tick, actorID: actorID,
+            world: game.world, context: RuntimeContext())
         let status: SimulationActionMatrixStatus
         switch execution.resolution?.kind {
         case .exact: status = .exact
@@ -398,12 +399,12 @@ public struct SimulationSuiteRunner {
                 status: status, resolvedAction: execution.resolution?.resolvedAction,
                 completed: false)
         }
-        kernel.enqueue(GameEvent(kind: .behaviorRequest, request: request))
-        for _ in 0..<3 where kernel.world.behaviors[request.id]?.status != .completed {
-            _ = kernel.tick()
+        game.submit(GameEvent(kind: .behaviorRequest, request: request))
+        for _ in 0..<3 where game.world.behaviors[request.id]?.status != .completed {
+            _ = game.step()
         }
         return ExecutionResult(
             status: status, resolvedAction: execution.resolution?.resolvedAction,
-            completed: kernel.world.behaviors[request.id]?.status == .completed)
+            completed: game.world.behaviors[request.id]?.status == .completed)
     }
 }

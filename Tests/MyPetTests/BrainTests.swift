@@ -416,6 +416,45 @@ final class BrainTests: XCTestCase {
         wait(for: [completed], timeout: 5)
     }
 
+    func testTeacherBrainCancelPendingPlanCancelsTransportAndSuppressesResult() {
+        let started = expectation(description: "teacher request started")
+        let stopped = expectation(description: "teacher request cancelled")
+        let delivered = expectation(description: "cancelled result must stay suppressed")
+        delivered.isInverted = true
+        CancellationURLProtocol.onStart = { started.fulfill() }
+        CancellationURLProtocol.onStop = { stopped.fulfill() }
+        defer {
+            CancellationURLProtocol.onStart = nil
+            CancellationURLProtocol.onStop = nil
+        }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [CancellationURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+
+        let brain = TeacherBrain()
+        brain.injectedConfig = .init(baseURL: "https://api.test/v1", model: "m", apiKey: "")
+        brain.session = session
+        let input = GoalBrainInput(
+            petID: "lin_daiyu",
+            world: WorldStateBuilder.build(clock: 0, foreground: window(7), idleSeconds: 0,
+                                           windows: [], senses: nil, recentEvents: []),
+            brain: BrainState(), personality: .default, memory: [], traceID: "cancelled")
+
+        XCTAssertTrue(brain.plan(input: input) { _ in delivered.fulfill() })
+        wait(for: [started], timeout: 2)
+        brain.cancelPendingPlan()
+        wait(for: [stopped], timeout: 2)
+
+        CancellationURLProtocol.onStart = nil
+        CancellationURLProtocol.onStop = nil
+        XCTAssertTrue(brain.plan(input: input) { _ in delivered.fulfill() },
+                      "取消后应立即允许下一轮规划")
+        brain.cancelPendingPlan()
+        wait(for: [delivered], timeout: 0.1)
+    }
+
     func testSpeechReplyParse() {
         let reply = SpeechReply.parse("{\"text\":\"你写这么久，还没写完吗？\",\"emotion\":\"teasing\"}")
         XCTAssertEqual(reply?.text, "你写这么久，还没写完吗？")
@@ -485,6 +524,16 @@ final class MockURLProtocol: URLProtocol {
     }
 
     override func stopLoading() {}
+}
+
+private final class CancellationURLProtocol: URLProtocol {
+    static var onStart: (() -> Void)?
+    static var onStop: (() -> Void)?
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() { Self.onStart?() }
+    override func stopLoading() { Self.onStop?() }
 }
 
 private extension String {

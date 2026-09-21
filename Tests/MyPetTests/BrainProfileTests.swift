@@ -218,14 +218,57 @@ final class BrainProfileTests: XCTestCase {
         XCTAssertEqual(runtimeResult?.0, label)
         XCTAssertEqual(runtimeResult?.1, .teacher)
     }
+
+    func testCoordinatorExpediteInvalidatesInFlightPlanAndAcceptsFreshResult() {
+        let local = StubGoalBrain()
+        let teacher = StubGoalBrain()
+        let coordinator = GoalBrainCoordinator(local: local, teacher: teacher)
+        coordinator.configure(localEnabled: true, teacherEnabled: true, interval: 0...0)
+        let input = GoalBrainInput(
+            petID: "rei_chibi",
+            world: WorldState(capturedAt: 1, activeApp: "Code", windowTitle: "",
+                              appActivity: "coding", userActivity: "editing_text",
+                              focusRole: "textarea", visibleContext: [], salientUI: [],
+                              nearbyWindows: [], recentEvents: []),
+            brain: BrainState(), personality: .default, memory: [], traceID: "stale")
+        let stale = GoalDecision(goal: .rest, target: nil, activity: nil, style: "stale",
+                                 speech: nil, speechIntent: nil, memory: nil, why: nil)
+        let fresh = GoalDecision(goal: .explore, target: nil, activity: nil, style: "fresh",
+                                 speech: nil, speechIntent: nil, memory: nil, why: nil)
+        var delivered: [GoalDecision?] = []
+
+        XCTAssertTrue(coordinator.maybePlan(now: 0, input: input) { decision, _ in
+            delivered.append(decision)
+        })
+        coordinator.expedite()
+
+        XCTAssertFalse(coordinator.isPending, "失效请求不能阻止新计划")
+        XCTAssertEqual(local.cancelPendingPlanCount, 1)
+        XCTAssertEqual(teacher.cancelPendingPlanCount, 1)
+        local.finish(stale)
+        teacher.finish(stale)
+        XCTAssertTrue(delivered.isEmpty, "失效请求的迟到结果必须丢弃")
+
+        let freshInput = GoalBrainInput(
+            petID: input.petID, world: input.world, brain: input.brain,
+            personality: input.personality, memory: input.memory, traceID: "fresh")
+        XCTAssertTrue(coordinator.maybePlan(now: 1, input: freshInput) { decision, _ in
+            delivered.append(decision)
+        })
+        local.finish(fresh)
+        teacher.finish(nil)
+        XCTAssertEqual(delivered, [fresh])
+    }
 }
 
 private final class StubGoalBrain: GoalBrain {
     let isAvailable = true
     var inputs: [GoalBrainInput] = []
+    var cancelPendingPlanCount = 0
     private var completions: [(GoalDecision?) -> Void] = []
 
     func expedite() {}
+    func cancelPendingPlan() { cancelPendingPlanCount += 1 }
 
     @discardableResult
     func plan(input: GoalBrainInput,

@@ -25,7 +25,8 @@ public struct CastRuntimeSnapshot: Codable, Equatable, Sendable {
 /// 边界确认实体的生死；这个类型只提供一个稳定的生命周期门面，让 AppKit
 /// 面板、harness 和未来的剧情调度器都从同一个“已确认在场名单”读取状态。
 public final class CastRuntime {
-    public let kernel: GameKernel
+    public let runtime: GameRuntime
+    public var kernel: GameKernel { runtime.kernel }
     public let director: CastDirector
     public let storyDirector: StoryDirector
     public private(set) var started = false
@@ -58,9 +59,9 @@ public final class CastRuntime {
         characterDefinitions: [String: CharacterDefinition] = [:]
     ) {
         self.characterDefinitions = characterDefinitions
-        kernel = GameKernel(
+        runtime = GameRuntime(kernel: GameKernel(
             seed: seed,
-            storyInterruptionPolicy: storyConfiguration.interruptionPolicy)
+            storyInterruptionPolicy: storyConfiguration.interruptionPolicy))
         director = CastDirector(
             packs: packs,
             selection: selection,
@@ -78,7 +79,7 @@ public final class CastRuntime {
         storyExecutionProvider: (any StoryExecutionProvider)? = nil
     ) {
         characterDefinitions = [:]
-        kernel = GameKernel(snapshot: snapshot.kernel)
+        runtime = GameRuntime(snapshot: snapshot.kernel)
         director = CastDirector(
             packs: packs,
             selection: snapshot.director.selection,
@@ -105,7 +106,7 @@ public final class CastRuntime {
     @discardableResult
     public func tick() -> TickReport {
         _ = start()
-        let report = kernel.tick()
+        let report = runtime.step()!
         if storyDirector.currentEpisodeID == nil {
             _ = storyDirector.startNext(in: kernel)
         } else {
@@ -191,7 +192,7 @@ public final class CastRuntime {
 
     public func snapshot() -> CastRuntimeSnapshot {
         CastRuntimeSnapshot(
-            kernel: kernel.snapshot(),
+            kernel: runtime.snapshot(),
             director: director.snapshot(),
             storyDirector: storyDirector.snapshot(),
             started: started)

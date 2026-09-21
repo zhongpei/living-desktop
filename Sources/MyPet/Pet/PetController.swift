@@ -50,6 +50,10 @@ final class SystemWorld: WorldReading {
 /// - **反射层**（<50ms，不进大脑）：摸头开心跳、连戳三下应激躲开；
 ///   事件进 recentEvents 供决策脑下一轮社会理解。
 final class PetController {
+    private enum PendingRuntimeAction {
+        case semantic(NeedleBrain.SemanticAction)
+        case random(PetIntent)
+    }
 
     let world: WindowWorld
     let systemWorld: SystemWorld
@@ -89,9 +93,14 @@ final class PetController {
     let memory = MemoryStore()
     /// 桌面程序与 headless harness 共用的确定性世界写入边界。
     /// AppKit/LLM 只投递事件，状态由 tick 内核消费。
-    let gameplayKernel: GameKernel
+    let gameplayRuntime: GameRuntime
+    var gameplayKernel: GameKernel { gameplayRuntime.kernel }
+    private let semanticActionRuntime: MyPetCore.ActionRuntime
     /// 角色组使用 CastRuntime 的共享 kernel，由 CastRuntime 统一推进时钟。
     private let usesSharedGameplayKernel: Bool
+    /// 行动脑只提交语义请求。只有 Kernel 接受且计划世代仍有效时，
+    /// 下一个 runtime pulse 才会让 AppKit 身体执行。
+    private var pendingRuntimeActions: [String: PendingRuntimeAction] = [:]
 
     private let panel: OverlayPanel
     private let view: PetView
@@ -157,7 +166,7 @@ final class PetController {
          actorID: EntityID? = nil,
          layoutCoordinator: SpatialLayoutCoordinator? = nil,
          perceptionHub: PerceptionHub? = nil,
-         gameplayKernel injectedKernel: GameKernel? = nil,
+         gameplayRuntime injectedRuntime: GameRuntime? = nil,
          sceneGraph injectedSceneGraph: SceneGraph? = nil,
          characterDefinition: CharacterDefinition? = nil,
          capabilities: [String]? = nil,
@@ -170,8 +179,11 @@ final class PetController {
         self.layoutCoordinator = layoutCoordinator
         self.perception = perceptionHub ?? PerceptionHub(ownerID: actorID ?? EntityID(library.characterID))
         self.perceptionEventCursor = self.perception.latestInputSequence
-        self.gameplayKernel = injectedKernel ?? GameKernel()
-        self.usesSharedGameplayKernel = injectedKernel != nil
+        let runtime = injectedRuntime ?? GameRuntime()
+        self.gameplayRuntime = runtime
+        self.semanticActionRuntime = MyPetCore.ActionRuntime(
+            assetCatalog: AssetCatalog(exactActions: Set(library.actionNames)))
+        self.usesSharedGameplayKernel = injectedRuntime != nil
         self.characterDefinition = characterDefinition
         self.declaredCapabilities = capabilities.map(Set.init)
         self.needle = needle ?? NeedleBrain()
@@ -186,11 +198,11 @@ final class PetController {
         try! graph.add(actorNode)
         self.sceneGraph = graph
         self.actorNode = actorNode
-        if gameplayKernel.world.entities[runtimeActorID.raw] == nil {
-            gameplayKernel.enqueue(GameEvent(
+        if runtime.world.entities[runtimeActorID.raw] == nil {
+            runtime.submit(GameEvent(
                 kind: .registerEntity,
                 entity: EntityState(id: runtimeActorID, kind: .actor)
-            ), atTick: gameplayKernel.clock.tick)
+            ), atTick: runtime.clock.tick)
         }
         self.props = PropController(library: library, sceneGraph: graph,
                                     actorNode: actorNode, handSocket: handSocket)
@@ -224,6 +236,9 @@ final class PetController {
         isDeparting = false
         if isPerceptionOwner { perception.world.poll() }
         consumePerceptionEvents()
+        // Cast 的 Runtime 与所有角色帧由 AppDelegate 的单一 driver 推进；
+        // 角色不再各自创建 Timer。单宠物仍由自己的 panel driver 推进。
+        guard !usesSharedGameplayKernel else { return }
         let t = Timer(timeInterval: 1.0 / 40.0, target: self, selector: #selector(tick), userInfo: nil, repeats: true)
         RunLoop.main.add(t, forMode: .common)
         timer = t
@@ -445,12 +460,14 @@ final class PetController {
     func stop() {
         guard !isStopped else { return }
         isStopped = true
+        goalBrainCoordinator.cancelPendingPlan()
         isDeparting = false
         castTransition = nil
         castTransitionStartedAt = nil
         panel.alphaValue = 1
         timer?.invalidate()
         timer = nil
+        pendingRuntimeActions.removeAll()
         layoutCoordinator?.remove(runtimeActorID)
         // A shared Cast graph must not retain a departed actor root. Props are
         // cleared by closePanel, while this removes the actor/socket container
@@ -489,17 +506,15 @@ final class PetController {
 
     // ============ 主循环 ============
 
-    @objc private func tick() {
+    @objc func tick() {
         let now = Date()
         let dt = now.timeIntervalSince(lastTick)
         lastTick = now
         clock += dt
 
-        // 共享感知事件先广播到各自内核，再在固定 tick 边界统一消费。
+        // 感知只提交事件；单宠物的语义工作与 Kernel 推进由同一个
+        // GameRuntime pulse 排序。Cast 的 pulse 由 CastRuntime 唯一拥有。
         consumePerceptionEvents()
-        if !usesSharedGameplayKernel {
-            _ = gameplayKernel.tick()
-        }
 
         pollAccumulator += dt
         if pollAccumulator >= 0.3 {
@@ -525,6 +540,7 @@ final class PetController {
         // 右键操作环是一个短暂的直接操控态。角色停在当前位姿，自动脑、
         // 场景和移动都暂时让出控制权；关闭环后下一帧自然恢复规划。
         if actionRingOpen {
+            if !usesSharedGameplayKernel { _ = gameplayRuntime.step() }
             model.stopWalk()
             placePanel()
             renderFrame(dt: 0)
@@ -532,7 +548,12 @@ final class PetController {
         }
 
         updateSleepState()
-        driveMind()
+        if !usesSharedGameplayKernel {
+            _ = gameplayRuntime.step { [weak self] _ in
+                self?.drainCommittedRuntimeActions()
+                self?.driveMind()
+            }
+        }
         tickStartle()
         tickSceneMove()
         tickScenePerform()
@@ -659,6 +680,9 @@ final class PetController {
 
     private func driveMind() {
         guard !isDeparting else { return }
+        // 一次语义行动必须先经 Kernel 仲裁并落下终态，避免异步脑
+        // 在相邻帧重复提交同一身体动作。
+        guard pendingRuntimeActions.isEmpty else { return }
         // 表演收尾：once 型播完（isFinished）由这里清掉。
         if let p = actions.performance, p.endsAt == nil,
            animator.clipName == p.clipKey, animator.isFinished {
@@ -724,34 +748,26 @@ final class PetController {
         case .stroll(let target):
             NeedleBrain.logFallback(facts: facts, chosen: "move_to(\(Int(target)))",
                                     mode: "random", reason: reason)
-            actions.inject(.moveTo(target))
         case .walkAlong:
             NeedleBrain.logFallback(facts: facts, chosen: "walk_along()",
                                     mode: "random", reason: reason)
-            model.startWalk(CGFloat.random(in: 0..<1) < 0.5 ? -1 : 1)
         case .gesture(let clip):
             NeedleBrain.logFallback(facts: facts, chosen: "perform(\(clip))",
                                     mode: "random", reason: reason)
-            actions.inject(.perform(clip))
         case .leap(let w):
             NeedleBrain.logFallback(facts: facts, chosen: "perch(\(w.id))",
                                     mode: "random", reason: reason)
-            if settings.perchingEnabled {
-                actions.inject(.interact(w))
-            }
         case .hop:
             NeedleBrain.logFallback(facts: facts, chosen: "hop()",
                                     mode: "random", reason: reason)
-            model.hop()
         case .dropOff:
             NeedleBrain.logFallback(facts: facts, chosen: "drop_off()",
                                     mode: "random", reason: reason)
-            model.hop()
         case .nothing:
             NeedleBrain.logFallback(facts: facts, chosen: "wait()",
                                     mode: "random", reason: reason)
-            break
         }
+        submitRuntimeAction(.random(decision), intent: runtimeIntent(for: decision))
     }
 
     // ---- 目标层 ----
@@ -864,6 +880,20 @@ final class PetController {
     /// 用户/行动脑主动接管时，同时终止当前场景和它所属的目标。
     /// 没有目标但仍有挂起场景时，保留纯场景中断路径。
     private func cancelGoalAndScene(reason: String) {
+        goalBrainCoordinator.cancelPendingPlan()
+        pendingRuntimeActions.removeAll()
+        if reason.localizedCaseInsensitiveContains("user") ||
+            reason.localizedCaseInsensitiveContains("grab") {
+            gameplayRuntime.submit(GameEvent(
+                kind: .userInteraction,
+                actorID: runtimeActorID,
+                userAction: reason))
+        }
+        if let pendingTrace = pendingGoalTraceID {
+            logGoalOutcome(goal: nil, scene: nil, stayed: 0,
+                           completed: false, reason: reason, traceID: pendingTrace)
+            pendingGoalTraceID = nil
+        }
         if currentGoal != nil {
             clearGoal(reason: reason)
         } else {
@@ -923,7 +953,7 @@ final class PetController {
             chosen: "choose_scene(\(recipe.id))",
             mode: "autopilot",
             reason: "needle_unavailable_or_failed")
-        beginScene(recipe)
+        apply(.chooseScene(recipe.id))
     }
 
     private func beginScene(_ recipe: SceneRecipe) {
@@ -1019,8 +1049,100 @@ final class PetController {
 
     // ---- Needle 语义动作 → 身体 ----
 
-    /// 语义动作 → ActionRuntime verb（世界相关的翻译只在这一处）。
+    /// 语义动作先进入共享 Kernel；表现层不再直接接受模型结果。
     private func apply(_ semantic: NeedleBrain.SemanticAction) {
+        submitRuntimeAction(
+            .semantic(semantic),
+            intent: runtimeIntent(for: semantic),
+            priority: semantic == .sleep ? .ambient : .brainReactive,
+            durationTicks: semantic == .sleep ? 2 : 1)
+    }
+
+    private func submitRuntimeAction(
+        _ action: PendingRuntimeAction,
+        intent: String,
+        priority: PriorityBand = .brainReactive,
+        durationTicks: Int64 = 1
+    ) {
+        let execution = semanticActionRuntime.executeIntent(
+            intent,
+            tick: gameplayRuntime.clock.tick,
+            actorID: runtimeActorID,
+            world: gameplayRuntime.world,
+            priority: priority,
+            durationTicks: durationTicks)
+        guard execution.accepted, let request = execution.request else { return }
+        let id = request.id
+        pendingRuntimeActions[id] = action
+        gameplayRuntime.submit(GameEvent(kind: .behaviorRequest, request: request))
+    }
+
+    /// 只消费 Kernel 已经接受的动作。同一 pulse 中到达的用户抢占会先
+    /// 推进 plan epoch，因此即使旧请求曾经 completed，也不会在真实身体上“诈尸”。
+    private func drainCommittedRuntimeActions() {
+        for id in pendingRuntimeActions.keys.sorted() {
+            guard let action = pendingRuntimeActions[id],
+                  let state = gameplayRuntime.world.behaviors[id] else { continue }
+            switch state.status {
+            case .running, .completed:
+                pendingRuntimeActions[id] = nil
+                guard gameplayRuntime.world.planEpochs[runtimeActorID.raw, default: 0]
+                        == state.request.planEpoch else { continue }
+                executeCommitted(action)
+            case .cancelled, .rejected:
+                pendingRuntimeActions[id] = nil
+            }
+        }
+    }
+
+    private func runtimeIntent(for semantic: NeedleBrain.SemanticAction) -> String {
+        switch semantic {
+        case .chooseScene(let id): return "choose_scene:\(id)"
+        case .moveToAnchor(let anchor): return "move_to:\(anchor)"
+        case .spawnProp(let id): return "spawn_prop:\(id)"
+        case .putDown: return "put_down"
+        case .pickUp: return "pick_up"
+        case .perform(let name): return "perform:\(name)"
+        case .say(let intent): return "say:\(String(describing: intent))"
+        case .leaveScene: return "leave_scene"
+        case .sleep: return "sleep"
+        case .wait: return "wait"
+        }
+    }
+
+    private func runtimeIntent(for intent: PetIntent) -> String {
+        switch intent {
+        case .stroll(let target): return "move_to_point:\(Int(target))"
+        case .walkAlong: return "walk_along"
+        case .gesture(let clip): return "perform:\(clip)"
+        case .leap(let window): return "perch:\(window.id)"
+        case .hop: return "hop"
+        case .dropOff: return "drop_off"
+        case .nothing: return "wait"
+        }
+    }
+
+    private func executeCommitted(_ action: PendingRuntimeAction) {
+        switch action {
+        case .semantic(let semantic): executeCommitted(semantic)
+        case .random(let intent): executeCommitted(intent)
+        }
+    }
+
+    private func executeCommitted(_ intent: PetIntent) {
+        switch intent {
+        case .stroll(let target): actions.inject(.moveTo(target))
+        case .walkAlong: model.startWalk(CGFloat.random(in: 0..<1) < 0.5 ? -1 : 1)
+        case .gesture(let clip): actions.inject(.perform(clip))
+        case .leap(let window):
+            if settings.perchingEnabled { actions.inject(.interact(window)) }
+        case .hop, .dropOff: model.hop()
+        case .nothing: break
+        }
+    }
+
+    /// Kernel 承诺后的平台适配：从此开始才允许操作 AppKit/精灵身体。
+    private func executeCommitted(_ semantic: NeedleBrain.SemanticAction) {
         switch semantic {
         case .chooseScene(let id):
             guard let recipe = SceneCatalog.recipe(id: id) else { return }
@@ -1451,7 +1573,7 @@ final class PetController {
             isOwner: isPerceptionOwner)
         if mayPublishSharedEvent {
             for event in input.events {
-                gameplayKernel.enqueue(event, atTick: gameplayKernel.clock.tick)
+                gameplayRuntime.submit(event)
             }
         }
         if !input.events.isEmpty {
@@ -1791,7 +1913,7 @@ final class PetController {
 
     private func handleForegroundChanged(_ window: WindowEntity?) {
         guard let window else { return }
-        gameplayKernel.enqueue(GameEvent(
+        gameplayRuntime.submit(GameEvent(
             kind: .foregroundChanged,
             actorID: usesSharedGameplayKernel ? nil : runtimeActorID,
             entityID: EntityID(String(window.id))

@@ -114,6 +114,11 @@ actor LocalBrain: GoalBrain {
     /// 调度器统一管理规划节奏；本地脑只维护自己的在飞门闩。
     nonisolated func expedite() {}
 
+    /// 只取消目标规划；聊天使用同一模型门闩，但有独立的用户可见生命周期。
+    nonisolated func cancelPendingPlan() {
+        gate.cancelPlan()
+    }
+
     nonisolated func configure(_ configuration: Configuration) {
         configurationStore.set(configuration)
     }
@@ -125,12 +130,14 @@ actor LocalBrain: GoalBrain {
                           completion: @escaping (GoalDecision?) -> Void) -> Bool {
         guard LocalBrainModel.isInstalled, gate.claim() else { return false }
         let configuration = configurationStore.get()
-        Task {
+        let task = Task {
             let outcome = await self.plan(input: input, configuration: configuration)
+            gate.release()
             await MainActor.run {
                 completion(outcome.decision)
             }
         }
+        gate.trackPlan(task)
         return true
     }
 
@@ -225,6 +232,7 @@ actor LocalBrain: GoalBrain {
         let t0 = Date()
         let profile = BrainProfile.resolved()
         do {
+            try Task.checkCancellation()
             let state = try await ensureReady(petID: input.petID, personality: input.personality,
                                               profile: profile)
             guard let tokenizer = brainTokenizer else { throw BrainError.modelMissing }
@@ -267,7 +275,6 @@ actor LocalBrain: GoalBrain {
                                  traceID: input.traceID,
                                  personality: input.personality, memory: input.memory,
                                  role: "student")
-                gate.release()
                 return PlanOutcome(decision: goalDecision)
             }
             // 两轮都非法：本地决策脑本轮弃权（§2）。这条 trace 同样是素材（G2 回填）。
@@ -277,7 +284,8 @@ actor LocalBrain: GoalBrain {
                              decisionValid: false, traceID: input.traceID,
                              personality: input.personality, memory: input.memory,
                              role: "student")
-            gate.release()
+            return PlanOutcome(decision: nil)
+        } catch is CancellationError {
             return PlanOutcome(decision: nil)
         } catch {
             NSLog("MyPet LocalBrain: 决策失败 %@", error.localizedDescription)
@@ -290,7 +298,6 @@ actor LocalBrain: GoalBrain {
                              fallbackReason: "local_brain_error",
                              personality: input.personality, memory: input.memory,
                              role: "student")
-            gate.release()
             return PlanOutcome(decision: nil)
         }
     }
@@ -412,6 +419,7 @@ actor LocalBrain: GoalBrain {
 private final class DispatchGate: @unchecked Sendable {
     private let lock = NSLock()
     private var planPending = false
+    private var planTask: Task<Void, Never>?
 
     func claim() -> Bool {
         lock.lock()
@@ -424,7 +432,21 @@ private final class DispatchGate: @unchecked Sendable {
     func release() {
         lock.lock()
         planPending = false
+        planTask = nil
         lock.unlock()
+    }
+
+    func trackPlan(_ task: Task<Void, Never>) {
+        lock.lock()
+        planTask = task
+        lock.unlock()
+    }
+
+    func cancelPlan() {
+        lock.lock()
+        let task = planTask
+        lock.unlock()
+        task?.cancel()
     }
 }
 

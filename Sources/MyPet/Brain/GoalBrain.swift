@@ -20,6 +20,10 @@ protocol GoalBrain: AnyObject {
     /// 世界大变化：把下一次目标规划提前到现在。主线程调用；pending 时无害。
     func expedite()
 
+    /// 当前规划已经失效。昂贵且可取消的实现应停止底层工作；轻量实现可以只丢弃结果。
+    /// 主线程调用，不影响独立的聊天请求。
+    func cancelPendingPlan()
+
     /// 发起一次目标规划。调度节奏由 GoalBrainCoordinator 统一管理。
     /// 返回 false = 不可用/已在飞；回调主队列，decision=nil = 失败/被拒/弃权。
     @discardableResult
@@ -231,6 +235,8 @@ final class TeacherBrain: GoalBrain {
     private let queue = DispatchQueue(label: "mypet.teacher-brain")
     private var planPending = false
     private var speechPending = false
+    private var planGeneration: UInt64 = 0
+    private var planTask: URLSessionTask?
 
     var isAvailable: Bool { effectiveConfig != nil }
 
@@ -238,6 +244,13 @@ final class TeacherBrain: GoalBrain {
 
     /// 调度器会把下一轮教师规划提前；适配器自身只处理 pending。
     func expedite() {}
+
+    func cancelPendingPlan() {
+        planGeneration &+= 1
+        planTask?.cancel()
+        planTask = nil
+        planPending = false
+    }
 
     // MARK: 配置
 
@@ -262,25 +275,27 @@ final class TeacherBrain: GoalBrain {
                    completion: @escaping (GoalDecision?) -> Void) -> Bool {
         guard !planPending, let config = effectiveConfig else { return false }
         planPending = true
+        planGeneration &+= 1
+        let generation = planGeneration
 
         let request = Self.buildPlanRequest(model: config.model, world: input.world, brain: input.brain,
                                             personality: input.personality, memory: input.memory,
                                             sampling: config.planSampling)
-        queue.async { [weak self] in
-            let t0 = Date()
-            Self.perform(config: config, request: request, session: self?.session ?? .shared) { output in
-                let latency = Date().timeIntervalSince(t0)
-                DispatchQueue.main.async {
-                    self?.planPending = false
-                    let decision = output.flatMap { GoalDecision.parse($0) }
-                    let valid = decision.flatMap { GoalDecision.validate($0, world: input.world) ? $0 : nil }
-                    BrainDecisionLog.log(world: input.world, brain: input.brain, output: output,
-                                     chosen: valid, latency: latency,
-                                     decisionValid: valid != nil,
-                                     traceID: input.traceID, personality: input.personality, memory: input.memory,
-                                     role: "teacher")
-                    completion(valid)
-                }
+        let t0 = Date()
+        planTask = Self.perform(config: config, request: request, session: session) { [weak self] output in
+            let latency = Date().timeIntervalSince(t0)
+            DispatchQueue.main.async {
+                guard let self, self.planGeneration == generation else { return }
+                self.planTask = nil
+                self.planPending = false
+                let decision = output.flatMap { GoalDecision.parse($0) }
+                let valid = decision.flatMap { GoalDecision.validate($0, world: input.world) ? $0 : nil }
+                BrainDecisionLog.log(world: input.world, brain: input.brain, output: output,
+                                 chosen: valid, latency: latency,
+                                 decisionValid: valid != nil,
+                                 traceID: input.traceID, personality: input.personality, memory: input.memory,
+                                 role: "teacher")
+                completion(valid)
             }
         }
         return true
@@ -585,6 +600,7 @@ final class GoalBrainCoordinator {
     private var interval: ClosedRange<Double> = 45...90
     private var nextPlanAt: Double = 0
     private var pending = false
+    private var planGeneration: UInt64 = 0
 
     private(set) var runtimeSource: Source?
 
@@ -615,8 +631,16 @@ final class GoalBrainCoordinator {
 
     func expedite() {
         nextPlanAt = 0
+        cancelPendingPlan()
         local.expedite()
         teacher.expedite()
+    }
+
+    func cancelPendingPlan() {
+        planGeneration &+= 1
+        pending = false
+        local.cancelPendingPlan()
+        teacher.cancelPendingPlan()
     }
 
     @discardableResult
@@ -632,10 +656,17 @@ final class GoalBrainCoordinator {
         pending = true
         nextPlanAt = now + Double.random(in: interval)
         self.runtimeSource = runtimeSource
+        let generation = planGeneration
         let batch = GoalBrainBatch(
             remaining: sources.count, runtimeSource: runtimeSource,
-            completion: completion,
-            allDone: { [weak self] in self?.pending = false })
+            completion: { [weak self] decision, source in
+                guard self?.planGeneration == generation else { return }
+                completion(decision, source)
+            },
+            allDone: { [weak self] in
+                guard self?.planGeneration == generation else { return }
+                self?.pending = false
+            })
 
         for source in sources {
             let brain: any GoalBrain = source == .local ? local : teacher

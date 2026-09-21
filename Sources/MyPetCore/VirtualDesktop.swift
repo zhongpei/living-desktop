@@ -783,3 +783,13 @@ public struct VirtualDesktop: Codable, Equatable, Sendable {
     }
 
 }
+
+public extension VirtualDesktop {
+    var runtimeContext: RuntimeContext {
+        RuntimeContext(focus: focusedWindow.map {
+            RuntimeContext.Focus(
+                id: $0.id, app: $0.app, title: $0.title,
+                activity: $0.content.activity)
+        })
+    }
+}

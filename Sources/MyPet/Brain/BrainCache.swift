@@ -274,13 +274,22 @@ enum BrainCacheManager {
             let iterator = try TokenIterator(
                 input: inputBox.value, model: model, cache: cacheBox.value,
                 parameters: parameters)
-            let stream = MLXLMCommon.generate(
-                input: inputBox.value, context: ctx, iterator: iterator)
-            var text = ""
-            for await item in stream {
-                if let chunk = item.chunk { text += chunk }
-            }
-            return text
+            let (stream, generationTask) = MLXLMCommon.generateTask(
+                promptTokenCount: inputBox.value.text.tokens.size,
+                modelConfiguration: ctx.configuration,
+                tokenizer: ctx.tokenizer,
+                iterator: iterator)
+            return try await withTaskCancellationHandler(operation: {
+                var text = ""
+                for await item in stream {
+                    if let chunk = item.chunk { text += chunk }
+                }
+                await generationTask.value
+                try Task.checkCancellation()
+                return text
+            }, onCancel: {
+                generationTask.cancel()
+            })
         }
     }
 }

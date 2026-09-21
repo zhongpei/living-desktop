@@ -118,8 +118,8 @@ public struct BrainBackendStatus: Codable, Equatable, Sendable {
 }
 
 public enum BrainBackend {
-    /// 为当前 harness 安装一份 cassette。local/teacher 的 live HTTP 路径由
-    /// `LiveBrainAdapter` 负责；这里保留纯 cassette 安装边界，供 replay/stub 使用。
+    /// 为 replay/故障测试安装 cassette。正常模型结果必须作为 Goal/Needle
+    /// provider 进入 SemanticPipeline，不能在这里直接生成行为请求。
     @discardableResult
     public static func install(
         mode: BrainMode,
