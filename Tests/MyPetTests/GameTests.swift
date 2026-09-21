@@ -324,6 +324,28 @@ final class GameTests: XCTestCase {
         XCTAssertEqual(stage.performedClips, ["think"])
     }
 
+    func testSceneDecisionTimeoutContinuesWithoutModelAndIgnoresLateAnswer() {
+        let recipe = SimulationSceneRecipe(
+            id: "deferred-decision", goals: [.wander],
+            steps: [SimulationSceneStep(.wait(0), decisionPoint: true)])
+        let stage = FakeStage()
+        stage.deferDecisions = true
+        let runner = SceneBodyDriver(recipe: recipe)
+        runner.stepTimeout = 2
+
+        runner.start(stage: stage, activityWindow: nil, now: 0)
+        runner.tick(now: 0)
+        runner.tick(now: 0)
+        XCTAssertEqual(stage.decisionPoints, 1)
+        XCTAssertTrue(runner.isActive)
+
+        runner.tick(now: 3)
+        XCTAssertTrue(runner.completed)
+        stage.pendingDecision?(.leaveScene)
+        XCTAssertTrue(runner.completed)
+        XCTAssertEqual(runner.phase, .finished)
+    }
+
     func testProductionSceneBodyWaitsForCoreAuthorizationBeforeEachStep() {
         let recipe = SceneCatalog.recipe(id: "tea_break")!
         let stage = FakeStage()
@@ -1019,6 +1041,8 @@ private final class FakeStage: SceneStaging {
     var hasClips = false
     var completeMovesImmediately = true
     var nextDecision: SceneDecision?
+    var deferDecisions = false
+    var pendingDecision: ((SceneDecision) -> Void)?
     /// 场景等待的绝对时钟（elapse 推进）。
     var fakeClock: Double = 0
     /// 决策点回答策略：第二次离开，其余继续。
@@ -1065,6 +1089,10 @@ private final class FakeStage: SceneStaging {
 
     func sceneDecisionPoint(_ scene: SceneRecipe, stepIndex: Int, resume: @escaping (SceneDecision) -> Void) {
         decisionPoints += 1
+        if deferDecisions {
+            pendingDecision = resume
+            return
+        }
         if let nextDecision {
             self.nextDecision = nil
             resume(nextDecision)

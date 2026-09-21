@@ -266,6 +266,8 @@ final class NeedleBrain {
 
     private let runtime = CNeedleRuntime.shared
     private var pending = false
+    private var activeRequest: CNeedleRequestToken?
+    private static let requestTimeout: TimeInterval = 15
     private var nextDecisionAt: Double = 0
     private(set) var requestGeneration: Int64 = 0
 
@@ -273,10 +275,14 @@ final class NeedleBrain {
         requestGeneration == generation
     }
 
-    /// CNeedle may finish naturally; invalidation only discards its old
-    /// semantic result. The shared model session is never interrupted here.
+    /// Queued CNeedle calls are skipped; one already inside the C function
+    /// finishes naturally and its old answer is not adopted. The shared model
+    /// session is never interrupted here.
     func invalidatePendingDecision() {
         requestGeneration &+= 1
+        activeRequest?.cancel()
+        activeRequest = nil
+        pending = false
     }
 
     /// 决策间隔（秒）。模型有思考成本，节奏比 RandomBrain 略缓。
@@ -346,6 +352,15 @@ final class NeedleBrain {
         guard let modelURL = Self.modelURL() else { return }
         pending = true
         let generation = requestGeneration
+        let token = CNeedleRequestToken()
+        activeRequest = token
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.requestTimeout) { [weak self] in
+            guard let self, self.activeRequest === token,
+                  self.isCurrentGeneration(generation) else { return }
+            self.invalidatePendingDecision()
+            completion(nil, [])
+        }
 
         let schema = Self.toolSchema(facts: facts)
         let snapshotForLog = Self.snapshot(facts: facts)
@@ -357,18 +372,23 @@ final class NeedleBrain {
             systemPrompt: systemPrompt,
             schema: schema,
             snapshot: modelInput,
-            maxNewTokens: maxNewTokens
+            maxNewTokens: maxNewTokens,
+            requestToken: token
         ) { [weak self] output in
             let latency = Date().timeIntervalSince(t0)
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                self.pending = false
                 let calls = output.flatMap { Self.parseCalls($0) } ?? []
                 let valid = calls.first { Self.validate($0, facts: facts) }
-                self.log(facts: facts, schema: schema, snapshot: snapshotForLog,
-                          modelInput: modelInput, output: output, chosen: valid,
-                          calls: calls, latency: latency)
-                guard self.isCurrentGeneration(generation) else { return }
+                if output != nil || !token.isCancelled {
+                    self.log(facts: facts, schema: schema, snapshot: snapshotForLog,
+                              modelInput: modelInput, output: output, chosen: valid,
+                              calls: calls, latency: latency)
+                }
+                guard self.activeRequest === token,
+                      self.isCurrentGeneration(generation) else { return }
+                self.activeRequest = nil
+                self.pending = false
                 completion(valid, calls.map(Self.describe))
             }
         }

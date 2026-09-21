@@ -715,9 +715,6 @@ final class PetController {
 
     private func driveMind() {
         guard !isDeparting else { return }
-        // 一次语义行动必须先经 Kernel 仲裁并落下终态，避免异步脑
-        // 在相邻帧重复提交同一身体动作。
-        guard pendingRuntimeActions.isEmpty else { return }
         // 表演收尾：once 型播完（isFinished）由这里清掉。
         if let p = actions.performance, p.endsAt == nil,
            presentation.clipName == p.clipKey, presentation.animationFinished {
@@ -735,6 +732,10 @@ final class PetController {
 
         // 用户抓起宠物 = 目标作废（反射优先于一切意图）。
         if model.state == .dragged { clearGoal(reason: "user grabbed"); return }
+
+        // 世界和用户抢占必须先于“等待旧命令”检查，否则旧身体请求在飞时
+        // 会把决策环短路，直到它自然结束才发现目标早已失效。
+        guard pendingRuntimeActions.isEmpty else { return }
 
         let busy = model.state == .airborne || model.state == .dragged
             || model.state == .tossed || model.walking
@@ -818,6 +819,9 @@ final class PetController {
     private func planGoal() {
         guard let ws = lastWorldState else { return }
         let traceID = UUID().uuidString
+        let scope = BrainDecisionScope(
+            world: ws, planEpoch: gameplayRuntime.world.planEpochs[runtimeActorID.raw, default: 0],
+            goalTraceID: currentGoal?.traceID, sceneID: sceneRunner?.recipe.id)
         let input = GoalBrainInput(
             petID: runtimeActorID.raw,
             world: ws,
@@ -828,8 +832,16 @@ final class PetController {
         pendingGoalTraceID = traceID
         let dispatched = goalBrainCoordinator.maybePlan(now: clock, input: input) { [weak self] decision, source in
             guard let self else { return }
+            guard self.pendingGoalTraceID == traceID else { return }
             self.pendingGoalTraceID = nil
             guard !self.isStopped else { return }
+            guard self.matchesDecisionScope(scope) else {
+                self.logGoalOutcome(goal: nil, scene: nil, stayed: 0,
+                                    completed: false, reason: "stale world or plan",
+                                    traceID: traceID)
+                self.goalBrainCoordinator.expedite()
+                return
+            }
             if let decision {
                 self.adopt(decision: decision, traceID: traceID,
                            source: source?.rawValue ?? "teacher")
@@ -903,6 +915,7 @@ final class PetController {
     private func clearGoal(reason: String) {
         needle.invalidatePendingDecision()
         guard let goal = currentGoal else { return }
+        cancelPendingRuntimeActions()
         pushRecentEvent("goal cleared: \(reason)")
         // 先结束场景再清目标，确保 outcome 与原目标共享同一个 trace_id。
         let hadScene = sceneRunner != nil
@@ -961,11 +974,22 @@ final class PetController {
     private func askNeedleForScene() {
         var facts = makeWorldFacts()
         facts.mode = .ambient
+        let scope = decisionScope()
         needle.maybeDecide(now: clock, facts: facts) { [weak self] semantic, _ in
             guard let self else { return }
             guard !self.isStopped, self.currentGoal != nil else { return }
+            guard self.matchesDecisionScope(scope) else {
+                self.needle.expedite()
+                return
+            }
             guard let semantic else {
                 // 决策失败：这轮交给 Autopilot，保证玩法不中断。
+                if self.settings.scenesEnabled { self.autopilotPickScene() }
+                return
+            }
+            var currentFacts = self.makeWorldFacts()
+            currentFacts.mode = .ambient
+            guard NeedleBrain.validate(semantic, facts: currentFacts) else {
                 if self.settings.scenesEnabled { self.autopilotPickScene() }
                 return
             }
@@ -1114,6 +1138,18 @@ final class PetController {
                 id: EntityID(String($0.id)), app: $0.owner,
                 title: $0.windowTitle, activity: $0.appActivity.rawValue)
         })
+    }
+
+    private func decisionScope() -> BrainDecisionScope {
+        BrainDecisionScope(
+            world: makeWorldState(),
+            planEpoch: gameplayRuntime.world.planEpochs[runtimeActorID.raw, default: 0],
+            goalTraceID: currentGoal?.traceID,
+            sceneID: sceneRunner?.recipe.id)
+    }
+
+    private func matchesDecisionScope(_ requested: BrainDecisionScope) -> Bool {
+        requested == decisionScope()
     }
 
     private var soloProp: SoloProp? {
@@ -1562,8 +1598,20 @@ final class PetController {
         if settings.actionBrainEnabled, needle.isAvailable {
             var facts = makeWorldFacts()
             facts.mode = .inScene
+            let scope = decisionScope()
+            let runner = sceneRunner
             let dispatched = needle.decideNow(facts: facts) { [weak self] semantic, _ in
-                resume(self?.mapSceneDecision(semantic) ?? .continueScene)
+                guard let self, !self.isStopped, self.sceneRunner === runner else { return }
+                guard self.matchesDecisionScope(scope) else {
+                    resume(self.policySceneDecision(scene))
+                    return
+                }
+                var currentFacts = self.makeWorldFacts()
+                currentFacts.mode = .inScene
+                let valid = semantic.flatMap {
+                    NeedleBrain.validate($0, facts: currentFacts) ? $0 : nil
+                }
+                resume(self.mapSceneDecision(valid) ?? self.policySceneDecision(scene))
             }
             if dispatched { return }
         }

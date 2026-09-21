@@ -230,7 +230,11 @@ final class SceneBodyDriver {
             if now - stepStartedAt > stepTimeout { failScene() }
         case .ready:
             startStep(now: now)   // ready 不会跨帧存在，防御性兜底
-        case .deciding, .sleeping, .finished:
+        case .deciding:
+            // A missing model callback must not freeze a scene forever. The
+            // old answer is guarded by stepGeneration in completeStagedStep.
+            if now - stepStartedAt > stepTimeout { resume(.continueScene) }
+        case .sleeping, .finished:
             break
         }
     }
@@ -468,8 +472,12 @@ final class SceneBodyDriver {
         let idx = min(stepIndex, recipe.steps.count - 1)
         if recipe.steps[idx].decisionPoint {
             phase = .deciding
+            stepStartedAt = currentClock
+            let generation = stepGeneration
             stage.sceneDecisionPoint(recipe, stepIndex: idx) { [weak self] decision in
-                self?.resume(decision)
+                guard let self, self.stepGeneration == generation,
+                      self.phase == .deciding else { return }
+                self.resume(decision)
             }
         } else {
             advanceStep()

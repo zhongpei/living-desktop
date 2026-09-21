@@ -1,6 +1,28 @@
 import CNeedle
 import Foundation
 
+/// A cheap cancellation gate for queued CNeedle work. The C function has no
+/// interruption API, so an already-running call finishes and its answer is
+/// discarded; queued calls do not enter the model at all.
+public final class CNeedleRequestToken {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    public init() {}
+
+    public var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    public func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
+    }
+}
+
 /// Sole process-local owner of Needle's non-thread-safe C session.
 /// It returns model text only and cannot write runtime state or construct a
 /// behavior request.
@@ -21,14 +43,27 @@ public final class CNeedleRuntime {
         schema: String,
         snapshot: String,
         maxNewTokens: Int,
+        requestToken: CNeedleRequestToken? = nil,
         completion: @escaping (String?) -> Void
     ) {
         queue.async { [weak self] in
             guard let self else { completion(nil); return }
-            completion(self.runOnce(
-                modelPath: modelPath, systemPrompt: systemPrompt, schema: schema,
-                snapshot: snapshot, maxNewTokens: maxNewTokens))
+            let output = Self.runUnlessCancelled(requestToken) {
+                self.runOnce(
+                    modelPath: modelPath, systemPrompt: systemPrompt, schema: schema,
+                    snapshot: snapshot, maxNewTokens: maxNewTokens)
+            }
+            // The caller may still record a completed raw answer locally, but
+            // must gate its adoption against the token and plan generation.
+            completion(output)
         }
+    }
+
+    static func runUnlessCancelled(
+        _ token: CNeedleRequestToken?, work: () -> String?
+    ) -> String? {
+        guard token?.isCancelled != true else { return nil }
+        return work()
     }
 
     /// Synchronous harness seam. It still executes on the same process-wide
