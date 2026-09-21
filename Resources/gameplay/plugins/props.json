@@ -2,6 +2,6 @@
   "id": "props", "groupID": "interaction",
   "displayName": { "zh-Hans": "道具", "en": "Props" },
   "order": 20, "implementationID": "props", "sceneIDs": [],
-  "actionFamilies": ["prop"], "propIDs": ["book", "tea", "phone", "laptop"], "inputSources": [],
+  "actionFamilies": ["prop"], "propIDs": ["apple", "ball", "book", "chair", "coffee", "headphone", "laptop", "phone", "pillow", "popcorn", "tea", "umbrella"], "inputSources": [],
   "enabledByDefault": true, "surfaces": ["tray", "settings", "action-ring", "diagnostics"], "fallback": "semantic-action-fallback"
 }

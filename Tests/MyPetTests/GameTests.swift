@@ -735,6 +735,21 @@ final class GameTests: XCTestCase {
         XCTAssertEqual(placedItems.map { $0.representedObject as? String }, ["tea|true", "laptop|true"])
     }
 
+    func testTraySummonablePropsProjectsGameplayManifest() {
+        let plugin = GameplayPlugin(
+            id: "props", groupID: "interaction", displayNames: .init("道具"), order: 0,
+            implementationID: "props", propIDs: ["tea", "unknown", "tea", "book"])
+        let catalog = GameplayCatalog(groups: [], plugins: [plugin])
+        XCTAssertEqual(Tray.summonableProps(catalog: catalog).map(\.id), ["book", "tea"])
+        XCTAssertEqual(Tray.summonableProps(catalog: nil).map(\.id), PropCatalog.ids)
+        XCTAssertTrue(Tray.summonableProps(catalog: GameplayCatalog(groups: [], plugins: [])).isEmpty)
+        let settingsOnly = GameplayPlugin(
+            id: "props", groupID: "interaction", displayNames: .init("道具"), order: 0,
+            implementationID: "props", propIDs: ["tea"], surfaces: ["settings"])
+        XCTAssertTrue(Tray.summonableProps(catalog: GameplayCatalog(
+            groups: [], plugins: [settingsOnly])).isEmpty)
+    }
+
     // MARK: GoalDecision 气泡
 
     func testGoalDecisionClippedSpeech() {

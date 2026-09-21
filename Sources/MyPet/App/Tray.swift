@@ -76,6 +76,21 @@ final class Tray: NSObject {
         }
     }
 
+    static func summonableProps(catalog: GameplayCatalog?) -> [(id: String, label: String)] {
+        let ids: [String]
+        if let catalog {
+            ids = catalog.plugins.first {
+                $0.implementationID == GameplayImplementationID.props.rawValue &&
+                    $0.surfaces.contains("tray")
+            }?.propIDs ?? []
+        } else {
+            ids = PropCatalog.ids
+        }
+        return Set(ids).compactMap { PropCatalog.def($0) }
+            .map { (id: $0.id, label: $0.label) }
+            .sorted { $0.id < $1.id }
+    }
+
     /// 更新单角色模式的当前角色；角色管理只提供查看和退出，不做隐式替换。
     func updatePets(_ ids: [String], current: String) {
         petIDs = ids
@@ -202,9 +217,7 @@ final class Tray: NSObject {
         }
 
         // 召唤道具：手上（宠物拿着，场景收尾自然放下）/ 面前（落地待着后淡出）。
-        let propList = PropCatalog.defs.values
-            .map { (id: $0.id, label: $0.label) }
-            .sorted { $0.id < $1.id }
+        let propList = Self.summonableProps(catalog: gameplayCatalog)
         let propSubmenu = NSMenu(title: "道具")
         for (title, placed) in [("召唤到手上", false), ("召唤到面前", true)] {
             let sub = NSMenu(title: title)
@@ -220,6 +233,7 @@ final class Tray: NSObject {
         }
         let propItem = NSMenuItem(title: "道具", action: nil, keyEquivalent: "")
         propItem.submenu = propSubmenu
+        propItem.isEnabled = !propList.isEmpty
         menu.addItem(propItem)
 
         menu.addItem(.separator())
