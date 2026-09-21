@@ -211,11 +211,20 @@ struct Settings: Codable {
     /// 剧情与关系独立于角色名单；关闭教师脑不影响这里的规则剧情。
     var storySettings = StorySettings()
 
+    static func storageURL(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
+        if let path = environment["MYPET_SETTINGS_PATH"] {
+            precondition(path.hasPrefix("/"), "MYPET_SETTINGS_PATH must be an absolute path")
+            return URL(fileURLWithPath: path).standardizedFileURL
+        }
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("MyPet/settings.json")
+    }
+
     static var url: URL {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("MyPet", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("settings.json")
+        let result = storageURL()
+        try? FileManager.default.createDirectory(
+            at: result.deletingLastPathComponent(), withIntermediateDirectories: true)
+        return result
     }
 
     static func load() -> Settings {

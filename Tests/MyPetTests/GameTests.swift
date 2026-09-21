@@ -750,6 +750,14 @@ final class GameTests: XCTestCase {
             groups: [], plugins: [settingsOnly])).isEmpty)
     }
 
+    func testSettingsStoragePathCanBeIsolatedForDesktopSmoke() {
+        let isolated = Settings.storageURL(environment: [
+            "MYPET_SETTINGS_PATH": "/tmp/mypet-smoke/settings.json"
+        ])
+        XCTAssertEqual(isolated.path, "/tmp/mypet-smoke/settings.json")
+        XCTAssertNotEqual(isolated.path, Settings.storageURL(environment: [:]).path)
+    }
+
     // MARK: GoalDecision 气泡
 
     func testGoalDecisionClippedSpeech() {

@@ -30,6 +30,9 @@ MYPET_PETPACK=/path/to/petpack swift run
 swift test
 ```
 
+需要隔离桌面 smoke 的设置时，可额外设置绝对路径 `MYPET_SETTINGS_PATH=/path/to/settings.json`；
+应用将只在该文件读写设置，不触碰日常 `MyPet/settings.json`。
+
 要求 macOS 14 或更高版本。辅助功能、屏幕内容读取等能力是可选功能；基础角色互动不应
 依赖这些权限。
 

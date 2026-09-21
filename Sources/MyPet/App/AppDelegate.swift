@@ -36,6 +36,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastCastFrameAt = ProcessInfo.processInfo.systemUptime
     /// Core 已确认离场后，渲染面板保留到 transition plan 完成。
     private var castDepartureDeadlines: [String: Int64] = [:]
+    /// 缺视觉包的逻辑成员仍参与剧情；每次 Cast 会话只报告一次缺包。
+    private var reportedMissingCastVisuals = Set<String>()
     /// 发现的全部宠物包（id → 目录），按字母序。
     private var library: [(id: String, url: URL)] = []
     /// 发现的角色组与剧情包；它们独立于单个 petpack，可按设置动态启用。
@@ -290,6 +292,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         castSceneGraph.removeAll()
         castOverlays.close()
         castDepartureDeadlines.removeAll()
+        reportedMissingCastVisuals.removeAll()
         castRuntime = nil
         if wasCastActive {
             controller = nil
@@ -351,14 +354,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         perceptionHub.ownerID = renderableIDs.first.map(EntityID.init)
         for (index, id) in orderedIDs.enumerated() {
-            guard castControllers[id] == nil,
-                  let member = runtime.director.member(id),
-                  let visualID = member.visualPackID,
+            if castControllers[id] != nil { continue }
+            guard let member = runtime.director.member(id) else { continue }
+            guard let visualID = member.visualPackID,
                   let entry = library.first(where: { $0.id == visualID }) else {
-                if let member = runtime.director.member(id), member.visualPackID == nil {
-                    NSLog("MyPet: 角色 %@ 已入场，但没有 visualPackID，暂不创建面板", member.id)
-                } else if let member = runtime.director.member(id) {
-                    NSLog("MyPet: 角色 %@ 的视觉包 %@ 不存在，暂不创建面板", member.id, member.visualPackID ?? "")
+                if reportedMissingCastVisuals.insert(id).inserted {
+                    if member.visualPackID == nil {
+                        NSLog("MyPet: 角色 %@ 已入场，但没有 visualPackID，暂不创建面板", member.id)
+                    } else {
+                        NSLog("MyPet: 角色 %@ 的视觉包 %@ 不存在，暂不创建面板", member.id, member.visualPackID ?? "")
+                    }
                 }
                 continue
             }
@@ -383,7 +388,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 pet.playArrival(style: member.arrivalStyle)
                 pet.start()
             } catch {
-                NSLog("MyPet: 角色 %@ 的视觉包加载失败 %@ — %@", id, entry.url.path, error.localizedDescription)
+                if reportedMissingCastVisuals.insert(id).inserted {
+                    NSLog("MyPet: 角色 %@ 的视觉包加载失败 %@ — %@", id, entry.url.path, error.localizedDescription)
+                }
             }
         }
 
