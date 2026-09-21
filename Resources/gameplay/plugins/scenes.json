@@ -1,0 +1,7 @@
+{
+  "id": "scenes", "groupID": "interaction",
+  "displayName": { "zh-Hans": "场景玩法", "en": "Scene Play" },
+  "order": 10, "implementationID": "scenes", "sceneIDs": ["idle_observe", "window_climb_and_peek"],
+  "actionFamilies": ["movement", "social", "window"], "propIDs": [], "inputSources": ["window-title", "accessibility", "ocr"],
+  "enabledByDefault": true, "surfaces": ["tray", "settings", "diagnostics"], "fallback": "idle-observe"
+}

@@ -1,0 +1,6 @@
+{
+  "groups": [
+    { "id": "desktop", "displayName": { "zh-Hans": "桌面环境", "en": "Desktop" }, "order": 10 },
+    { "id": "interaction", "displayName": { "zh-Hans": "互动", "en": "Interaction" }, "order": 20 }
+  ]
+}

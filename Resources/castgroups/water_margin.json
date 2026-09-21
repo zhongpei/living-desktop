@@ -1,0 +1,14 @@
+{
+  "id": "water_margin",
+  "categoryID": "classics",
+  "displayName": { "zh-Hans": "水浒传", "en": "Water Margin" },
+  "description": { "zh-Hans": "梁山人物、义气、保护与切磋关系组成的主题角色组。", "en": "A themed group of Liangshan characters, loyalty, protection, and rivalry." },
+  "memberIDs": ["song_jiang", "lu_zhishen", "lin_chong", "wu_song", "pan_jinlian"],
+  "entityIDs": [],
+  "defaultCastPackID": "water_margin",
+  "baseRelations": [
+    { "from": "lu_zhishen", "to": "song_jiang", "kind": "protects", "state": { "trust": 0.78, "respect": 0.8 } },
+    { "from": "wu_song", "to": "lin_chong", "kind": "teammate_of", "state": { "trust": 0.58, "respect": 0.7 } },
+    { "from": "wu_song", "to": "lu_zhishen", "kind": "rival_of", "state": { "tension": 0.48, "respect": 0.72 } }
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  "effects": [
+    {
+      "id": "window_crack",
+      "displayName": { "zh-Hans": "窗口裂痕", "en": "Window Crack" },
+      "description": { "zh-Hans": "保留在命中位置的透明玻璃裂痕", "en": "A transparent glass crack retained at the impact point" },
+      "anchor": "impact_point",
+      "ttlSeconds": 12,
+      "maxStack": 4,
+      "clickThrough": true,
+      "asset": "window_crack.webp",
+      "fallback": "geometry"
+    },
+    {
+      "id": "window_bullet_hole",
+      "displayName": { "zh-Hans": "窗口弹孔", "en": "Window Bullet Hole" },
+      "description": { "zh-Hans": "保留在命中位置的透明弹孔", "en": "A transparent bullet hole retained at the impact point" },
+      "anchor": "impact_point",
+      "ttlSeconds": 12,
+      "maxStack": 8,
+      "clickThrough": true,
+      "asset": "window_bullet_hole.webp",
+      "fallback": "geometry"
+    },
+    {
+      "id": "window_impact_flash",
+      "displayName": { "zh-Hans": "窗口冲击闪光", "en": "Window Impact Flash" },
+      "description": { "zh-Hans": "命中瞬间的短促冲击闪光", "en": "A brief impact flash at the hit point" },
+      "anchor": "impact_point",
+      "ttlSeconds": 0.35,
+      "maxStack": 6,
+      "clickThrough": true,
+      "fallback": "particles"
+    },
+    {
+      "id": "window_shards",
+      "displayName": { "zh-Hans": "窗口碎片", "en": "Window Shards" },
+      "description": { "zh-Hans": "从命中位置散开的短时碎片", "en": "Short-lived shards emitted from the impact point" },
+      "anchor": "impact_point",
+      "ttlSeconds": 1.2,
+      "maxStack": 4,
+      "clickThrough": true,
+      "fallback": "particles"
+    },
+    {
+      "id": "window_smoke",
+      "displayName": { "zh-Hans": "窗口烟雾", "en": "Window Smoke" },
+      "description": { "zh-Hans": "覆盖受损区域的短时烟雾", "en": "Temporary smoke over the damaged area" },
+      "anchor": "window_surface",
+      "ttlSeconds": 3,
+      "maxStack": 2,
+      "clickThrough": true,
+      "fallback": "particles"
+    }
+  ]
+}

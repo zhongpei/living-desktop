@@ -1,0 +1,234 @@
+{
+  "schema": "pet-asset-forge/props-v2",
+  "props": {
+    "book": {
+      "displayName": { "zh-Hans": "书", "en": "Book" },
+      "description": { "zh-Hans": "可阅读、拿取和递交的书", "en": "A book that can be read, held, and handed over" },
+      "scale": 0.26,
+      "qa": {
+        "margins": {
+          "left": 0.195,
+          "top": 0.457,
+          "right": 0.195,
+          "bottom": 0.066
+        },
+        "alpha_coverage": 0.186,
+        "ok": true
+      },
+      "attempt": 1,
+      "seed": 970516,
+      "prompt": "一摞三本书斜叠放，封面砖红、藏蓝、芥末黄三色，书脊朝外，简洁扁平插画风格，物件居中，无阴影，使用配置的纯绿色纯色幕布背景，背景铺满画布，只保留物件本体的清晰轮廓"
+    },
+    "chair": {
+      "displayName": { "zh-Hans": "小椅", "en": "Chair" },
+      "description": { "zh-Hans": "可放置和坐靠的小木椅", "en": "A small wooden chair for placing and sitting" },
+      "scale": 0.32,
+      "qa": {
+        "margins": {
+          "left": 0.289,
+          "top": 0.309,
+          "right": 0.293,
+          "bottom": 0.07
+        },
+        "alpha_coverage": 0.119,
+        "ok": true
+      },
+      "attempt": 1,
+      "seed": 952071,
+      "prompt": "一把原木色小矮椅，靠背、座面和四条细腿完整可见，简洁扁平插画风格，物件居中，无阴影，使用配置的纯绿色纯色幕布背景，背景铺满画布，只保留物件本体的清晰轮廓"
+    },
+    "pillow": {
+      "displayName": { "zh-Hans": "枕头", "en": "Pillow" },
+      "description": { "zh-Hans": "可抱持和休息的软枕", "en": "A soft pillow for holding and resting" },
+      "scale": 0.3,
+      "qa": {
+        "margins": {
+          "left": 0.199,
+          "top": 0.352,
+          "right": 0.199,
+          "bottom": 0.07
+        },
+        "alpha_coverage": 0.279,
+        "ok": true
+      },
+      "attempt": 1,
+      "seed": 990952,
+      "prompt": "一只没有任何图案和动物造型的鹅黄色方形抱枕，微微倾斜，边角圆润，简洁扁平插画风格，物件居中，无阴影，使用配置的纯绿色纯色幕布背景，背景铺满画布，只保留物件本体的清晰轮廓"
+    },
+    "apple": {
+      "displayName": { "zh-Hans": "苹果", "en": "Apple" },
+      "description": { "zh-Hans": "可拿取和食用的红苹果", "en": "A red apple that can be held and eaten" },
+      "scale": 0.16,
+      "qa": {
+        "margins": {
+          "left": 0.215,
+          "top": 0.312,
+          "right": 0.211,
+          "bottom": 0.074
+        },
+        "alpha_coverage": 0.221,
+        "ok": true
+      },
+      "attempt": 1,
+      "seed": 1001561,
+      "prompt": "一个红苹果带着一片绿叶和短果柄，简洁扁平插画风格，物件居中，无阴影，使用配置的纯绿色纯色幕布背景，背景铺满画布，只保留物件本体的清晰轮廓"
+    },
+    "ball": {
+      "displayName": { "zh-Hans": "毛线球", "en": "Yarn Ball" },
+      "description": { "zh-Hans": "可推动、抛掷和玩耍的毛线球", "en": "A yarn ball for pushing, throwing, and play" },
+      "scale": 0.2,
+      "qa": {
+        "margins": {
+          "left": 0.199,
+          "top": 0.484,
+          "right": 0.199,
+          "bottom": 0.07
+        },
+        "alpha_coverage": 0.143,
+        "ok": true
+      },
+      "attempt": 1,
+      "seed": 114974,
+      "prompt": "一团米色毛线球，尾端拖出一小段线头，简洁扁平插画风格，物件居中，无阴影，使用配置的纯绿色纯色幕布背景，背景铺满画布，只保留物件本体的清晰轮廓"
+    },
+    "coffee": {
+      "displayName": { "zh-Hans": "咖啡", "en": "Coffee" },
+      "description": { "zh-Hans": "可拿取和饮用的外带咖啡", "en": "Takeaway coffee that can be held and drunk" },
+      "scale": 0.2,
+      "qa": {
+        "margins": {
+          "left": 0.266,
+          "top": 0.309,
+          "right": 0.266,
+          "bottom": 0.07
+        },
+        "alpha_coverage": 0.207,
+        "ok": true
+      },
+      "attempt": 1,
+      "seed": 367329,
+      "prompt": "一只白色外带咖啡杯带杯套，简洁扁平插画风格，物件居中，无阴影，使用配置的纯绿色纯色幕布背景，背景铺满画布，只保留物件本体的清晰轮廓"
+    },
+    "headphone": {
+      "displayName": { "zh-Hans": "耳机", "en": "Headphones" },
+      "description": { "zh-Hans": "可拿取和使用的头戴式耳机", "en": "Over-ear headphones that can be held and used" },
+      "scale": 0.22,
+      "qa": {
+        "margins": {
+          "left": 0.227,
+          "top": 0.309,
+          "right": 0.23,
+          "bottom": 0.07
+        },
+        "alpha_coverage": 0.124,
+        "ok": true
+      },
+      "attempt": 1,
+      "seed": 464262,
+      "prompt": "一副深棕色头戴式耳机，简洁扁平插画风格，物件居中，无阴影，使用配置的纯绿色纯色幕布背景，背景铺满画布，只保留物件本体的清晰轮廓"
+    },
+    "laptop": {
+      "displayName": { "zh-Hans": "笔记本电脑", "en": "Laptop" },
+      "description": { "zh-Hans": "可查看和打字的笔记本电脑", "en": "A laptop for viewing and typing" },
+      "scale": 0.36,
+      "qa": {
+        "margins": {
+          "left": 0.195,
+          "top": 0.484,
+          "right": 0.199,
+          "bottom": 0.066
+        },
+        "alpha_coverage": 0.202,
+        "ok": true
+      },
+      "attempt": 1,
+      "seed": 792859,
+      "prompt": "一台打开的银灰色笔记本电脑，微微侧面对着观众，屏幕暗着，简洁扁平插画风格，物件居中，无阴影，使用配置的纯绿色纯色幕布背景，背景铺满画布，只保留物件本体的清晰轮廓"
+    },
+    "phone": {
+      "displayName": { "zh-Hans": "手机", "en": "Phone" },
+      "description": { "zh-Hans": "可查看和使用的智能手机", "en": "A smartphone that can be viewed and used" },
+      "scale": 0.18,
+      "qa": {
+        "margins": {
+          "left": 0.199,
+          "top": 0.492,
+          "right": 0.199,
+          "bottom": 0.07
+        },
+        "alpha_coverage": 0.132,
+        "ok": true
+      },
+      "attempt": 1,
+      "seed": 776554,
+      "prompt": "一部深蓝色智能手机平放，屏幕朝上微亮，简洁扁平插画风格，物件居中，无阴影，使用配置的纯绿色纯色幕布背景，背景铺满画布，只保留物件本体的清晰轮廓"
+    },
+    "popcorn": {
+      "displayName": { "zh-Hans": "爆米花", "en": "Popcorn" },
+      "description": { "zh-Hans": "可拿取和分享的爆米花", "en": "Popcorn that can be held and shared" },
+      "scale": 0.26,
+      "qa": {
+        "margins": {
+          "left": 0.258,
+          "top": 0.309,
+          "right": 0.258,
+          "bottom": 0.07
+        },
+        "alpha_coverage": 0.211,
+        "ok": true
+      },
+      "attempt": 1,
+      "seed": 1016453,
+      "prompt": "一桶红白条纹爆米花桶，爆米花满满冒出，简洁扁平插画风格，物件居中，无阴影，使用配置的纯绿色纯色幕布背景，背景铺满画布，只保留物件本体的清晰轮廓"
+    },
+    "tea": {
+      "displayName": { "zh-Hans": "茶", "en": "Tea" },
+      "description": { "zh-Hans": "可拿取和饮用的热茶", "en": "Hot tea that can be held and drunk" },
+      "scale": 0.2,
+      "qa": {
+        "margins": {
+          "left": 0.203,
+          "top": 0.422,
+          "right": 0.203,
+          "bottom": 0.074
+        },
+        "alpha_coverage": 0.212,
+        "ok": true
+      },
+      "attempt": 1,
+      "seed": 644832,
+      "prompt": "一只白瓷茶杯，杯中琥珀色茶汤，杯口一缕蒸汽，简洁扁平插画风格，物件居中，无阴影，使用配置的纯绿色纯色幕布背景，背景铺满画布，只保留物件本体的清晰轮廓"
+    },
+    "umbrella": {
+      "displayName": { "zh-Hans": "雨伞", "en": "Umbrella" },
+      "description": { "zh-Hans": "可拿取、撑开和收起的长柄伞", "en": "A long-handled umbrella that can be held and opened" },
+      "scale": 0.28,
+      "qa": {
+        "margins": {
+          "left": 0.195,
+          "top": 0.406,
+          "right": 0.195,
+          "bottom": 0.066
+        },
+        "alpha_coverage": 0.074,
+        "ok": true
+      },
+      "attempt": 1,
+      "seed": 853352,
+      "prompt": "一把收拢的藏青色长柄雨伞，伞柄朝下竖直放置，简洁扁平插画风格，物件居中，无阴影，使用配置的纯绿色纯色幕布背景，背景铺满画布，只保留物件本体的清晰轮廓"
+    }
+  },
+  "failed": [],
+  "failure_reasons": {},
+  "batch_files": [
+    "pet-asset-forge/characters/props_kit/qa/props-batch-a1.json",
+    "pet-asset-forge/characters/props_kit/qa/props-batch-a1.json"
+  ],
+  "background_name": "纯绿色",
+  "background_rgb": [
+    0,
+    255,
+    70
+  ],
+  "generated_at": "2026-09-20T22:09:57"
+}

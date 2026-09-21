@@ -1,0 +1,7 @@
+{
+  "id": "foreground-follow", "groupID": "desktop",
+  "displayName": { "zh-Hans": "跟随前台应用", "en": "Follow Foreground App" },
+  "order": 10, "implementationID": "foreground-follow", "sceneIDs": [],
+  "actionFamilies": ["movement"], "propIDs": [], "inputSources": ["window-title"],
+  "enabledByDefault": true, "surfaces": ["tray", "settings", "diagnostics"], "fallback": "stay-on-current-display"
+}

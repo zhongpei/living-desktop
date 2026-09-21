@@ -1,0 +1,7 @@
+{
+  "id": "window-pull", "groupID": "desktop",
+  "displayName": { "zh-Hans": "拉扯窗口", "en": "Pull Windows" },
+  "order": 30, "implementationID": "window-pull", "sceneIDs": [],
+  "actionFamilies": ["window", "destruction"], "propIDs": [], "inputSources": ["accessibility"],
+  "enabledByDefault": false, "surfaces": ["tray", "settings", "diagnostics"], "fallback": "disable"
+}

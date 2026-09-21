@@ -1,0 +1,16 @@
+{
+  "id": "journey_west",
+  "categoryID": "classics",
+  "displayName": { "zh-Hans": "西游记", "en": "Journey to the West" },
+  "description": { "zh-Hans": "取经队伍、护法和神话互动组成的主题角色组。", "en": "A themed group of pilgrims, guardians, and mythic interactions." },
+  "memberIDs": ["tang_sanzang", "sun_wukong", "zhu_bajie", "sha_wujing", "guanyin"],
+  "entityIDs": [],
+  "defaultCastPackID": "journey_west",
+  "baseRelations": [
+    { "from": "sun_wukong", "to": "tang_sanzang", "kind": "protects", "state": { "trust": 0.72, "respect": 0.68 } },
+    { "from": "zhu_bajie", "to": "sun_wukong", "kind": "rival_of", "state": { "tension": 0.55, "respect": 0.45 } },
+    { "from": "sha_wujing", "to": "tang_sanzang", "kind": "teammate_of", "state": { "trust": 0.75 } },
+    { "from": "guanyin", "to": "tang_sanzang", "kind": "protects", "state": { "trust": 0.82, "respect": 0.86 } },
+    { "from": "guanyin", "to": "sun_wukong", "kind": "teammate_of", "state": { "trust": 0.62, "respect": 0.78 } }
+  ]
+}

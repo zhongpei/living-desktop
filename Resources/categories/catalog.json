@@ -1,0 +1,7 @@
+{
+  "categories": [
+    { "id": "classics", "displayName": { "zh-Hans": "古典文学", "en": "Classics" }, "order": 10 },
+    { "id": "anime", "displayName": { "zh-Hans": "动漫", "en": "Anime" }, "order": 20 },
+    { "id": "original", "displayName": { "zh-Hans": "原创角色", "en": "Original" }, "order": 30 }
+  ]
+}

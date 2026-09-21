@@ -1,0 +1,32 @@
+{
+  "id": "journey_west",
+  "groupID": "journey_west",
+  "displayName": { "zh-Hans": "西游记小队", "en": "Journey to the West" },
+  "description": { "zh-Hans": "师徒四人与观音菩萨以护送、协作、争执和点化组成的预制剧组。", "en": "A pilgrimage cast built around escort, cooperation, conflict, and guidance." },
+  "members": [
+    { "id": "tang_sanzang", "kind": "character", "displayName": { "zh-Hans": "唐三藏", "en": "Tang Sanzang" }, "description": { "zh-Hans": "取经团队领袖", "en": "Leader of the pilgrimage" }, "visualPackID": "tang_sanzang", "profileID": "tang_sanzang", "role": "leader", "entryProfile": "cloud", "exitProfile": "cloud", "windowPerchProfile": "climb_perch", "capabilities": ["window", "prop", "social"] },
+    { "id": "sun_wukong", "kind": "character", "displayName": { "zh-Hans": "孙悟空", "en": "Sun Wukong" }, "description": { "zh-Hans": "使用金箍棒的战斗护卫", "en": "Combat guardian wielding the golden staff" }, "visualPackID": "sun_wukong", "profileID": "sun_wukong", "role": "guardian", "entryProfile": "cloud", "exitProfile": "cloud", "windowPerchProfile": "swing_perch", "capabilities": ["window", "prop", "social", "combat"] },
+    { "id": "zhu_bajie", "kind": "character", "displayName": { "zh-Hans": "猪八戒", "en": "Zhu Bajie" }, "description": { "zh-Hans": "使用九齿钉耙的喜剧战斗成员", "en": "Comic combat member wielding a nine-tooth rake" }, "visualPackID": "zhu_bajie", "profileID": "zhu_bajie", "role": "comic", "entryProfile": "cloud", "exitProfile": "cloud", "windowPerchProfile": "climb_perch", "capabilities": ["window", "prop", "social", "combat"] },
+    { "id": "sha_wujing", "kind": "character", "displayName": { "zh-Hans": "沙悟净", "en": "Sha Wujing" }, "description": { "zh-Hans": "持月牙宝杖的稳定护卫", "en": "Steady combat guardian with a crescent staff" }, "visualPackID": "sha_wujing", "profileID": "sha_wujing", "role": "support", "entryProfile": "cloud", "exitProfile": "cloud", "windowPerchProfile": "climb_perch", "capabilities": ["window", "prop", "social", "combat"] },
+    { "id": "guanyin", "kind": "character", "displayName": { "zh-Hans": "观音菩萨", "en": "Guanyin" }, "description": { "zh-Hans": "净瓶杨柳的指引者", "en": "Guide carrying the vase and willow" }, "visualPackID": "guanyin", "profileID": "guanyin", "role": "guide", "entryProfile": "teleport", "exitProfile": "teleport", "windowPerchProfile": "direct_perch", "capabilities": ["window", "prop", "social"] }
+  ],
+  "props": [
+    { "id": "sacred_scroll", "displayName": { "zh-Hans": "经卷", "en": "Sacred Scroll" }, "description": { "zh-Hans": "取经团队守护和传递的经卷", "en": "The scripture protected and handed off by the pilgrims" }, "visualPackID": "book" }
+  ],
+  "relations": [],
+  "slots": [
+    { "entityID": "sacred_scroll", "slotID": "surface", "capacity": 1 },
+    { "entityID": "tang_sanzang", "slotID": "side", "capacity": 1 }
+  ],
+  "episodes": [
+    { "id": "west_shared_scroll", "title": "共同守护经卷", "participants": ["tang_sanzang", "sun_wukong", "zhu_bajie", "sha_wujing"], "prerequisites": [], "beats": [
+      { "id": "scroll", "actorIDs": ["tang_sanzang"], "intent": "read", "durationTicks": 3, "targetID": "sacred_scroll", "slotID": "surface", "claims": ["body", "manipulator"], "occupySlotOnSuccess": true, "releaseSlotOnSuccess": true, "effectsOnSuccess": [] },
+      { "id": "hand_off", "actorIDs": ["tang_sanzang"], "intent": "give", "durationTicks": 2, "targetID": "sacred_scroll", "slotID": "surface", "claims": ["body", "manipulator"], "occupySlotOnSuccess": true, "releaseSlotOnSuccess": true, "handoff": { "propID": "sacred_scroll", "fromActorID": "tang_sanzang", "toActorID": "sun_wukong", "fromSlotID": "surface", "toSlotID": "surface", "durationTicks": 4 }, "effectsOnSuccess": [] },
+      { "id": "receive", "actorIDs": ["sun_wukong"], "intent": "receive", "durationTicks": 2, "targetID": "sacred_scroll", "slotID": "surface", "claims": ["body", "manipulator"], "occupySlotOnSuccess": true, "effectsOnSuccess": [] },
+      { "id": "gather", "actorIDs": ["tang_sanzang", "sun_wukong", "zhu_bajie", "sha_wujing"], "intent": "greet_other", "durationTicks": 3, "effectsOnSuccess": [] },
+      { "id": "argue", "actorIDs": ["sun_wukong", "zhu_bajie"], "intent": "argue", "durationTicks": 4, "effectsOnSuccess": [ { "kind": "relationDelta", "relationKey": "zhu_bajie/sun_wukong/tension", "delta": 0.05 } ] },
+      { "id": "guide", "actorIDs": ["guanyin", "tang_sanzang"], "intent": "comfort", "durationTicks": 3, "effectsOnSuccess": [ { "kind": "setFact", "fact": "pilgrimage_guidance_received", "factTTL": 120 } ] },
+      { "id": "guard_master", "actorIDs": ["sun_wukong"], "intent": "protect", "durationTicks": 3, "targetID": "tang_sanzang", "slotID": "side", "claims": ["body"], "occupySlotOnSuccess": true, "effectsOnSuccess": [] }
+    ], "cooldownTicks": 60 }
+  ]
+}

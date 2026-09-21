@@ -1,0 +1,32 @@
+{
+  "kinds": [
+    {
+      "id": "teammate_of",
+      "displayName": { "zh-Hans": "队友", "en": "Teammate" },
+      "description": { "zh-Hans": "双方以合作和共同目标为基础的关系。", "en": "A cooperative relationship based on shared goals." },
+      "direction": "symmetric",
+      "allowedStateFields": ["trust", "respect", "affection", "tension"]
+    },
+    {
+      "id": "rival_of",
+      "displayName": { "zh-Hans": "竞争对手", "en": "Rival" },
+      "description": { "zh-Hans": "双方存在竞争、较量或持续张力。", "en": "A competitive relationship with challenge or persistent tension." },
+      "direction": "symmetric",
+      "allowedStateFields": ["trust", "respect", "affection", "tension"]
+    },
+    {
+      "id": "protects",
+      "displayName": { "zh-Hans": "保护", "en": "Protects" },
+      "description": { "zh-Hans": "来源角色主动保护目标角色。", "en": "The source character actively protects the target." },
+      "direction": "directed",
+      "allowedStateFields": ["trust", "respect", "affection", "tension"]
+    },
+    {
+      "id": "pilot_of",
+      "displayName": { "zh-Hans": "驾驶", "en": "Pilot of" },
+      "description": { "zh-Hans": "来源角色是目标机甲的驾驶员。", "en": "The source character pilots the target mech." },
+      "direction": "directed",
+      "allowedStateFields": ["trust", "readiness"]
+    }
+  ]
+}

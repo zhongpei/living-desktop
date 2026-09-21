@@ -1,0 +1,16 @@
+{
+  "id": "eva",
+  "categoryID": "anime",
+  "displayName": { "zh-Hans": "EVA", "en": "EVA" },
+  "description": { "zh-Hans": "驾驶员、机甲和出击关系组成的主题角色组。", "en": "A themed group of pilots, mechs, and launch relationships." },
+  "memberIDs": ["shinji", "rei", "asuka"],
+  "entityIDs": ["eva01", "eva00", "eva02"],
+  "defaultCastPackID": "eva",
+  "baseRelations": [
+    { "from": "shinji", "to": "eva01", "kind": "pilot_of", "state": { "readiness": 0.65 } },
+    { "from": "rei", "to": "eva00", "kind": "pilot_of", "state": { "readiness": 0.7 } },
+    { "from": "asuka", "to": "eva02", "kind": "pilot_of", "state": { "readiness": 0.8 } },
+    { "from": "asuka", "to": "shinji", "kind": "rival_of", "state": { "tension": 0.65, "respect": 0.42 } },
+    { "from": "rei", "to": "shinji", "kind": "protects", "state": { "trust": 0.5 } }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "id": "perching", "groupID": "desktop",
+  "displayName": { "zh-Hans": "栖息在窗口上", "en": "Perch on Windows" },
+  "order": 20, "implementationID": "perching", "sceneIDs": ["window_climb_and_peek"],
+  "actionFamilies": ["window"], "propIDs": [], "inputSources": ["window-title"],
+  "enabledByDefault": true, "surfaces": ["tray", "settings", "action-ring", "diagnostics"], "fallback": "floor-idle"
+}

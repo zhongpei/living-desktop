@@ -1,0 +1,14 @@
+{
+  "id": "dream_red_chamber",
+  "categoryID": "classics",
+  "displayName": { "zh-Hans": "红楼梦", "en": "Dream of the Red Chamber" },
+  "description": { "zh-Hans": "围绕大观园人物、诗词和细腻关系展开的主题角色组。", "en": "A themed group centered on Grand View Garden characters, poetry, and subtle relationships." },
+  "memberIDs": ["jia_baoyu", "lin_daiyu", "xue_baochai", "wang_xifeng"],
+  "entityIDs": [],
+  "defaultCastPackID": "dream_red_chamber",
+  "baseRelations": [
+    { "from": "jia_baoyu", "to": "lin_daiyu", "kind": "teammate_of", "state": { "affection": 0.7, "tension": 0.35 } },
+    { "from": "xue_baochai", "to": "jia_baoyu", "kind": "protects", "state": { "trust": 0.6, "respect": 0.72 } },
+    { "from": "lin_daiyu", "to": "xue_baochai", "kind": "rival_of", "state": { "tension": 0.5, "respect": 0.58 } }
+  ]
+}

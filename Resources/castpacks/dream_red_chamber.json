@@ -1,0 +1,27 @@
+{
+  "id": "dream_red_chamber",
+  "groupID": "dream_red_chamber",
+  "displayName": { "zh-Hans": "红楼梦小组", "en": "Dream of the Red Chamber" },
+  "description": { "zh-Hans": "以诗、茶、阅读和关系张力为核心的屏幕剧组。", "en": "A cast centered on poetry, tea, reading, and relationship tension." },
+  "members": [
+    { "id": "jia_baoyu", "kind": "character", "displayName": { "zh-Hans": "贾宝玉", "en": "Jia Baoyu" }, "description": { "zh-Hans": "爱诗与热闹的成员", "en": "Poetry-loving social member" }, "profileID": "jia_baoyu", "role": "poet", "entryProfile": "door", "exitProfile": "door", "windowPerchProfile": "climb_perch", "capabilities": ["window", "prop", "social"] },
+    { "id": "lin_daiyu", "kind": "character", "displayName": { "zh-Hans": "林黛玉", "en": "Lin Daiyu" }, "description": { "zh-Hans": "敏锐的诗词阅读者", "en": "Perceptive reader and poet" }, "visualPackID": "lin_daiyu", "profileID": "lin_daiyu", "role": "reader", "entryProfile": "door", "exitProfile": "door", "windowPerchProfile": "lean_window", "capabilities": ["window", "prop", "social"] },
+    { "id": "xue_baochai", "kind": "character", "displayName": { "zh-Hans": "薛宝钗", "en": "Xue Baochai" }, "description": { "zh-Hans": "沉稳的建议者", "en": "Composed advisor" }, "profileID": "xue_baochai", "role": "advisor", "entryProfile": "door", "exitProfile": "door", "windowPerchProfile": "climb_perch", "capabilities": ["window", "prop", "social"] },
+    { "id": "wang_xifeng", "kind": "character", "displayName": { "zh-Hans": "王熙凤", "en": "Wang Xifeng" }, "description": { "zh-Hans": "精明的组织者", "en": "Sharp and capable organizer" }, "profileID": "wang_xifeng", "role": "organizer", "entryProfile": "door", "exitProfile": "door", "windowPerchProfile": "climb_perch", "capabilities": ["window", "prop", "social"] }
+  ],
+  "props": [
+    { "id": "poetry_book", "displayName": { "zh-Hans": "诗集", "en": "Poetry Book" }, "description": { "zh-Hans": "窗边读诗和递书使用的诗集", "en": "Poetry book used for window-side reading and handoffs" }, "visualPackID": "book" }
+  ],
+  "relations": [],
+  "slots": [
+    { "entityID": "poetry_book", "slotID": "pages", "capacity": 1 },
+    { "entityID": "lin_daiyu", "slotID": "side", "capacity": 1 }
+  ],
+  "episodes": [
+    { "id": "red_chamber_reading", "title": "窗边读诗", "participants": ["jia_baoyu", "lin_daiyu"], "prerequisites": [], "beats": [
+      { "id": "book", "actorIDs": ["lin_daiyu"], "intent": "read", "durationTicks": 5, "targetID": "poetry_book", "slotID": "pages", "claims": ["body", "manipulator"], "occupySlotOnSuccess": true, "effectsOnSuccess": [] },
+      { "id": "poem", "actorIDs": ["jia_baoyu", "lin_daiyu"], "intent": "talk", "durationTicks": 4, "effectsOnSuccess": [ { "kind": "relationDelta", "relationKey": "jia_baoyu/lin_daiyu/affection", "delta": 0.02 } ] },
+      { "id": "stay_close", "actorIDs": ["jia_baoyu"], "intent": "comfort", "durationTicks": 3, "targetID": "lin_daiyu", "slotID": "side", "claims": ["body"], "occupySlotOnSuccess": true, "effectsOnSuccess": [] }
+    ], "cooldownTicks": 60 }
+  ]
+}

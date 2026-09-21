@@ -1,0 +1,7 @@
+{
+  "id": "speech", "groupID": "interaction",
+  "displayName": { "zh-Hans": "让宠物说话", "en": "Pet Speech" },
+  "order": 30, "implementationID": "speech", "sceneIDs": [],
+  "actionFamilies": ["social"], "propIDs": [], "inputSources": ["chat-content"],
+  "enabledByDefault": true, "surfaces": ["tray", "settings", "diagnostics"], "fallback": "silent-performance"
+}

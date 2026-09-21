@@ -1,0 +1,60 @@
+// swift-tools-version:5.9
+import PackageDescription
+
+let package = Package(
+    name: "LivingDesktop",
+    platforms: [
+        // macOS 14：mlx-swift-lm（本地大脑运行时）的下限要求（brain-local.md §5.1）
+        .macOS(.v14)
+    ],
+    dependencies: [
+        // 本地 Student Brain（brain-local.md）。Swift 6.4 可构建 mlx-swift 0.31.6；
+        // 固定 revision，确保 MLXGuidedGeneration/XGrammar API 可复现。
+        .package(
+            url: "https://github.com/ml-explore/mlx-swift-lm.git",
+            revision: "c6446cf7bfb7cea76408013b614d4b2c530eaa03"),
+        .package(url: "https://github.com/ml-explore/mlx-swift.git", exact: "0.31.6"),
+        .package(url: "https://github.com/huggingface/swift-transformers.git", from: "1.3.0"),
+    ],
+    targets: [
+        .target(
+            name: "MyPetCore",
+            path: "Sources/MyPetCore"
+        ),
+        // Needle 3 C 接口：needle.h + shim（空实现，只为生成 C 模块），
+        // 静态库 libneedle.a 由 MyPet 目标的 linkerSettings 链接。
+        .target(
+            name: "CNeedle",
+            path: "Sources/CNeedle",
+            exclude: ["libneedle.a"]
+        ),
+        .executableTarget(
+            name: "MyPet",
+            dependencies: [
+                "MyPetCore",
+                "CNeedle",
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                .product(name: "MLXVLM", package: "mlx-swift-lm"),
+                .product(name: "MLXHuggingFace", package: "mlx-swift-lm"),
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "Tokenizers", package: "swift-transformers"),
+            ],
+            path: "Sources/MyPet",
+            linkerSettings: [
+                .linkedLibrary("needle"),
+                .linkedLibrary("c++"), // libneedle.a 是 C++ 编译产物
+                .unsafeFlags(["-L", "Sources/CNeedle"]),
+            ]
+        ),
+        .testTarget(
+            name: "MyPetTests",
+            dependencies: ["MyPet", "MyPetCore"],
+            path: "Tests/MyPetTests"
+        ),
+        .testTarget(
+            name: "MyPetCoreTests",
+            dependencies: ["MyPetCore"],
+            path: "Tests/MyPetCoreTests"
+        )
+    ]
+)

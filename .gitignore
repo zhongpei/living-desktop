@@ -1,0 +1,6 @@
+.DS_Store
+.build/
+.swiftpm/
+dist/
+Resources/needle3.cact
+*.log
