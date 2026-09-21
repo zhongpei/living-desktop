@@ -1,6 +1,7 @@
 import CoreGraphics
 import XCTest
 import MyPetCore
+import MyPetContent
 
 @testable import MyPet
 import MyPetPlatform

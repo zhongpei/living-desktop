@@ -1,21 +1,6 @@
 import CoreGraphics
 import Foundation
-
-public struct SpriteClip {
-    public let frames: [CGImage]
-    public let fps: Double
-    public let looping: Bool
-
-    public init(frames: [CGImage], fps: Double, looping: Bool) {
-        self.frames = frames
-        self.fps = fps
-        self.looping = looping
-    }
-}
-
-public protocol SpriteClipSource {
-    func spriteClip(for name: String) -> SpriteClip?
-}
+import MyPetContent
 
 /// Pure sprite timeline. Asset discovery and decoding stay behind
 /// SpriteClipSource; the renderer only advances already-resolved frames.

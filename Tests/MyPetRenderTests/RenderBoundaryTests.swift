@@ -1,4 +1,5 @@
 import CoreGraphics
+import MyPetContent
 import MyPetCore
 @testable import MyPetRender
 import XCTest

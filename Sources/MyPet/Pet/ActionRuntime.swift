@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import MyPetContent
 
 /// 动作运行时：一切「下一步做什么」指令（verbs）的唯一入口。
 /// 大脑（过渡期 RandomBrain，将来 Needle）、菜单、前台跟随都只说 verbs；

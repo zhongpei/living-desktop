@@ -1,4 +1,5 @@
 import AppKit
+import MyPetContent
 import MyPetCore
 import MyPetPlatform
 

@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 import CoreText
+import MyPetContent
 import MyPetCore
 import MyPetPlatform
 import MyPetRender

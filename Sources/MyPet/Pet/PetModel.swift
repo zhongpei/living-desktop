@@ -354,8 +354,7 @@ final class PetModel {
         return PetMath.perchFeetY(
             topY: bounds.minY,
             petHeight: displayHeight,
-            workTop: workTop,
-            baselineRatio: ClipLibrary.baselineRatio
+            workTop: workTop
         )
     }
 

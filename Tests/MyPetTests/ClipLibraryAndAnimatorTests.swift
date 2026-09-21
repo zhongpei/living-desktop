@@ -3,6 +3,7 @@ import XCTest
 
 @testable import MyPet
 import MyPetRender
+import MyPetContent
 
 final class ClipLibraryAndAnimatorTests: XCTestCase {
 

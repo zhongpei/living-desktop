@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import MyPetContent
 
 /// 大脑接缝：PetModel 执行动作，谁决定「做什么」由这一层回答。
 /// 现在由 RandomBrain 加权随机填充；将来接大脑模型（Needle）时，

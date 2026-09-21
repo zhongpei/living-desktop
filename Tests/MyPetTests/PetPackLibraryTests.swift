@@ -1,5 +1,6 @@
 import AppKit
 import XCTest
+import MyPetContent
 import MyPetCore
 
 @testable import MyPet

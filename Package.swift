@@ -15,6 +15,7 @@ let package = Package(
         .library(name: "MyPetCore", targets: ["MyPetCore"]),
         .library(name: "MyPetAI", targets: ["MyPetAI"]),
         .library(name: "MyPetPlatform", targets: ["MyPetPlatform"]),
+        .library(name: "MyPetContent", targets: ["MyPetContent"]),
         .library(name: "MyPetRender", targets: ["MyPetRender"]),
         .library(name: "CNeedle", targets: ["CNeedle"]),
         .executable(name: "LivingDesktop", targets: ["MyPet"]),
@@ -62,8 +63,12 @@ let package = Package(
             path: "Sources/MyPetPlatform"
         ),
         .target(
+            name: "MyPetContent",
+            path: "Sources/MyPetContent"
+        ),
+        .target(
             name: "MyPetRender",
-            dependencies: ["MyPetCore"],
+            dependencies: ["MyPetCore", "MyPetContent"],
             path: "Sources/MyPetRender"
         ),
         .executableTarget(
@@ -72,13 +77,14 @@ let package = Package(
                 "MyPetCore",
                 "MyPetAI",
                 "MyPetPlatform",
+                "MyPetContent",
                 "MyPetRender",
             ],
             path: "Sources/MyPet"
         ),
         .testTarget(
             name: "MyPetTests",
-            dependencies: ["MyPet", "MyPetCore", "MyPetPlatform", "MyPetRender"],
+            dependencies: ["MyPet", "MyPetCore", "MyPetPlatform", "MyPetContent", "MyPetRender"],
             path: "Tests/MyPetTests"
         ),
         .testTarget(
@@ -98,8 +104,13 @@ let package = Package(
         ),
         .testTarget(
             name: "MyPetRenderTests",
-            dependencies: ["MyPetRender", "MyPetCore"],
+            dependencies: ["MyPetRender", "MyPetCore", "MyPetContent"],
             path: "Tests/MyPetRenderTests"
+        ),
+        .testTarget(
+            name: "MyPetContentTests",
+            dependencies: ["MyPetContent"],
+            path: "Tests/MyPetContentTests"
         )
     ]
 )
