@@ -1,4 +1,5 @@
 import Foundation
+import MyPetAI
 import MyPetCore
 
 // GoalBrain —— 高层目标决策的统一接口：
@@ -223,6 +224,10 @@ final class TeacherBrain: GoalBrain {
 
         var isComplete: Bool {
             !baseURL.isEmpty && !model.isEmpty
+        }
+
+        var endpointConfiguration: OpenAIEndpointConfiguration {
+            OpenAIEndpointConfiguration(baseURL: baseURL, apiKey: apiKey)
         }
     }
 
@@ -467,7 +472,7 @@ final class TeacherBrain: GoalBrain {
     // MARK: 传输（OpenAI 兼容）
 
     static func endpoint(_ config: Config, path: String) -> URL? {
-        URL(string: config.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + path)
+        OpenAIHTTPClient.endpoint(config.endpointConfiguration, path: path)
     }
 
     /// Optional 字段进 JSON 必须显式 NSNull，否则 JSONSerialization 抛错。
@@ -477,34 +482,9 @@ final class TeacherBrain: GoalBrain {
     static func perform(config: Config, request: [String: Any],
                         session: URLSession = .shared,
                         completion: @escaping (String?) -> Void) -> URLSessionTask? {
-        guard let url = endpoint(config, path: "/chat/completions") else {
-            completion(nil)
-            return nil
-        }
-        var req = URLRequest(url: url, timeoutInterval: 30)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if !config.apiKey.isEmpty {
-            req.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
-        }
-        req.httpBody = try? JSONSerialization.data(withJSONObject: request)
-        let task = session.dataTask(with: req) { data, _, _ in
-            guard let data,
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let choices = obj["choices"] as? [[String: Any]],
-                  let message = choices.first?["message"] as? [String: Any] else {
-                completion(nil)
-                return
-            }
-            if let content = message["content"] as? String,
-               !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                completion(content)
-            } else {
-                completion(message["reasoning_content"] as? String)
-            }
-        }
-        task.resume()
-        return task
+        OpenAIHTTPClient.complete(
+            configuration: config.endpointConfiguration,
+            request: request, session: session, completion: completion)
     }
 
     // MARK: 设置窗探测 / 测试
@@ -512,33 +492,14 @@ final class TeacherBrain: GoalBrain {
     /// GET /models —— 探测端点上的可用模型列表。返回 (模型 id, 错误信息)。
     static func probeModels(config: Config, session: URLSession = .shared,
                             completion: @escaping ([String], String?) -> Void) {
-        guard let url = endpoint(config, path: "/models") else {
-            completion([], "baseURL 无效")
-            return
-        }
-        var req = URLRequest(url: url, timeoutInterval: 8)
-        req.httpMethod = "GET"
-        if !config.apiKey.isEmpty {
-            req.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
-        }
-        session.dataTask(with: req) { data, _, error in
-            guard error == nil, let data,
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                DispatchQueue.main.async { completion([], error?.localizedDescription ?? "无法连接") }
-                return
-            }
-            let ids: [String]
-            if let list = obj["data"] as? [[String: Any]] {
-                ids = list.compactMap { $0["id"] as? String }
-            } else if let list = obj["models"] as? [[String: Any]] {
-                ids = list.compactMap { $0["name"] as? String }  // Ollama 风格
-            } else {
-                ids = []
-            }
+        OpenAIHTTPClient.probeModels(
+            configuration: config.endpointConfiguration, session: session
+        ) { ids, error in
             DispatchQueue.main.async {
-                completion(ids, ids.isEmpty ? "端点可达但没有返回模型" : nil)
+                let message = error?.localizedDescription ?? (ids.isEmpty ? "端点可达但没有返回模型" : nil)
+                completion(ids, message)
             }
-        }.resume()
+        }
     }
 
     /// 一轮最小对话测试。返回 (回复摘要, 错误)。

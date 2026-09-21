@@ -1,38 +1,6 @@
 import Foundation
-import MLXLMCommon
-import MLXVLM
-import MLXHuggingFace
+import MyPetAI
 import MyPetCore
-import Tokenizers // AutoTokenizer：完整的 applyChatTemplate（含 addGenerationPrompt）
-
-struct BrainMemoryLRU<Value> {
-    private(set) var values: [String: Value] = [:]
-    private(set) var order: [String] = []
-
-    mutating func value(for key: String) -> Value? {
-        guard let value = values[key] else { return nil }
-        order.removeAll { $0 == key }
-        order.append(key)
-        return value
-    }
-
-    mutating func insert(_ value: Value, for key: String, capacity: Int) {
-        trim(capacity: capacity)
-        guard capacity > 0 else { return }
-        values[key] = value
-        order.removeAll { $0 == key }
-        order.append(key)
-        while order.count > capacity {
-            values.removeValue(forKey: order.removeFirst())
-        }
-    }
-
-    mutating func trim(capacity: Int) {
-        while order.count > max(0, capacity) {
-            values.removeValue(forKey: order.removeFirst())
-        }
-    }
-}
 
 // LocalBrain —— 本地决策脑：端侧 MLX Qwen3.5-0.8B（brain-local.md §5.2/§5.3）。
 //
@@ -101,10 +69,7 @@ actor LocalBrain: GoalBrain {
     private nonisolated let configurationStore = ConfigurationStore()
 
     // ---- 运行状态（actor 隔离）----
-    private var container: ModelContainer?
-    /// swift-transformers tokenizer（applyChatTemplate 全量 API，见文件头说明）。
-    private var brainTokenizer: (any Tokenizers.Tokenizer)?
-    private var promptStates = BrainMemoryLRU<BrainCacheManager.PromptState>()
+    private let runtime = MLXGenerationRuntime()
     private var stats = DecisionStats()
 
     init() {}
@@ -131,8 +96,8 @@ actor LocalBrain: GoalBrain {
         guard LocalBrainModel.isInstalled, gate.claim() else { return false }
         let configuration = configurationStore.get()
         let task = Task {
+            defer { gate.release() }
             let outcome = await self.plan(input: input, configuration: configuration)
-            gate.release()
             await MainActor.run {
                 completion(outcome.decision)
             }
@@ -167,6 +132,7 @@ actor LocalBrain: GoalBrain {
                                 dialogue: dialogue, traceID: traceID,
                                 userText: userText.map { String($0.prefix(120)) })
         Task {
+            defer { gate.release() }
             let reply = await self.speak(input: input, configuration: configuration)
             await MainActor.run {
                 completion(reply)
@@ -189,6 +155,7 @@ actor LocalBrain: GoalBrain {
                                   latency: Date().timeIntervalSince(t0),
                                   error: "本地决策脑正在处理另一项请求")
         }
+        defer { gate.release() }
         let world = BrainContextSnapshot(
             capturedAt: Date().timeIntervalSince1970,
             activeApp: "MyPet",
@@ -233,9 +200,6 @@ actor LocalBrain: GoalBrain {
         let profile = BrainProfile.resolved()
         do {
             try Task.checkCancellation()
-            let state = try await ensureReady(petID: input.petID, personality: input.personality,
-                                              profile: profile)
-            guard let tokenizer = brainTokenizer else { throw BrainError.modelMissing }
             let sampling = configuration.goalSampling
             let memoryLines = input.memory.map { $0.trimmingCharacters(in: .whitespaces) }
 
@@ -247,11 +211,11 @@ actor LocalBrain: GoalBrain {
                 let dynamic = BrainPrefixBuilder.dynamicMessage(
                     world: input.world, brain: input.brain, personality: input.personality,
                     memoryLines: memoryLines, retryHint: retryHint)
-                let (cache, dynamicInput, fullPrefill) = try BrainCacheManager.decisionInput(
-                    state: state, tokenizer: tokenizer, dynamicText: dynamic)
-                output = try await BrainCacheManager.generateText(
-                    container: container!, cache: cache, input: dynamicInput, sampling: sampling)
-                if fullPrefill {
+                let result = try await generateText(
+                    petID: input.petID, personality: input.personality, profile: profile,
+                    dynamicText: dynamic, sampling: sampling)
+                output = result.text
+                if result.usedFullPrefill {
                     stats.fullPrefills += 1
                 } else {
                     stats.cacheHits += 1
@@ -307,11 +271,6 @@ actor LocalBrain: GoalBrain {
         do {
             let profile = BrainProfile.resolved()
             let promptKind = "chat-\(input.intent.rawValue)"
-            let state = try await ensureReady(
-                petID: input.characterID, personality: input.personality,
-                profile: profile, promptKind: promptKind,
-                dialogue: input.dialogue, speechIntent: input.intent)
-            guard let tokenizer = brainTokenizer else { throw BrainError.modelMissing }
             var reply: SpeechReply?
             var output = ""
             for attempt in 0...1 {
@@ -319,11 +278,10 @@ actor LocalBrain: GoalBrain {
                     intent: input.intent, world: input.world, brain: input.brain,
                     personality: input.personality, userText: input.userText,
                     retryHint: attempt == 0 ? nil : BrainPrefixBuilder.chatRetryHint)
-                let (cache, dynamicInput, _) = try BrainCacheManager.decisionInput(
-                    state: state, tokenizer: tokenizer, dynamicText: dynamic)
-                output = try await BrainCacheManager.generateText(
-                    container: container!, cache: cache, input: dynamicInput,
-                    sampling: configuration.chatSampling)
+                output = try await generateText(
+                    petID: input.characterID, personality: input.personality, profile: profile,
+                    promptKind: promptKind, dialogue: input.dialogue, speechIntent: input.intent,
+                    dynamicText: dynamic, sampling: configuration.chatSampling).text
                 reply = SpeechReply.parse(output)
                 if let text = reply?.text, !Self.validSpeech(text) {
                     reply = nil
@@ -333,24 +291,24 @@ actor LocalBrain: GoalBrain {
             BrainDecisionLog.logSpeech(intent: input.intent, reply: reply,
                                        latency: Date().timeIntervalSince(t0),
                                        traceID: input.traceID, mode: "local")
-            gate.release()
             return reply
         } catch {
             NSLog("MyPet LocalBrain: 聊天生成失败 %@", error.localizedDescription)
             BrainDecisionLog.logSpeech(intent: input.intent, reply: nil,
                                        latency: Date().timeIntervalSince(t0),
                                        traceID: input.traceID, mode: "local")
-            gate.release()
             return nil
         }
     }
 
-    /// 加载模型 + 构建/加载该角色/任务的前缀缓存。key 变化（人格/档案/模型）→ 重建。
-    private func ensureReady(petID: String, personality: Personality,
-                             profile: BrainProfile, promptKind: String = "goal",
-                             dialogue: DialogueProfile? = nil,
-                             speechIntent: SpeechIntent? = nil) async throws
-        -> BrainCacheManager.PromptState {
+    /// Build plain prompt values in the app domain; MyPetAI owns every MLX,
+    /// tokenizer and cache object behind this call.
+    private func generateText(
+        petID: String, personality: Personality, profile: BrainProfile,
+        promptKind: String = "goal", dialogue: DialogueProfile? = nil,
+        speechIntent: SpeechIntent? = nil, dynamicText: String,
+        sampling: BrainProfile.Sampling
+    ) async throws -> MLXGenerationResult {
         guard LocalBrainModel.isInstalled else { throw BrainError.modelMissing }
         let modelDir = LocalBrainModel.installDirectory
         let dialogueHash = dialogue.flatMap { value -> String? in
@@ -365,22 +323,7 @@ actor LocalBrain: GoalBrain {
                                                 ? BrainPrefixBuilder.chatPromptVersion
                                                 : BrainPrefixBuilder.brainPromptVersion,
                                             contentHash: dialogueHash)
-        let keyText = key.composite
-        promptStates.trim(capacity: profile.cache.memoryEntries)
-        BrainCacheManager.pruneDiskCache(maxEntries: profile.cache.diskEntries)
-        if let state = promptStates.value(for: keyText) { return state }
-
-        if container == nil {
-            NSLog("MyPet LocalBrain: 开始加载模型（首次会编译 Metal shader）…")
-            let t0 = Date()
-            LocalBrainModel.writeProcessorShim(into: modelDir)
-            container = try await VLMModelFactory.shared.loadContainer(
-                from: modelDir,
-                using: #huggingFaceTokenizerLoader())
-            brainTokenizer = try await AutoTokenizer.from(modelFolder: modelDir)
-            NSLog("MyPet LocalBrain: 模型加载完成 %.1fs", Date().timeIntervalSince(t0))
-        }
-
+        LocalBrainModel.writeProcessorShim(into: modelDir)
         let traitsApplied = profile.applyingTraits(to: personality)
         let messages: [[String: String]]
         if let speechIntent {
@@ -391,14 +334,15 @@ actor LocalBrain: GoalBrain {
             messages = BrainPrefixBuilder.prefixMessages(
                 personality: traitsApplied, profile: profile)
         }
-        let t0 = Date()
-        let state = try await BrainCacheManager.makePromptCache(
-            container: container!, tokenizer: brainTokenizer!, petID: petID,
-            key: key, messages: messages, diskEntries: profile.cache.diskEntries)
-        NSLog("MyPet LocalBrain: 前缀就绪 %@ · %d tok · %.1fs",
-              key.hash8, state.prefixTokens.count, Date().timeIntervalSince(t0))
-        promptStates.insert(state, for: keyText, capacity: profile.cache.memoryEntries)
-        return state
+        return try await runtime.generate(
+            modelDirectory: modelDir, petID: petID, cacheKey: key.composite,
+            promptVersion: key.brainPrompt, prefixMessages: messages,
+            dynamicText: dynamicText,
+            sampling: MLXSampling(
+                temperature: sampling.temperature, topP: sampling.topP,
+                topK: sampling.topK, maxTokens: sampling.maxTokens, seed: sampling.seed),
+            memoryEntries: profile.cache.memoryEntries,
+            diskEntries: profile.cache.diskEntries)
     }
 
     private static func validSpeech(_ text: String) -> Bool {

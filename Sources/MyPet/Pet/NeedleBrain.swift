@@ -1,6 +1,6 @@
-import CNeedle
 import CoreGraphics
 import Foundation
+import MyPetAI
 import MyPetCore
 
 /// Needle 3 行动脑：Goal + 世界快照 → 一次 tool call。
@@ -264,12 +264,9 @@ final class NeedleBrain {
 
     static let defaultInterval: ClosedRange<Double> = 4...10
 
-    private let queue = DispatchQueue(label: "mypet.needle") // C API 非线程安全
-    private var loadedModelPath: String?
-    private var initializedSchemaHash = ""
+    private let runtime = CNeedleRuntime.shared
     private var pending = false
     private var nextDecisionAt: Double = 0
-    private var buffer = [UInt8](repeating: 0, count: 65_536)
 
     /// 决策间隔（秒）。模型有思考成本，节奏比 RandomBrain 略缓。
     var interval: ClosedRange<Double> = NeedleBrain.defaultInterval
@@ -339,9 +336,14 @@ final class NeedleBrain {
         let snapshotForLog = Self.snapshot(facts: facts)
         let modelInput = Self.modelInput(facts: facts)
         let modelPath = modelURL.path
-        queue.async { [weak self] in
-            let t0 = Date()
-            let output = self?.runOnce(modelPath: modelPath, schema: schema, snapshot: modelInput)
+        let t0 = Date()
+        runtime.complete(
+            modelPath: modelPath,
+            systemPrompt: systemPrompt,
+            schema: schema,
+            snapshot: modelInput,
+            maxNewTokens: maxNewTokens
+        ) { [weak self] output in
             let latency = Date().timeIntervalSince(t0)
             DispatchQueue.main.async { [weak self] in
                 self?.pending = false
@@ -353,28 +355,6 @@ final class NeedleBrain {
                 completion(valid, calls.map(Self.describe))
             }
         }
-    }
-
-    /// 串行队列上执行：load（仅一次）→ init（schema 变化才重建）→ complete。
-    /// 顺序由 C 语义决定：先载模型、再建会话（顺序反了会静默失败）。
-    private func runOnce(modelPath: String, schema: String, snapshot: String) -> String? {
-        if loadedModelPath != modelPath {
-            guard needle_load(cactPath: modelPath) else { return nil }
-            loadedModelPath = modelPath
-            initializedSchemaHash = ""
-        }
-        let schemaHash = String(schema.hashValue)
-        if schemaHash != initializedSchemaHash {
-            guard needle_init(systemPrompt, schema, nil) >= 0 else { return nil }
-            initializedSchemaHash = schemaHash
-        } else {
-            needle_reset()
-        }
-        let result = needle_complete(snapshot, Int32(max(1, maxNewTokens)), &buffer, Int32(buffer.count))
-        guard result >= 0 else { return nil }
-        // 返回值不是字节数（探针实测：~300B 输出返回 28，疑似 token 数）；
-        // 按 C 约定读 null 结尾字符串。
-        return String(bytes: buffer.prefix(while: { $0 != 0 }), encoding: .utf8)
     }
 
     private let systemPrompt = """
@@ -446,17 +426,5 @@ final class NeedleBrain {
 
     private static func append(_ record: [String: Any]) {
         BrainTraceLog.append(record)
-    }
-}
-
-// MARK: - C 简易包装
-
-/// needle_load 的 C API 接收内存字节；这里从文件读入。
-/// （引擎也支持路径隐式加载的场景，统一走显式 load 便于错误诊断。）
-private func needle_load(cactPath: String) -> Bool {
-    guard let data = FileManager.default.contents(atPath: cactPath) else { return false }
-    let length = UInt64(data.count)
-    return data.withUnsafeBytes { raw in
-        needle_load(raw.bindMemory(to: UInt8.self).baseAddress, length) >= 0
     }
 }

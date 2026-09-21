@@ -1,5 +1,9 @@
 // swift-tools-version:5.9
 import PackageDescription
+import Foundation
+
+let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+let needleLibraryDirectory = packageRoot.appendingPathComponent("Sources/CNeedle").path
 
 let package = Package(
     name: "LivingDesktop",
@@ -9,6 +13,7 @@ let package = Package(
     ],
     products: [
         .library(name: "MyPetCore", targets: ["MyPetCore"]),
+        .library(name: "MyPetAI", targets: ["MyPetAI"]),
         .library(name: "CNeedle", targets: ["CNeedle"]),
         .executable(name: "LivingDesktop", targets: ["MyPet"]),
     ],
@@ -33,10 +38,9 @@ let package = Package(
             path: "Sources/CNeedle",
             exclude: ["libneedle.a"]
         ),
-        .executableTarget(
-            name: "MyPet",
+        .target(
+            name: "MyPetAI",
             dependencies: [
-                "MyPetCore",
                 "CNeedle",
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "MLXVLM", package: "mlx-swift-lm"),
@@ -44,12 +48,20 @@ let package = Package(
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "Tokenizers", package: "swift-transformers"),
             ],
-            path: "Sources/MyPet",
+            path: "Sources/MyPetAI",
             linkerSettings: [
                 .linkedLibrary("needle"),
-                .linkedLibrary("c++"), // libneedle.a 是 C++ 编译产物
-                .unsafeFlags(["-L", "Sources/CNeedle"]),
+                .linkedLibrary("c++"),
+                .unsafeFlags(["-L", needleLibraryDirectory]),
             ]
+        ),
+        .executableTarget(
+            name: "MyPet",
+            dependencies: [
+                "MyPetCore",
+                "MyPetAI",
+            ],
+            path: "Sources/MyPet"
         ),
         .testTarget(
             name: "MyPetTests",
@@ -60,6 +72,11 @@ let package = Package(
             name: "MyPetCoreTests",
             dependencies: ["MyPetCore"],
             path: "Tests/MyPetCoreTests"
+        ),
+        .testTarget(
+            name: "MyPetAITests",
+            dependencies: ["MyPetAI"],
+            path: "Tests/MyPetAITests"
         )
     ]
 )
