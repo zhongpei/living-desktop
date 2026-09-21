@@ -586,7 +586,8 @@ final class PetController {
         // 道具在物理/渲染之后推进：held 走合成层（本帧坐标已定），
         // placed/补间/淡出走自己的独立窗口。
         props.tick(petX: model.x, petYFeet: model.yFeet, facingRight: model.facingRight,
-                   displayHeight: settings.displayHeight, now: clock)
+                   displayHeight: settings.displayHeight, now: clock,
+                   worldProp: gameplayRuntime.world.soloProps[runtimeActorID.raw])
         if let layout = props.heldLayout(displayHeight: settings.displayHeight) {
             presentation.displayProp(image: layout.image, rect: layout.rect)
         } else {
@@ -602,7 +603,8 @@ final class PetController {
             facingRight: model.facingRight,
             motion: model.walking ? "walking" : String(describing: model.state),
             action: actions.performance?.clipKey,
-            horizontalSpeed: Double(model.vx)))
+            horizontalSpeed: Double(model.vx),
+            displayHeight: Double(settings.displayHeight)))
     }
 
     private var displayHeadOffset: CGFloat { settings.displayHeight * 0.15 }
@@ -1038,10 +1040,9 @@ final class PetController {
         sceneMoveDone = nil
         sceneMoveTarget = nil
         scenePerformDone = nil
-        // 自然收场：手里还有道具就放在原地（真实感——宠物去别处，东西待在原处，
-        // 滞留 placedDefaultTTL 后自己淡出）；placed 的道具不动，继续自己的倒计时。
-        if props.isHolding {
-            props.putDown(at: model.x, footY: model.yFeet, now: clock)
+        // 自然收场：Core 把手中道具放在原地，并按固定 tick TTL 清理。
+        if soloProp?.phase == .held {
+            submitProp(PropCommand(.putDown, x: Double(model.x), y: Double(model.yFeet)))
         }
     }
 
@@ -1064,7 +1065,7 @@ final class PetController {
         scenePerformDone = nil
         sceneCooldown = 1.5
         // 中断收场：道具淡出（不瞬间消失，视觉不跳变）。
-        props.despawn(now: clock)
+        submitProp(PropCommand(.despawn))
     }
 
     /// game.md §16：goal/场景的轨迹 + 结局是训练数据的关键 label，
@@ -1117,6 +1118,16 @@ final class PetController {
                 id: EntityID(String($0.id)), app: $0.owner,
                 title: $0.windowTitle, activity: $0.appActivity.rawValue)
         })
+    }
+
+    private var soloProp: SoloProp? {
+        gameplayRuntime.world.soloProps[runtimeActorID.raw]
+    }
+
+    @discardableResult
+    private func submitProp(_ command: PropCommand) -> Bool {
+        gameplayRuntime.submit(GameEvent(
+            kind: .propCommand, actorID: runtimeActorID, propCommand: command))
     }
 
     private func submitRuntimeAction(
@@ -1278,14 +1289,13 @@ final class PetController {
             sceneMove(toX: resolved.x, top: resolved.top, window: resolved.window) { report(true) }
         case .spawnProp(let id):
             guard settings.propsEnabled else { report(false); return }
+            guard PropCatalog.def(id) != nil else { report(false); return }
             model.wake()
-            props.spawnHeld(id, petX: model.x, petYFeet: model.yFeet,
-                            facingRight: model.facingRight, now: clock)
             report(true)
         case .putDown:
-            report(semanticPutDown())
+            report(semanticPutDown(commitImmediately: false))
         case .pickUp:
-            report(semanticPickUp())
+            report(semanticPickUp(commitImmediately: false))
         case .perform(let name):
             guard let key = library.action(named: name) else { report(false); return }
             scenePerform([key]) { report(true) }
@@ -1296,7 +1306,6 @@ final class PetController {
             }
             scenePerform([key]) { report(true) }
         case .clearProps:
-            props.clear()
             report(true)
         case .say(let intent):
             if let intent = SpeechIntent(rawValue: intent) { speak(intent: intent) }
@@ -1317,30 +1326,33 @@ final class PetController {
     /// 放下（行动脑语义/场景共用）：手部 → 身前地面滑落 + 点头节拍。
     /// 包里有真 pick_up/put_down clip 的角色将来自动换成专用动画。
     @discardableResult
-    private func semanticPutDown() -> Bool {
-        guard settings.propsEnabled, props.isHolding else { return false }
+    private func semanticPutDown(commitImmediately: Bool = true) -> Bool {
+        guard settings.propsEnabled, soloProp?.phase == .held else { return false }
+        let heldID = soloProp?.propID
         model.wake()
         model.stopWalk()
         let front = model.x + (model.facingRight ? 1 : -1) * settings.displayHeight * 0.30
-        let placed = props.putDown(at: front, footY: model.yFeet, now: clock)
+        let placed = !commitImmediately || submitProp(PropCommand(
+            .putDown, x: Double(front), y: Double(model.yFeet)))
         if placed, let nod = library.action(named: "put_down") ?? library.action(named: "nod") {
             actions.inject(.perform(nod))
         }
-        if placed { pushRecentEvent("put down \(props.heldPropID ?? "prop")") }
+        if placed { pushRecentEvent("put down \(heldID ?? "prop")") }
         return placed
     }
 
     /// 拿起（行动脑语义/场景共用）：附近自己的 placed 道具滑进手部 + 高兴节拍。
     @discardableResult
-    private func semanticPickUp() -> Bool {
+    private func semanticPickUp(commitImmediately: Bool = true) -> Bool {
         guard settings.propsEnabled else { return false }
-        guard props.placedNear(petX: model.x, petYFeet: model.yFeet, within: 90) != nil else {
+        guard soloProp?.isPlacedNear(
+            x: Double(model.x), y: Double(model.yFeet), within: 90) == true else {
             return false
         }
         model.wake()
         model.stopWalk()
-        let picked = props.pickUp(petX: model.x, petYFeet: model.yFeet,
-                                  facingRight: model.facingRight, now: clock)
+        let picked = !commitImmediately || submitProp(PropCommand(
+            .pickUp, x: Double(model.x), y: Double(model.yFeet), within: 90))
         if picked, let beat = library.action(named: "pick_up") ?? library.action(named: "happy") {
             actions.inject(.perform(beat))
         }
@@ -1370,10 +1382,11 @@ final class PetController {
         }
         facts.props = settings.propsEnabled ? PropCatalog.ids : []
         if settings.propsEnabled {
-            facts.heldProp = props.heldPropID
+            facts.heldProp = soloProp?.phase == .held ? soloProp?.propID : nil
             // 附近可再拿的道具（放下的东西自己还在原地）。
-            if let near = props.placedNear(petX: model.x, petYFeet: model.yFeet, within: 120) {
-                facts.propNearby = near.def.id
+            if soloProp?.isPlacedNear(
+                x: Double(model.x), y: Double(model.yFeet), within: 120) == true {
+                facts.propNearby = soloProp?.propID
             }
         }
         if let goal = currentGoal, settings.scenesEnabled {
@@ -1471,13 +1484,12 @@ final class PetController {
     }
 
     func sceneSpawnProp(_ id: String, at x: CGFloat, footY: CGFloat) {
-        guard settings.propsEnabled else { return }
-        props.spawnHeld(id, petX: x, petYFeet: footY,
-                        facingRight: model.facingRight, now: clock)
+        guard settings.propsEnabled, PropCatalog.def(id) != nil else { return }
+        submitProp(PropCommand(.spawnHeld, propID: id))
     }
 
     func sceneClearProps() {
-        props.despawn(now: clock)
+        submitProp(PropCommand(.despawn))
     }
 
     @discardableResult
@@ -2254,10 +2266,10 @@ final class PetController {
         }
         if placed {
             let front = model.x + (model.facingRight ? 1 : -1) * settings.displayHeight * 0.45
-            props.spawnPlaced(id, at: front, footY: model.yFeet, now: clock)
+            submitProp(PropCommand(
+                .spawnPlaced, propID: id, x: Double(front), y: Double(model.yFeet)))
         } else {
-            props.spawnHeld(id, petX: model.x, petYFeet: model.yFeet,
-                            facingRight: model.facingRight, now: clock)
+            submitProp(PropCommand(.spawnHeld, propID: id))
         }
         pushRecentEvent("user summoned \(id)")
     }

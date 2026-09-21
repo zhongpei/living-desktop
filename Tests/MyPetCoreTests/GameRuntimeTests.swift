@@ -376,6 +376,73 @@ final class GameRuntimeTests: XCTestCase {
         XCTAssertEqual(rest.request?.priority, .userDirect)
     }
 
+    func testSoloPropLifecycleIsInRuntimeCheckpointAndExpiresOnCoreClock() {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let runtime = GameRuntime()
+        _ = runtime.step(events: [GameEvent(kind: .registerEntity, entity: actor)])
+        runtime.submit(GameEvent(kind: .propCommand, actorID: actor.id,
+                                 propCommand: PropCommand(.spawnHeld, propID: "tea")))
+        _ = runtime.step()
+        XCTAssertEqual(runtime.world.soloProps[actor.id.raw]?.phase, .held)
+
+        runtime.submit(GameEvent(kind: .propCommand, actorID: actor.id,
+                                 propCommand: PropCommand(.putDown, x: 500, y: 800, ttlTicks: 2)))
+        _ = runtime.step()
+        XCTAssertEqual(runtime.world.soloProps[actor.id.raw]?.phase, .placed)
+        let fork = GameRuntime(checkpoint: runtime.checkpoint())
+        XCTAssertEqual(fork.world.soloProps, runtime.world.soloProps)
+
+        _ = runtime.step()
+        _ = runtime.step()
+        XCTAssertEqual(runtime.world.soloProps[actor.id.raw]?.phase, .despawning)
+        for _ in 0..<8 { _ = runtime.step() }
+        XCTAssertNil(runtime.world.soloProps[actor.id.raw])
+    }
+
+    func testSoloPropRejectsFarPickUpAndClearsOnActorDeparture() {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let runtime = GameRuntime()
+        _ = runtime.step(events: [GameEvent(kind: .registerEntity, entity: actor)])
+        runtime.submit(GameEvent(kind: .propCommand, actorID: actor.id,
+                                 propCommand: PropCommand(.spawnPlaced, propID: "book",
+                                                          x: 500, y: 800)))
+        _ = runtime.step()
+        runtime.submit(GameEvent(kind: .propCommand, actorID: actor.id,
+                                 propCommand: PropCommand(.pickUp, x: 100, y: 800, within: 90)))
+        _ = runtime.step()
+        XCTAssertEqual(runtime.world.soloProps[actor.id.raw]?.phase, .placed)
+        runtime.submit(GameEvent(kind: .propCommand, actorID: actor.id,
+                                 propCommand: PropCommand(.pickUp, x: 510, y: 800, within: 90)))
+        _ = runtime.step()
+        XCTAssertEqual(runtime.world.soloProps[actor.id.raw]?.phase, .held)
+        _ = runtime.step(events: [GameEvent(kind: .destroyEntity, entityID: actor.id)])
+        XCTAssertNil(runtime.world.soloProps[actor.id.raw])
+    }
+
+    func testHeadlessAndExternalBodyCompletionApplyTheSamePropFact() {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let resolver = ActionRuntime()
+        for mode in [BodyExecutionMode.headless, .external] {
+            let runtime = GameRuntime(bodyExecutionMode: mode)
+            _ = runtime.step(events: [GameEvent(kind: .registerEntity, entity: actor)])
+            let execution = resolver.execute(
+                .spawnProp("tea"), tick: runtime.clock.tick,
+                actorID: actor.id, world: runtime.world, context: RuntimeContext())
+            _ = runtime.submitAction(execution)
+            _ = runtime.step()
+            if mode == .external {
+                let command = try! XCTUnwrap(runtime.drainBodyCommands(for: actor.id).first)
+                XCTAssertTrue(runtime.submitBodyResult(BodyResult(
+                    behaviorID: command.behaviorID,
+                    executionToken: command.executionToken,
+                    outcome: .completed)))
+            }
+            _ = runtime.step()
+            XCTAssertEqual(runtime.world.soloProps[actor.id.raw]?.propID, "tea")
+            XCTAssertEqual(runtime.world.soloProps[actor.id.raw]?.phase, .held)
+        }
+    }
+
     func testNormalStepAndPlatformIngressRejectRawBehavior() {
         let actor = EntityState(id: EntityID("pet"), kind: .actor)
         let request = BehaviorRequest(

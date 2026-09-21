@@ -1,6 +1,7 @@
 import CoreGraphics
 import XCTest
 import MyPetContent
+import MyPetCore
 
 @testable import MyPet
 
@@ -24,10 +25,10 @@ final class SceneGraphRuntimeTests: XCTestCase {
             sceneGraph: graph, actorNode: actor, handSocket: hand)
         props.panelsEnabled = false
 
-        let prop = try XCTUnwrap(props.spawnHeld("apple", petX: 100, petYFeet: 200,
-                                                 facingRight: true, now: 0))
         props.tick(petX: 100, petYFeet: 200, facingRight: true,
-                   displayHeight: 100, now: 0)
+                   displayHeight: 100, now: 0,
+                   worldProp: SoloProp(propID: "apple", phase: .held))
+        let prop = try XCTUnwrap(props.entity)
 
         XCTAssertTrue(prop.spatialNode.parent === hand)
         XCTAssertTrue(graph.root.children.contains { $0 === actor })
@@ -36,18 +37,18 @@ final class SceneGraphRuntimeTests: XCTestCase {
 
     func testHeldPropUsesHandSocketAsItsWorldPosition() throws {
         let props = makePropController()
-        let prop = try XCTUnwrap(props.spawnHeld("apple", petX: 500, petYFeet: 800,
-                                                 facingRight: true, now: 0))
-
         props.tick(petX: 500, petYFeet: 800, facingRight: true,
-                   displayHeight: 100, now: 0)
+                   displayHeight: 100, now: 0,
+                   worldProp: SoloProp(propID: "apple", phase: .held))
+        let prop = try XCTUnwrap(props.entity)
         XCTAssertEqual(prop.spatialNode.parent?.id, "hand")
         XCTAssertEqual(prop.spatialNode.worldPosition,
                        PropEntity.holdPoint(petX: 500, petYFeet: 800,
                                              facingRight: true, displayHeight: 100))
 
         props.tick(petX: 700, petYFeet: 800, facingRight: false,
-                   displayHeight: 100, now: 1)
+                   displayHeight: 100, now: 1,
+                   worldProp: SoloProp(propID: "apple", phase: .held))
         XCTAssertEqual(prop.spatialNode.worldPosition,
                        PropEntity.holdPoint(petX: 700, petYFeet: 800,
                                              facingRight: false, displayHeight: 100),
@@ -56,19 +57,22 @@ final class SceneGraphRuntimeTests: XCTestCase {
 
     func testPutDownReparentsToSceneRootAndKeepsWorldContinuity() throws {
         let props = makePropController()
-        let prop = try XCTUnwrap(props.spawnHeld("apple", petX: 500, petYFeet: 800,
-                                                 facingRight: true, now: 0))
         props.tick(petX: 500, petYFeet: 800, facingRight: true,
-                   displayHeight: 100, now: 0)
+                   displayHeight: 100, now: 0,
+                   worldProp: SoloProp(propID: "apple", phase: .held))
+        let prop = try XCTUnwrap(props.entity)
         let handPosition = prop.spatialNode.worldPosition
 
-        XCTAssertTrue(props.putDown(at: 560, footY: 800, now: 0, ttl: 30))
+        props.tick(petX: 500, petYFeet: 800, facingRight: true,
+                   displayHeight: 100, now: 0,
+                   worldProp: SoloProp(propID: "apple", phase: .placed, x: 560, y: 800))
         XCTAssertEqual(prop.spatialNode.parent?.id, "scene")
         XCTAssertEqual(prop.spatialNode.worldPosition, handPosition,
                        "从手部脱离时不能瞬移")
 
         props.tick(petX: 900, petYFeet: 800, facingRight: false,
-                   displayHeight: 100, now: 0.35)
+                   displayHeight: 100, now: 0.35,
+                   worldProp: SoloProp(propID: "apple", phase: .placed, x: 560, y: 800))
         XCTAssertEqual(prop.spatialNode.worldPosition, CGPoint(x: 560, y: 800))
         XCTAssertEqual(prop.x, 560)
         XCTAssertEqual(prop.footY, 800)
@@ -76,10 +80,10 @@ final class SceneGraphRuntimeTests: XCTestCase {
 
     func testPlacedPropRemainsAtWorldRootWhenActorMoves() throws {
         let props = makePropController()
-        let prop = try XCTUnwrap(props.spawnPlaced("chair", at: 560, footY: 800, now: 0))
-
         props.tick(petX: 1200, petYFeet: 800, facingRight: true,
-                   displayHeight: 100, now: 1)
+                   displayHeight: 100, now: 1,
+                   worldProp: SoloProp(propID: "chair", phase: .placed, x: 560, y: 800))
+        let prop = try XCTUnwrap(props.entity)
 
         XCTAssertEqual(prop.spatialNode.parent?.id, "scene")
         XCTAssertEqual(prop.spatialNode.worldPosition, CGPoint(x: 560, y: 800))
@@ -87,9 +91,13 @@ final class SceneGraphRuntimeTests: XCTestCase {
 
     func testReplacingPropDetachesTheOldSpatialNode() throws {
         let props = makePropController()
-        let old = try XCTUnwrap(props.spawnPlaced("chair", at: 560, footY: 800, now: 0))
-        _ = props.spawnHeld("apple", petX: 100, petYFeet: 200,
-                            facingRight: true, now: 1)
+        props.tick(petX: 100, petYFeet: 200, facingRight: true,
+                   displayHeight: 100, now: 0,
+                   worldProp: SoloProp(propID: "chair", phase: .placed, x: 560, y: 800))
+        let old = try XCTUnwrap(props.entity)
+        props.tick(petX: 100, petYFeet: 200, facingRight: true,
+                   displayHeight: 100, now: 1,
+                   worldProp: SoloProp(propID: "apple", phase: .held))
 
         XCTAssertNil(old.spatialNode.parent,
                      "替换单活动道具时，旧节点不能继续被场景根保留")

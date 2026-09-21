@@ -63,16 +63,9 @@ enum PropCatalog {
 
 // MARK: - 实体
 
-enum PropState: Equatable {
-    case held
-    case placed
-    /// 淡出中（fadeIn→fadeOut 由 despawnAt 驱动，到点移除）。
-    case despawning
-}
+typealias PropState = SoloProp.Phase
 
-/// 世界里的一个道具实体。同一时刻宠物最多持有一个（两只手），
-/// 但 placed 的道具独立存在、独立计时——宠物走开后它原地待着。
-/// state 由同文件的 PropController 状态机迁移（fileprivate(set)）。
+/// Core SoloProp 的视觉镜像；所有权、阶段和过期只由 Core 决定。
 final class PropEntity {
 
     let def: PropDef
@@ -85,8 +78,6 @@ final class PropEntity {
     var footY: CGFloat
     /// 面朝（held 渲染的手部侧别用）。
     var facingRight = true
-    /// placed 的消失时刻（控制器时钟）；nil = 不倒计时（跟随场景清理）。
-    var ttlDeadline: Double?
     /// putDown / pickUp 的位移补间：从手部到地面（或反向）。
     var tween: (from: CGPoint, to: CGPoint, start: Double, duration: Double)?
     /// despawn 淡出起点。
@@ -127,9 +118,8 @@ struct PropHeldLayout {
     var image: CGImage
 }
 
-/// 道具控制器：实体的生命周期 + 双渲染（held 合成层 / placed 独立窗口）。
-/// 宠物移动时由控制器 tick 同步；placed 静置不逐帧动窗口（只在自己有
-/// 微动画帧或淡出时才碰）。
+/// 只读 Core SoloProp 的表现适配器：held 合成层 / placed 独立窗口。
+/// TTL、状态转移与归属不在这里决定。
 final class PropController {
 
     private(set) var entity: PropEntity?
@@ -141,12 +131,8 @@ final class PropController {
     private let handSocket: SceneNode
     private var panel: OverlayPanel?
     private let library: ClipLibrary
-    /// placed 默认滞留秒数（放下后原地待一会再淡出）。
-    var placedDefaultTTL: Double = 120
     /// 用户倍率（设置窗「道具大小」，1.0 = 标准基准；乘在每道具 scale 上）。
     var userScale: Double = 1.0
-    /// 全局兜底 TTL（防孤儿）。
-    var maxTTL: Double = 600
     /// 淡出时长。
     var fadeDuration: Double = 0.4
     /// 拿/放补间时长。
@@ -156,8 +142,6 @@ final class PropController {
 
     /// placed 微动画帧缓存：URL → CGImage。
     private var frameCache: [URL: CGImage] = [:]
-    /// 最近一次 tick 的宠物显示高度（putDown/pickUp 的手部点位换算用）。
-    private var lastDisplayHeight: CGFloat = 110
 
     convenience init(library: ClipLibrary) {
         let graph = SceneGraph(rootID: "scene")
@@ -214,103 +198,9 @@ final class PropController {
         try? node.reparent(to: nil, keepWorldTransform: false)
     }
 
-    // MARK: 查询
+    // MARK: 投影
 
-    var isHolding: Bool { entity?.state == .held }
-    var heldPropID: String? { (entity?.state == .held) ? entity?.def.id : nil }
-    var current: PropEntity? { entity }
-
-    /// 宠物附近是否有可拿的 placed 道具。
-    func placedNear(petX: CGFloat, petYFeet: CGFloat, within: CGFloat) -> PropEntity? {
-        guard let e = entity, e.state == .placed else { return nil }
-        let d = hypot(e.x - petX, e.footY - petYFeet)
-        return d <= within ? e : nil
-    }
-
-    // MARK: 生命周期
-
-    /// 生成一个被拿着的道具（场景/行动脑语义：宠物拿出道具）。
-    @discardableResult
-    func spawnHeld(_ id: String, petX: CGFloat, petYFeet: CGFloat, facingRight: Bool,
-                   now: Double) -> PropEntity? {
-        guard let def = PropCatalog.def(id) else { return nil }
-        clear()   // 单实体：换道具时不能把旧节点遗留在场景树里
-        syncScenePose(petX: petX, petYFeet: petYFeet,
-                      facingRight: facingRight, displayHeight: lastDisplayHeight)
-        let e = PropEntity(def: def, state: .held,
-                           x: petX, footY: petYFeet)
-        e.facingRight = facingRight
-        guard attachToHand(e.spatialNode) else { return nil }
-        entity = e
-        return e
-    }
-
-    /// 直接生成一个 placed 道具（用户「召唤到面前」）：落在指定点原地待着，
-    /// 默认滞留后淡出。
-    @discardableResult
-    func spawnPlaced(_ id: String, at x: CGFloat, footY: CGFloat, now: Double,
-                     ttl: Double? = nil) -> PropEntity? {
-        guard let def = PropCatalog.def(id) else { return nil }
-        clear()   // 单实体：换道具时不能把旧节点遗留在场景树里
-        let e = PropEntity(def: def, state: .placed, x: x, footY: footY)
-        guard placeAtWorldRoot(e.spatialNode, position: CGPoint(x: x, y: footY)) else {
-            return nil
-        }
-        e.ttlDeadline = now + min(ttl ?? placedDefaultTTL, maxTTL)
-        entity = e
-        return e
-    }
-
-    /// 放下：held → placed。道具精灵从手部位置滑到落点（补间），
-    /// 宠物侧配合一个点头节拍（由调用方播放）。ttl nil = 默认滞留。
-    @discardableResult
-    func putDown(at x: CGFloat, footY: CGFloat, now: Double, ttl: Double? = nil) -> Bool {
-        guard let e = entity, e.state == .held else { return false }
-        let from = e.spatialNode.worldPosition
-        guard placeAtWorldRoot(e.spatialNode, position: from) else { return false }
-        e.state = .placed
-        e.tween = (from: from, to: CGPoint(x: x, y: footY),
-                   start: now, duration: tweenDuration)
-        e.x = x
-        e.footY = footY
-        e.ttlDeadline = now + min(ttl ?? placedDefaultTTL, maxTTL)
-        makePanel()
-        return true
-    }
-
-    /// 拿起：placed → held。道具精灵从地面滑进手部（补间期间仍用独立面板
-    /// 渲染滑入，到点切合成层）。宠物此刻应已站在道具旁。
-    @discardableResult
-    func pickUp(petX: CGFloat, petYFeet: CGFloat, facingRight: Bool, now: Double) -> Bool {
-        guard let e = entity, e.state == .placed else { return false }
-        syncScenePose(petX: petX, petYFeet: petYFeet,
-                      facingRight: facingRight, displayHeight: lastDisplayHeight)
-        let from = e.spatialNode.worldPosition
-        let to = handSocket.worldPosition
-        e.state = .held
-        e.facingRight = facingRight
-        e.x = petX
-        e.footY = petYFeet
-        e.ttlDeadline = nil
-        e.tween = (from: from, to: to, start: now, duration: tweenDuration)
-        if panel == nil { makePanel() }
-        return true
-    }
-
-    /// 消失：淡出（placed）或直接移除（held = 停止合成）。
-    func despawn(now: Double) {
-        guard let e = entity else { return }
-        if e.state == .held {
-            detachNode(e.spatialNode)
-            removePanel()
-            entity = nil
-        } else {
-            e.state = .despawning
-            e.fadeStart = now
-        }
-    }
-
-    /// 立即移除（切宠物/关闭面板用，无淡出）。
+    /// 停止显示/关闭面板；不改变 Core 的世界事实。
     func clear() {
         if let e = entity {
             detachNode(e.spatialNode)
@@ -321,15 +211,51 @@ final class PropController {
 
     // MARK: 每帧
 
-    /// petX/petYFeet/facingRight = 宠物实时位姿；displayHeight 供尺寸缩放。
-    /// 渲染分派：**有补间 → 独立面板**（放下的滑落/拿起的滑入）；
-    /// held 无补间 → 合成层（面板移除）；placed/淡出 → 独立面板。
+    /// 只消费已经提交的 Core 道具状态。几何补间可以丢帧，游戏事实不能。
     func tick(petX: CGFloat, petYFeet: CGFloat, facingRight: Bool,
-              displayHeight: CGFloat, now: Double) {
-        lastDisplayHeight = displayHeight
+              displayHeight: CGFloat, now: Double, worldProp: SoloProp?) {
         syncScenePose(petX: petX, petYFeet: petYFeet,
                       facingRight: facingRight, displayHeight: displayHeight)
+        guard let worldProp, let def = PropCatalog.def(worldProp.propID) else {
+            clear()
+            return
+        }
+        if entity?.def.id != worldProp.propID {
+            clear()
+            let e = PropEntity(
+                def: def, state: worldProp.phase,
+                x: worldProp.phase == .held ? petX : CGFloat(worldProp.x),
+                footY: worldProp.phase == .held ? petYFeet : CGFloat(worldProp.y))
+            let attached = worldProp.phase == .held
+                ? attachToHand(e.spatialNode)
+                : placeAtWorldRoot(e.spatialNode, position: CGPoint(x: e.x, y: e.footY))
+            guard attached else { return }
+            if worldProp.phase == .despawning { e.fadeStart = now }
+            entity = e
+        }
         guard let e = entity else { return }
+        if e.state != worldProp.phase {
+            switch (e.state, worldProp.phase) {
+            case (.held, .placed):
+                let from = e.spatialNode.worldPosition
+                guard placeAtWorldRoot(e.spatialNode, position: from) else { clear(); return }
+                e.tween = (from: from,
+                           to: CGPoint(x: worldProp.x, y: worldProp.y),
+                           start: now, duration: tweenDuration)
+                makePanel()
+            case (.placed, .held):
+                e.tween = (from: e.spatialNode.worldPosition,
+                           to: handSocket.worldPosition,
+                           start: now, duration: tweenDuration)
+                makePanel()
+            case (_, .despawning):
+                e.tween = nil
+                e.fadeStart = now
+            default:
+                e.tween = nil
+            }
+            e.state = worldProp.phase
+        }
         e.facingRight = facingRight
         e.frameClock = now
 
@@ -372,10 +298,9 @@ final class PropController {
                 return
             }
         } else if e.spatialNode.parent === sceneGraph.root {
-            // placed / despawning 的世界位置由节点保存；x/footY 只是兼容镜像。
-            let position = e.spatialNode.worldPosition
-            e.x = position.x
-            e.footY = position.y
+            e.spatialNode.localPosition = CGPoint(x: worldProp.x, y: worldProp.y)
+            e.x = CGFloat(worldProp.x)
+            e.footY = CGFloat(worldProp.y)
         }
 
         switch e.state {
@@ -384,18 +309,10 @@ final class PropController {
                 removePanel()   // 无补间的持有走合成层
             }
         case .placed:
-            // placed 静置：世界坐标不动（面板也不逐帧动）。
-            if let deadline = e.ttlDeadline, now >= deadline {
-                e.state = .despawning
-                e.fadeStart = now
-            }
+            break
         case .despawning:
             let t = now - (e.fadeStart ?? now)
-            if t >= fadeDuration {
-                clear()
-                return
-            }
-            panel?.alphaValue = CGFloat(1 - t / fadeDuration)
+            panel?.alphaValue = CGFloat(max(0, 1 - t / fadeDuration))
         }
 
         // 面板渲染：补间中 / placed / 淡出。held 无补间时移除面板走合成层。

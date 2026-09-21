@@ -811,65 +811,44 @@ final class GameTests: XCTestCase {
         return controller
     }
 
-    func testPropLifecycleHeldToPlacedToDespawn() {
+    func testPropPresentationFollowsCommittedLifecycleAndCanDiscardFrames() {
         let props = makePropController()
-        // 生成即持有。
-        XCTAssertNotNil(props.spawnHeld("laptop", petX: 500, petYFeet: 800,
-                                        facingRight: true, now: 0))
-        XCTAssertTrue(props.isHolding)
-        XCTAssertEqual(props.heldPropID, "laptop")
+        props.tick(petX: 500, petYFeet: 800, facingRight: true, displayHeight: 110,
+                   now: 0, worldProp: SoloProp(propID: "laptop", phase: .held))
+        XCTAssertEqual(props.entity?.state, .held)
 
-        // 放下 → placed（补间中），滞留 ttl 已挂。
-        XCTAssertTrue(props.putDown(at: 560, footY: 800, now: 10, ttl: 30))
+        let placed = SoloProp(propID: "laptop", phase: .placed, x: 560, y: 800)
+        props.tick(petX: 500, petYFeet: 800, facingRight: true, displayHeight: 110,
+                   now: 10, worldProp: placed)
         XCTAssertEqual(props.entity?.state, .placed)
-        XCTAssertEqual(props.entity?.ttlDeadline, 40)
-
-        // 补间推进：0.35s 后落定在放点，宠物走开它也不动。
-        props.tick(petX: 560, petYFeet: 800, facingRight: true, displayHeight: 110, now: 10.2)
-        props.tick(petX: 900, petYFeet: 800, facingRight: false, displayHeight: 110, now: 10.5)
-        XCTAssertEqual(props.entity?.state, .placed)
+        props.tick(petX: 900, petYFeet: 800, facingRight: false, displayHeight: 110,
+                   now: 10.5, worldProp: placed)
         XCTAssertNil(props.entity?.tween)
-        let landedX = props.entity?.x ?? -1
-        let landedY = props.entity?.footY ?? -1
-        XCTAssertEqual(landedX, CGFloat(560), accuracy: 1)
-        XCTAssertEqual(landedY, CGFloat(800), accuracy: 1)
-        XCTAssertFalse(props.isHolding, "放下后宠物手上没有道具")
+        XCTAssertEqual(props.entity?.x ?? -1, 560, accuracy: 1)
+        XCTAssertEqual(props.entity?.footY ?? -1, 800, accuracy: 1)
 
-        // ttl 到期 → 淡出 → 消失。
-        props.tick(petX: 900, petYFeet: 800, facingRight: false, displayHeight: 110, now: 40.1)
+        props.tick(petX: 900, petYFeet: 800, facingRight: false, displayHeight: 110,
+                   now: 40.1,
+                   worldProp: SoloProp(propID: "laptop", phase: .despawning, x: 560, y: 800))
         XCTAssertEqual(props.entity?.state, .despawning)
-        props.tick(petX: 900, petYFeet: 800, facingRight: false, displayHeight: 110, now: 40.6)
-        XCTAssertNil(props.entity, "淡出结束实体移除")
+        props.tick(petX: 900, petYFeet: 800, facingRight: false, displayHeight: 110,
+                   now: 40.6, worldProp: nil)
+        XCTAssertNil(props.entity)
     }
 
-    func testPropPickUpOnlyNearPlaced() {
-        let props = makePropController()
-        props.spawnHeld("tea", petX: 500, petYFeet: 800, facingRight: true, now: 0)
-        props.putDown(at: 530, footY: 800, now: 0)
-        props.tick(petX: 530, petYFeet: 800, facingRight: true, displayHeight: 110, now: 0.5)
-
-        // 附近（≤90pt）可拿。
-        XCTAssertNotNil(props.placedNear(petX: 540, petYFeet: 800, within: 90))
-        XCTAssertTrue(props.pickUp(petX: 540, petYFeet: 800, facingRight: false, now: 1))
-        XCTAssertEqual(props.entity?.state, .held)
-        XCTAssertNil(props.entity?.ttlDeadline, "拿起后不再倒计时")
-
-        // 再放一次，放到远处：placedNear 判定为不在身边。
-        props.putDown(at: 5000, footY: 800, now: 5)
-        props.tick(petX: 5000, petYFeet: 800, facingRight: true, displayHeight: 110, now: 5.5)
-        XCTAssertNil(props.placedNear(petX: 540, petYFeet: 800, within: 90))
-
-        // 手里没道具时 putDown 失败；附近没道具时 pickUp 失败。
-        var empty = makePropController()
-        XCTAssertFalse(empty.putDown(at: 0, footY: 0, now: 0))
-        empty.spawnHeld("book", petX: 0, petYFeet: 0, facingRight: true, now: 0)
-        XCTAssertFalse(empty.pickUp(petX: 0, petYFeet: 0, facingRight: true, now: 0),
-                       "held 状态不能 pickUp（没有 placed 道具）")
+    func testPropNearRuleComesFromCoreState() {
+        let placed = SoloProp(propID: "tea", phase: .placed, x: 530, y: 800)
+        XCTAssertTrue(placed.isPlacedNear(x: 540, y: 800, within: 90))
+        XCTAssertFalse(placed.isPlacedNear(x: 5_000, y: 800, within: 90))
+        let held = SoloProp(propID: "tea", phase: .held)
+        XCTAssertFalse(held.isPlacedNear(x: 0, y: 0, within: 90))
     }
 
     func testPropSizeScalesWithDisplayHeight() {
         let props = makePropController()
-        props.spawnHeld("laptop", petX: 500, petYFeet: 800, facingRight: true, now: 0)
+        props.tick(petX: 500, petYFeet: 800, facingRight: true,
+                   displayHeight: 110, now: 0,
+                   worldProp: SoloProp(propID: "laptop", phase: .held))
         // 世界尺寸 = displayHeight × scale（Q 版基准已整体放大：laptop 0.46）。
         let normal = props.entity?.size(displayHeight: 110) ?? 0
         let large = props.entity?.size(displayHeight: 180) ?? 0
@@ -887,18 +866,15 @@ final class GameTests: XCTestCase {
         XCTAssertEqual(right.y, 755, accuracy: 0.5)
     }
 
-    func testSummonPlacedPropStaysAndFades() {
+    func testPlacedPropProjectionDoesNotFollowActor() {
         let props = makePropController()
-        // 召唤到面前：直接 placed，原地待着，默认滞留后淡出。
-        XCTAssertNotNil(props.spawnPlaced("tea", at: 560, footY: 800, now: 0))
-        XCTAssertEqual(props.entity?.state, .placed)
-        XCTAssertEqual(props.entity?.ttlDeadline, props.placedDefaultTTL)
-        // 宠物走开它不动。
-        props.tick(petX: 1200, petYFeet: 800, facingRight: true, displayHeight: 110, now: 1)
+        props.tick(petX: 1200, petYFeet: 800, facingRight: true, displayHeight: 110,
+                   now: 1, worldProp: SoloProp(propID: "tea", phase: .placed, x: 560, y: 800))
         let x = props.entity?.x ?? -1
         XCTAssertEqual(x, CGFloat(560), accuracy: 1)
-        // 未知道具拒绝。
-        XCTAssertNil(props.spawnPlaced("tank", at: 0, footY: 0, now: 2))
+        props.tick(petX: 1200, petYFeet: 800, facingRight: true, displayHeight: 110,
+                   now: 2, worldProp: SoloProp(propID: "tank", phase: .placed))
+        XCTAssertNil(props.entity, "没有素材元数据的 Core 道具不生成假面板")
     }
 
     func testPropHoldPointMathCoveredAbove() {}

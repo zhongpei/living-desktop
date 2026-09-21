@@ -42,6 +42,8 @@ public struct BodyPose: Codable, Equatable, Sendable {
     public var motion: String
     public var action: String?
     public var horizontalSpeed: Double
+    /// Only needed for translating a successful put-down to a world position.
+    public var displayHeight: Double?
 
     public init(
         actorID: EntityID,
@@ -50,7 +52,8 @@ public struct BodyPose: Codable, Equatable, Sendable {
         facingRight: Bool,
         motion: String,
         action: String? = nil,
-        horizontalSpeed: Double = 0
+        horizontalSpeed: Double = 0,
+        displayHeight: Double? = nil
     ) {
         self.actorID = actorID
         self.x = x
@@ -59,10 +62,11 @@ public struct BodyPose: Codable, Equatable, Sendable {
         self.motion = motion
         self.action = action
         self.horizontalSpeed = horizontalSpeed
+        self.displayHeight = displayHeight
     }
 
     private enum CodingKeys: String, CodingKey {
-        case actorID, x, yFeet, facingRight, motion, action, horizontalSpeed
+        case actorID, x, yFeet, facingRight, motion, action, horizontalSpeed, displayHeight
     }
 
     public init(from decoder: Decoder) throws {
@@ -74,7 +78,8 @@ public struct BodyPose: Codable, Equatable, Sendable {
             facingRight: try values.decode(Bool.self, forKey: .facingRight),
             motion: try values.decode(String.self, forKey: .motion),
             action: try values.decodeIfPresent(String.self, forKey: .action),
-            horizontalSpeed: try values.decodeIfPresent(Double.self, forKey: .horizontalSpeed) ?? 0)
+            horizontalSpeed: try values.decodeIfPresent(Double.self, forKey: .horizontalSpeed) ?? 0,
+            displayHeight: try values.decodeIfPresent(Double.self, forKey: .displayHeight))
     }
 }
 
@@ -223,16 +228,37 @@ final class BodyRuntime {
     }
 
     func event(for result: BodyResult) -> GameEvent? {
-        guard active[result.behaviorID]?.command.executionToken == result.executionToken else {
+        guard let command = active[result.behaviorID]?.command,
+              command.executionToken == result.executionToken else {
             return nil
         }
         switch result.outcome {
         case .completed:
-            return GameEvent(kind: .completeBehavior, behaviorID: result.behaviorID, success: true)
+            return GameEvent(
+                kind: .completeBehavior, behaviorID: result.behaviorID, success: true,
+                propCommand: propCommand(for: command))
         case .failed:
             return GameEvent(kind: .completeBehavior, behaviorID: result.behaviorID, success: false)
         case .cancelled:
             return GameEvent(kind: .cancelBehavior, behaviorID: result.behaviorID)
+        }
+    }
+
+    private func propCommand(for body: BodyCommand) -> PropCommand? {
+        let pose = poses[body.actorID.raw]
+        switch body.intent {
+        case let intent where intent.hasPrefix("spawn_prop:"):
+            return PropCommand(.spawnHeld, propID: String(intent.dropFirst("spawn_prop:".count)))
+        case "clear_props": return PropCommand(.clear)
+        case "put_down":
+            let side = pose?.facingRight == false ? -1.0 : 1.0
+            return PropCommand(
+                .putDown,
+                x: (pose?.x ?? 0) + side * (pose?.displayHeight ?? 110) * 0.30,
+                y: pose?.yFeet ?? 0)
+        case "pick_up":
+            return PropCommand(.pickUp, x: pose?.x ?? 0, y: pose?.yFeet ?? 0, within: 90)
+        default: return nil
         }
     }
 

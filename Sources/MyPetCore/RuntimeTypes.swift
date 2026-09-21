@@ -395,6 +395,8 @@ public struct WorldState: Codable, Sendable, Equatable {
     /// Keyed by child entity. This is derived only through kernel events, not
     /// a second relationship graph or an AppKit-local ownership table.
     public var spatialAttachments: [String: SpatialAttachment]
+    /// Solo prop lifecycle keyed by actor ID; Cast props use entity/slot facts.
+    public var soloProps: [String: SoloProp]
     public var behaviors: [String: BehaviorState]
     public var inputObservations: [String: InputObservation]
     public var relationValues: [String: Double]
@@ -405,6 +407,7 @@ public struct WorldState: Codable, Sendable, Equatable {
         entities: [String: EntityState] = [:],
         slots: [String: InteractionSlot] = [:],
         spatialAttachments: [String: SpatialAttachment] = [:],
+        soloProps: [String: SoloProp] = [:],
         behaviors: [String: BehaviorState] = [:],
         inputObservations: [String: InputObservation] = [:],
         relationValues: [String: Double] = [:],
@@ -414,6 +417,7 @@ public struct WorldState: Codable, Sendable, Equatable {
         self.entities = entities
         self.slots = slots
         self.spatialAttachments = spatialAttachments
+        self.soloProps = soloProps
         self.behaviors = behaviors
         self.inputObservations = inputObservations
         self.relationValues = relationValues
@@ -422,7 +426,7 @@ public struct WorldState: Codable, Sendable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case entities, slots, spatialAttachments, behaviors, inputObservations
+        case entities, slots, spatialAttachments, soloProps, behaviors, inputObservations
         case relationValues, facts, planEpochs
     }
 
@@ -433,6 +437,7 @@ public struct WorldState: Codable, Sendable, Equatable {
             slots: try values.decodeIfPresent([String: InteractionSlot].self, forKey: .slots) ?? [:],
             spatialAttachments: try values.decodeIfPresent(
                 [String: SpatialAttachment].self, forKey: .spatialAttachments) ?? [:],
+            soloProps: try values.decodeIfPresent([String: SoloProp].self, forKey: .soloProps) ?? [:],
             behaviors: try values.decodeIfPresent([String: BehaviorState].self, forKey: .behaviors) ?? [:],
             inputObservations: try values.decodeIfPresent(
                 [String: InputObservation].self, forKey: .inputObservations) ?? [:],
@@ -447,6 +452,7 @@ public struct WorldState: Codable, Sendable, Equatable {
         try values.encode(entities, forKey: .entities)
         try values.encode(slots, forKey: .slots)
         try values.encode(spatialAttachments, forKey: .spatialAttachments)
+        try values.encode(soloProps, forKey: .soloProps)
         try values.encode(behaviors, forKey: .behaviors)
         try values.encode(inputObservations, forKey: .inputObservations)
         try values.encode(relationValues, forKey: .relationValues)
@@ -480,6 +486,10 @@ public struct WorldState: Codable, Sendable, Equatable {
             guard let attachment = spatialAttachments[key] else { continue }
             parts.append(
                 "a:\(key):\(attachment.parentID.raw):\(attachment.socketID):\(attachment.slotRef.key):\(attachment.slotRef.revision)")
+        }
+        for key in soloProps.keys.sorted() {
+            guard let prop = soloProps[key] else { continue }
+            parts.append("prop:\(key):\(prop.propID):\(prop.phase.rawValue):\(prop.x):\(prop.y):\(prop.expiresAtTick.map(String.init) ?? "-"):\(prop.fadeEndsAtTick.map(String.init) ?? "-")")
         }
         let behaviorKeys = runningBehaviorIDs?.sorted() ?? behaviors.keys.sorted()
         for key in behaviorKeys {
@@ -524,6 +534,7 @@ public enum GameEventKind: String, Codable, Sendable {
     case castInvite
     case castArrive
     case castDepart
+    case propCommand
 }
 
 public struct GameEvent: Codable, Sendable, Equatable {
@@ -548,6 +559,7 @@ public struct GameEvent: Codable, Sendable, Equatable {
     public var userText: String?
     public var permissionDomain: String?
     public var permissionAvailable: Bool?
+    public var propCommand: PropCommand?
 
     public init(
         kind: GameEventKind,
@@ -569,7 +581,8 @@ public struct GameEvent: Codable, Sendable, Equatable {
         userAction: String? = nil,
         userText: String? = nil,
         permissionDomain: String? = nil,
-        permissionAvailable: Bool? = nil
+        permissionAvailable: Bool? = nil,
+        propCommand: PropCommand? = nil
     ) {
         self.kind = kind
         self.entity = entity
@@ -591,6 +604,7 @@ public struct GameEvent: Codable, Sendable, Equatable {
         self.userText = userText
         self.permissionDomain = permissionDomain
         self.permissionAvailable = permissionAvailable
+        self.propCommand = propCommand
     }
 
     public var traceDetail: String {
@@ -612,6 +626,8 @@ public struct GameEvent: Codable, Sendable, Equatable {
             return "\(kind.rawValue):\(observation.pluginID):\(observation.channel.rawValue):app=\(observation.appName):window=\(observation.windowTitle):text=\(observation.text):preempt=\(inputPreemptive == true)"
         case .releaseSlot:
             return "\(kind.rawValue):\(slotRef?.key ?? "-"):scope=\(behaviorID ?? actorID?.raw ?? "all")"
+        case .propCommand:
+            return "\(kind.rawValue):\(actorID?.raw ?? "-"):\(propCommand?.operation.rawValue ?? "-"):\(propCommand?.propID ?? "-")"
         default:
             return kind.rawValue
         }

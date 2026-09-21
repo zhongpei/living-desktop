@@ -10,6 +10,7 @@ public struct InvariantViolation: Codable, Equatable, Sendable {
         self.message = message
         self.tick = tick
     }
+
 }
 
 public enum InvariantChecker {
@@ -395,6 +396,7 @@ public final class GameKernel {
         advanceBehaviors(tick: currentTick)
         expireFacts(tick: currentTick)
         expireInputObservations(tick: currentTick)
+        expireSoloProps(tick: currentTick)
         let eventViolations = Array(manualViolations.dropFirst(manualViolationStart))
         // 不把 invariant 结果再写回历史：同一个持续状态每个 tick 只在当 tick
         // 报告一次，避免长跑日志重复膨胀，同时 terminalViolations 仍会做最终检查。
@@ -472,6 +474,12 @@ public final class GameKernel {
         case .destroyEntity:
             guard let id = event.entityID else { return }
             deactivateEntity(id, tick: tick, reason: "destroyed")
+        case .propCommand:
+            guard let actorID = event.actorID,
+                  let command = event.propCommand,
+                  world.entities[actorID.raw]?.kind == .actor,
+                  world.isAlive(actorID) else { return }
+            applyProp(command, actorID: actorID, tick: tick)
         case .createSlot:
             guard let slot = event.slot else { return }
             guard world.isAlive(slot.entityID) else {
@@ -492,7 +500,11 @@ public final class GameKernel {
         case .completeBehavior:
             guard let id = event.behaviorID else { return }
             if event.success ?? true {
+                guard let behavior = world.behaviors[id], behavior.status == .running else { return }
                 finishBehavior(id, success: true, tick: tick)
+                if let command = event.propCommand {
+                    applyProp(command, actorID: behavior.request.actorID, tick: tick)
+                }
             } else {
                 cancelBehavior(id, tick: tick, reason: "body_failed")
             }
@@ -602,8 +614,73 @@ public final class GameKernel {
         }
     }
 
+    private func applyProp(_ command: PropCommand, actorID: EntityID, tick: Int64) {
+        let key = actorID.raw
+        let current = world.soloProps[key]
+        let ttl = min(12_000, max(1, command.ttlTicks ?? 2_400))
+        switch command.operation {
+        case .spawnHeld:
+            guard let id = command.propID, !id.isEmpty else { return }
+            world.soloProps[key] = SoloProp(propID: id, phase: .held)
+        case .spawnPlaced:
+            guard let id = command.propID, !id.isEmpty,
+                  let x = command.x, x.isFinite,
+                  let y = command.y, y.isFinite else { return }
+            world.soloProps[key] = SoloProp(
+                propID: id, phase: .placed, x: x, y: y,
+                expiresAtTick: tick + ttl)
+        case .putDown:
+            guard var prop = current, prop.phase == .held,
+                  let x = command.x, x.isFinite,
+                  let y = command.y, y.isFinite else { return }
+            prop.phase = .placed
+            prop.x = x
+            prop.y = y
+            prop.expiresAtTick = tick + ttl
+            world.soloProps[key] = prop
+        case .pickUp:
+            guard var prop = current, prop.phase == .placed,
+                  let x = command.x, x.isFinite,
+                  let y = command.y, y.isFinite,
+                  let within = command.within, within.isFinite, within >= 0,
+                  hypot(prop.x - x, prop.y - y) <= within else { return }
+            prop.phase = .held
+            prop.expiresAtTick = nil
+            world.soloProps[key] = prop
+        case .despawn:
+            guard var prop = current else { return }
+            if prop.phase == .held {
+                world.soloProps[key] = nil
+            } else {
+                prop.phase = .despawning
+                prop.expiresAtTick = nil
+                prop.fadeEndsAtTick = tick + 8
+                world.soloProps[key] = prop
+            }
+        case .clear:
+            world.soloProps[key] = nil
+        }
+    }
+
+    private func expireSoloProps(tick: Int64) {
+        for key in world.soloProps.keys.sorted() {
+            guard var prop = world.soloProps[key] else { continue }
+            if prop.phase == .placed,
+               let deadline = prop.expiresAtTick, tick >= deadline {
+                prop.phase = .despawning
+                prop.expiresAtTick = nil
+                prop.fadeEndsAtTick = tick + 8
+                world.soloProps[key] = prop
+            } else if prop.phase == .despawning,
+                      let deadline = prop.fadeEndsAtTick, tick >= deadline {
+                world.soloProps[key] = nil
+            }
+        }
+    }
+
     private func deactivateEntity(_ id: EntityID, tick: Int64, reason: String) {
         guard var entity = world.entities[id.raw], entity.alive else { return }
+        world.soloProps[id.raw] = nil
         entity.alive = false
         entity.revision += 1
         world.entities[id.raw] = entity
