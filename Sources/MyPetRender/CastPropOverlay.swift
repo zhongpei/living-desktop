@@ -1,17 +1,19 @@
 import AppKit
+import MyPetContent
 import MyPetCore
-import MyPetRender
 
 /// CastProp 的 AppKit 表现适配器。
 ///
 /// Core 的 CastVisualProjection 只提供已确认实体的安全框；这个类型只把
 /// prop 投影成一个独立的浮层，不创建世界状态，也不参与 slot/剧情决策。
+@MainActor
 final class CastPropOverlay {
-    let propID: String
-    private let visualID: String
     private let emoji: String
+    private let coordinateSpace: any RenderCoordinateSpace
     private let panel: OverlayPanel
     private let imageView: NSImageView
+    private let frameURLs: [URL]
+    private var frameCache: [URL: CGImage] = [:]
     private var handoffPresentation: HandoffPresentation?
 
     private struct HandoffPresentation {
@@ -21,10 +23,10 @@ final class CastPropOverlay {
         let duration: Double
     }
 
-    init(prop: CastProp) {
-        propID = prop.id
-        visualID = prop.visualPackID ?? prop.id
-        emoji = PropCatalog.def(prop.visualPackID ?? prop.id)?.emoji ?? "◼︎"
+    init(visual: CastPropVisual, coordinateSpace: any RenderCoordinateSpace) {
+        emoji = visual.emoji
+        self.coordinateSpace = coordinateSpace
+        frameURLs = PropSpriteLibrary.frameURLs(for: visual.visualID, packURL: nil)
         imageView = NSImageView(frame: NSRect(x: 0, y: 0, width: 64, height: 64))
         imageView.imageScaling = .scaleProportionallyUpOrDown
         panel = OverlayPanel(
@@ -53,23 +55,30 @@ final class CastPropOverlay {
         }
 
         let size = CGFloat(max(24, min(presentedFrame.width, presentedFrame.height)))
-        let rect = Screens.appKitRect(
+        let rect = coordinateSpace.appKitRect(
             flippedTop: CGFloat(presentedFrame.y),
             x: CGFloat(presentedFrame.x),
             width: size,
             height: size)
         panel.setFrame(rect, display: false)
-        let urls = PropSprites.frameURLs(for: visualID, packURL: nil)
         let image: CGImage?
-        if urls.count > 1 {
-            let index = Int(now * 5) % urls.count
-            image = PropSprites.cgImage(urls[index])
-        } else if let url = urls.first {
-            image = PropSprites.cgImage(url)
+        if frameURLs.count > 1 {
+            let index = Int(now * 5) % frameURLs.count
+            let url = frameURLs[index]
+            image = cachedImage(at: url)
+        } else if let url = frameURLs.first {
+            image = cachedImage(at: url)
         } else {
-            image = PropSprites.emojiImage(emoji, size: size)
+            image = PropEmojiImage.make(emoji, size: size)
         }
         imageView.image = image.map { NSImage(cgImage: $0, size: NSSize(width: size, height: size)) }
+    }
+
+    private func cachedImage(at url: URL) -> CGImage? {
+        if let image = frameCache[url] { return image }
+        let image = PropSpriteLibrary.image(at: url)
+        if let image { frameCache[url] = image }
+        return image
     }
 
     /// Starts a visual-only transfer. Core has already emitted the boundary

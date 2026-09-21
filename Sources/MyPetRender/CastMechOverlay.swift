@@ -1,19 +1,19 @@
 import AppKit
 import MyPetCore
-import MyPetRender
 
 /// Deterministic presentation fallback for a logical mech whose dedicated
 /// sprite pack is not installed yet. It is deliberately a geometric overlay,
 /// not an asset-completion claim: the Core projection still exposes the
 /// missing `visualPackID` and the asset audit remains authoritative.
+@MainActor
 final class CastMechOverlay {
-    let mechID: String
+    private let coordinateSpace: any RenderCoordinateSpace
     private let panel: OverlayPanel
     private let view: CastMechFallbackView
 
-    init(member: CastMember) {
-        mechID = member.id
-        view = CastMechFallbackView(title: member.displayName)
+    init(visual: CastMechVisual, coordinateSpace: any RenderCoordinateSpace) {
+        self.coordinateSpace = coordinateSpace
+        view = CastMechFallbackView(title: visual.title)
         panel = OverlayPanel(
             contentView: view,
             initialFrame: NSRect(x: 0, y: 0, width: 96, height: 120))
@@ -23,7 +23,7 @@ final class CastMechOverlay {
     }
 
     func update(frame: LayoutRect, pilotName: String?) {
-        let rect = Screens.appKitRect(
+        let rect = coordinateSpace.appKitRect(
             flippedTop: CGFloat(frame.y),
             x: CGFloat(frame.x),
             width: CGFloat(frame.width),

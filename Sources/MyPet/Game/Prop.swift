@@ -119,78 +119,6 @@ final class PropEntity {
     }
 }
 
-// MARK: - 素材解析（角色包 → 共享包 → emoji 兜底）
-
-enum PropSprites {
-
-    /// 帧序列解析顺序：
-    /// 1. 角色包 props/<id>/frame_NN.webp（多帧 = placed 微动画）
-    /// 2. 角色包 props/<id>.webp
-    /// 3. 共享 props/<id>/frame_NN.webp（bundle Resources/props 或仓库 Resources/props）
-    /// 4. 共享 props/<id>.webp
-    /// 空 = emoji 兜底。
-    static func frameURLs(for id: String, packURL: URL?) -> [URL] {
-        let fm = FileManager.default
-        var singleCandidates: [URL] = []
-        var frameDirs: [URL] = []
-        if let packURL {
-            frameDirs.append(packURL.appendingPathComponent("props/\(id)", isDirectory: true))
-            singleCandidates.append(packURL.appendingPathComponent("props/\(id).webp"))
-        }
-        for shared in sharedRoots() {
-            frameDirs.append(shared.appendingPathComponent(id, isDirectory: true))
-            singleCandidates.append(shared.appendingPathComponent("\(id).webp"))
-        }
-        for dir in frameDirs {
-            let frames = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil))?
-                .filter { $0.pathExtension == "webp" }
-                .sorted { $0.lastPathComponent < $1.lastPathComponent }
-            if let frames, !frames.isEmpty { return frames }
-        }
-        return singleCandidates.first { fm.fileExists(atPath: $0.path) }.map { [$0] } ?? []
-    }
-
-    /// 共享道具根目录（bundle 内 + 仓库 Resources/props，双环境兜底）。
-    static func sharedRoots() -> [URL] {
-        var roots: [URL] = []
-        if let resource = Bundle.main.resourceURL {
-            roots.append(resource.appendingPathComponent("props", isDirectory: true))
-        }
-        // swift run：从可执行文件向上找仓库 Resources/props。
-        if let exe = CommandLine.arguments.first,
-           fmExists(exe) {
-            var dir = URL(fileURLWithPath: exe).resolvingSymlinksInPath().deletingLastPathComponent()
-            for _ in 0..<6 {
-                let candidate = dir.appendingPathComponent("Resources/props", isDirectory: true)
-                if fmExists(candidate.path) { roots.append(candidate) }
-                dir = dir.deletingLastPathComponent()
-            }
-        }
-        return roots
-    }
-
-    private static func fmExists(_ path: String) -> Bool {
-        FileManager.default.fileExists(atPath: path)
-    }
-
-    /// emoji 兜底：渲染进统一方形画布（修裸文本基线发虚的缺陷）。
-    static func emojiImage(_ emoji: String, size: CGFloat) -> CGImage? {
-        let image = NSImage(size: NSSize(width: size, height: size))
-        image.lockFocus()
-        let font = NSFont.systemFont(ofSize: size * 0.72)
-        let attrs: [NSAttributedString.Key: Any] = [.font: font]
-        let str = NSAttributedString(string: emoji, attributes: attrs)
-        let bounds = str.size()
-        str.draw(at: NSPoint(x: (size - bounds.width) / 2, y: (size - bounds.height) / 2))
-        image.unlockFocus()
-        return image.cgImage(forProposedRect: nil, context: nil, hints: nil)
-    }
-
-    static func cgImage(_ url: URL) -> CGImage? {
-        NSImage(contentsOf: url)?.cgImage(forProposedRect: nil, context: nil, hints: nil)
-    }
-}
-
 // MARK: - 控制器
 
 /// held 布局（PetView 第二图层用，视图本地坐标，isFlipped）。
@@ -499,9 +427,9 @@ final class PropController {
     }
 
     private func spriteImage(for e: PropEntity, size: CGFloat) -> CGImage? {
-        let urls = PropSprites.frameURLs(for: e.def.id, packURL: library.packURL)
+        let urls = PropSpriteLibrary.frameURLs(for: e.def.id, packURL: library.packURL)
         if urls.isEmpty {
-            return PropSprites.emojiImage(e.def.emoji, size: size)
+            return PropEmojiImage.make(e.def.emoji, size: size)
         }
         // 多帧 = placed 微动画（慢速循环）；单帧静态。
         let url: URL
@@ -513,7 +441,7 @@ final class PropController {
             url = urls[0]
         }
         if let cached = frameCache[url] { return cached }
-        let image = PropSprites.cgImage(url)
+        let image = PropSpriteLibrary.image(at: url)
         if let image { frameCache[url] = image }
         return image
     }
@@ -539,7 +467,7 @@ final class PropController {
             width: size,
             height: size)
         panel.setFrame(rect, display: false)
-        let image = spriteImage(for: e, size: size) ?? PropSprites.emojiImage(e.def.emoji, size: size)
+        let image = spriteImage(for: e, size: size) ?? PropEmojiImage.make(e.def.emoji, size: size)
         if let image, let view = panel.contentView as? NSImageView {
             view.image = NSImage(cgImage: image, size: NSSize(width: size, height: size))
         }

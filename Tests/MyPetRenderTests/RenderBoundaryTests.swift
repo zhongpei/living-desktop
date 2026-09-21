@@ -16,6 +16,22 @@ final class RenderBoundaryTests: XCTestCase {
             containing: dockStripPoint, frames: screens, primaryTopY: 600), 1)
     }
 
+    func testCastOverlayPresentationOwnsProjectedOverlayLifecycle() {
+        let presentation = CastOverlayPresentation(coordinateSpace: StubCoordinateSpace())
+        let frame = LayoutRect(x: 100, y: 120, width: 64, height: 64)
+        presentation.apply(
+            props: [CastPropVisual(id: "tea", visualID: "tea", emoji: "🍵", frame: frame)],
+            mechs: [CastMechVisual(id: "mech", title: "机甲", frame: frame, pilotName: "pilot")],
+            now: 1)
+        XCTAssertEqual(presentation.visiblePropIDs, ["tea"])
+        XCTAssertEqual(presentation.visibleMechIDs, ["mech"])
+
+        presentation.apply(props: [], mechs: [], now: 2)
+        XCTAssertTrue(presentation.visiblePropIDs.isEmpty)
+        XCTAssertTrue(presentation.visibleMechIDs.isEmpty)
+        presentation.close()
+    }
+
     func testAnimatorConsumesInjectedClipSource() {
         let image = makeImage()
         let source = StubClipSource(

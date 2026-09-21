@@ -2,6 +2,7 @@ import AppKit
 import MyPetContent
 import MyPetCore
 import MyPetPlatform
+import MyPetRender
 
 /// 应用委托：装配 设置 → 素材库 → 控制器 → 菜单栏/设置窗，然后交给主循环。
 /// 所有宠物（petpack 库）默认全部打包进 Resources，菜单可随时切换。
@@ -28,10 +29,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Cast controllers share one SceneGraph so actor/hand/prop reparenting
     /// has one spatial tree instead of one local tree per panel.
     private let castSceneGraph = SceneGraph(rootID: "cast-scene")
-    /// CastPack 道具的独立表现面板；生命周期仍由 CastRuntime 决定。
-    private var castPropOverlays: [String: CastPropOverlay] = [:]
-    /// 专属机甲 sprite 尚未入库时的确定性几何降级层。
-    private var castMechOverlays: [String: CastMechOverlay] = [:]
+    /// 独立 prop/mech 浮层只消费 Core 投影；App 不持有 NSPanel 集合。
+    private let castOverlays = CastOverlayPresentation()
     private var castTimer: Timer?
     private var castFrameClock: FixedStepClock?
     private var lastCastFrameAt = ProcessInfo.processInfo.systemUptime
@@ -289,10 +288,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         castControllers.removeAll()
         castSceneGraph.removeAll()
-        for overlay in castPropOverlays.values { overlay.close() }
-        castPropOverlays.removeAll()
-        for overlay in castMechOverlays.values { overlay.close() }
-        castMechOverlays.removeAll()
+        castOverlays.close()
         castDepartureDeadlines.removeAll()
         castRuntime = nil
         if wasCastActive {
@@ -394,9 +390,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 第二个角色入场会重新分配第一个角色的安全框；逐个回写 AppKit 面板。
         for pet in castControllers.values { pet.relayout() }
 
-        let castLayout = syncCastPropOverlays(runtime: runtime, settings: settings)
+        let castLayout = makeCastLayout(runtime: runtime, settings: settings)
         syncCastCharacterFrames(layout: castLayout)
-        syncCastMechOverlays(runtime: runtime, layout: castLayout)
+        syncCastOverlays(runtime: runtime, settings: settings, layout: castLayout)
         let targetFrames = Dictionary(uniqueKeysWithValues: castLayout.entities.compactMap { entity -> (String, LayoutRect)? in
             guard let frame = entity.frame, entity.renderable else { return nil }
             return (entity.id.raw, frame)
@@ -434,12 +430,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // a SceneGraph parent in AppKit.
         let now = ProcessInfo.processInfo.systemUptime
         for event in runtime.consumeStoryHandoffEvents() {
-            guard let overlay = castPropOverlays[event.handoff.propID],
-                  let from = targetFrames[event.handoff.propID],
+            guard let from = targetFrames[event.handoff.propID],
                   let toActor = targetFrames[event.handoff.toActorID] else { continue }
-            overlay.beginHandoff(
-                from: from,
-                toActorFrame: toActor,
+            castOverlays.beginHandoff(
+                propID: event.handoff.propID, from: from, toActorFrame: toActor,
                 now: now,
                 durationTicks: event.handoff.durationTicks,
                 stepMilliseconds: runtime.clock.stepMilliseconds)
@@ -458,7 +452,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// 把 Core 的 CastVisualProjection 接入真实工作区。道具是独立浮层，
     /// 不借用某个角色的 PropController，避免“角色走开后道具跟着走”的错误。
-    private func syncCastPropOverlays(
+    private func makeCastLayout(
         runtime: CastRuntime,
         settings: Settings
     ) -> CastLayoutSnapshot {
@@ -477,37 +471,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     width: Double(cell.width / cell.height) * actorHeight,
                     height: actorHeight))
         })
-        let projection = CastVisualProjection.project(
+        return CastVisualProjection.project(
             runtime: runtime,
             in: bounds,
             actorHeight: actorHeight,
             actorSizes: actorSizes,
             renderableMemberIDs: Set(castControllers.keys))
-
-        guard settings.propsEnabled else {
-            for overlay in castPropOverlays.values { overlay.close() }
-            castPropOverlays.removeAll()
-            return projection
-        }
-        let visibleProps = Dictionary(uniqueKeysWithValues: projection.entities
-            .filter { $0.kind == .prop && $0.renderable }
-            .compactMap { entity -> (String, LayoutRect)? in
-                guard let frame = entity.frame else { return nil }
-                return (entity.id.raw, frame)
-            })
-        let activeProps = Dictionary(uniqueKeysWithValues: runtime.activeProps.map { ($0.id, $0) })
-
-        for id in Array(castPropOverlays.keys) where visibleProps[id] == nil || activeProps[id] == nil {
-            castPropOverlays.removeValue(forKey: id)?.close()
-        }
-        for (id, frame) in visibleProps {
-            guard let prop = activeProps[id] else { continue }
-            if castPropOverlays[id] == nil {
-                castPropOverlays[id] = CastPropOverlay(prop: prop)
-            }
-            castPropOverlays[id]?.update(frame: frame, now: ProcessInfo.processInfo.systemUptime)
-        }
-        return projection
     }
 
     /// All visible cast characters, including attached pilots and social
@@ -523,31 +492,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func syncCastMechOverlays(
+    private func syncCastOverlays(
         runtime: CastRuntime,
+        settings: Settings,
         layout: CastLayoutSnapshot
     ) {
-        let visibleMechs = Dictionary(uniqueKeysWithValues: layout.entities.compactMap {
-            entity -> (String, CastVisualEntity)? in
-            guard entity.kind == .mech,
-                  entity.visualPackID == nil,
-                  entity.renderable,
-                  entity.frame != nil else { return nil }
-            return (entity.id.raw, entity)
-        })
-        for id in Array(castMechOverlays.keys) where visibleMechs[id] == nil {
-            castMechOverlays.removeValue(forKey: id)?.close()
-        }
-        for (id, entity) in visibleMechs {
-            guard let member = runtime.director.member(id), let frame = entity.frame else { continue }
-            if castMechOverlays[id] == nil {
-                castMechOverlays[id] = CastMechOverlay(member: member)
-            }
+        let activeProps = Dictionary(uniqueKeysWithValues: runtime.activeProps.map { ($0.id, $0) })
+        let props: [CastPropVisual] = settings.propsEnabled ? layout.entities.compactMap { entity in
+            guard entity.kind == .prop, entity.renderable, let frame = entity.frame,
+                  let prop = activeProps[entity.id.raw] else { return nil }
+            let visualID = prop.visualPackID ?? prop.id
+            return CastPropVisual(
+                id: prop.id, visualID: visualID,
+                emoji: PropCatalog.def(visualID)?.emoji ?? "◼︎", frame: frame)
+        } : []
+        let mechs: [CastMechVisual] = layout.entities.compactMap { entity in
+            guard entity.kind == .mech, entity.visualPackID == nil,
+                  entity.renderable, let frame = entity.frame else { return nil }
+            let id = entity.id.raw
             let pilotName = layout.entities.first {
                 $0.kind == .actor && $0.attachedToID?.raw == id
             }?.displayName
-            castMechOverlays[id]?.update(frame: frame, pilotName: pilotName)
+            return CastMechVisual(id: id, title: entity.displayName,
+                                  frame: frame, pilotName: pilotName)
         }
+        castOverlays.apply(props: props, mechs: mechs,
+                           now: ProcessInfo.processInfo.systemUptime)
     }
 
     private func castSpawn(index: Int, count: Int) -> CGPoint {
