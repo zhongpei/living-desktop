@@ -1040,10 +1040,6 @@ final class PetController {
         sceneMoveDone = nil
         sceneMoveTarget = nil
         scenePerformDone = nil
-        // 自然收场：Core 把手中道具放在原地，并按固定 tick TTL 清理。
-        if soloProp?.phase == .held {
-            submitProp(PropCommand(.putDown, x: Double(model.x), y: Double(model.yFeet)))
-        }
     }
 
     private func abortScene(reason: String = "interrupted") {
@@ -1157,6 +1153,18 @@ final class PetController {
         _ action: SimulationNeedleAction,
         completion: @escaping (Bool, SceneBodyDriver.BodyResultReporter?) -> Void
     ) {
+        if !settings.propsEnabled {
+            switch action {
+            case .spawnProp, .putDown, .pickUp, .clearProps:
+                completion(true, nil)
+                return
+            default: break
+            }
+        }
+        if case .spawnProp(let id) = action, PropCatalog.def(id) == nil {
+            completion(true, nil)
+            return
+        }
         let execution = semanticEngine.actionRuntime.execute(
             action,
             tick: gameplayRuntime.clock.tick,
@@ -1171,6 +1179,7 @@ final class PetController {
             return
         }
         pendingRuntimeActions[request.id] = .scene(action, completion)
+        scenePendingBodyID = request.id
         guard gameplayRuntime.submitAction(execution) != nil else {
             pendingRuntimeActions[request.id] = nil
             completion(false, nil)
@@ -1430,6 +1439,7 @@ final class PetController {
     private var sceneMoveTarget: (x: CGFloat, top: Bool, window: WindowEntity?)?
     private var sceneMoveDeadline: Double = 0
     private var scenePerformDone: (() -> Void)?
+    private var scenePendingBodyID: String?
     /// 完成令牌：sceneMove/scenePerform 每次调用 +1，过期回调（场景已步进、
     /// 看门狗已先行）自动作废 —— 与 SceneBodyDriver 的 stepGeneration 双向幂等。
     private var sceneMoveToken = 0
@@ -1483,23 +1493,32 @@ final class PetController {
         done?()
     }
 
-    func sceneSpawnProp(_ id: String, at x: CGFloat, footY: CGFloat) {
-        guard settings.propsEnabled, PropCatalog.def(id) != nil else { return }
-        submitProp(PropCommand(.spawnHeld, propID: id))
+    var sceneBodyCommitState: SceneBodyCommitState {
+        guard let id = scenePendingBodyID else { return .failed }
+        switch gameplayRuntime.world.behaviors[id]?.status {
+        case .completed: return .completed
+        case .cancelled, .rejected: return .failed
+        case .running, nil: return .pending
+        }
     }
 
-    func sceneClearProps() {
+    func sceneFadeProps() {
         submitProp(PropCommand(.despawn))
+    }
+
+    func sceneFinishProps() {
+        guard soloProp?.phase == .held else { return }
+        submitProp(PropCommand(.putDown, x: Double(model.x), y: Double(model.yFeet)))
     }
 
     @discardableResult
     func scenePutDown() -> Bool {
-        semanticPutDown()
+        semanticPutDown(commitImmediately: false)
     }
 
     @discardableResult
     func scenePickUp() -> Bool {
-        semanticPickUp()
+        semanticPickUp(commitImmediately: false)
     }
 
     func scenePerform(_ candidates: [String], onDone: @escaping () -> Void) {

@@ -443,6 +443,26 @@ final class GameRuntimeTests: XCTestCase {
         }
     }
 
+    func testCancelledPropBodyCannotCreateAnOrphanFact() {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let runtime = GameRuntime(bodyExecutionMode: .external)
+        _ = runtime.step(events: [GameEvent(kind: .registerEntity, entity: actor)])
+        let execution = ActionRuntime().execute(
+            .spawnProp("tea"), tick: runtime.clock.tick,
+            actorID: actor.id, world: runtime.world, context: RuntimeContext())
+        _ = runtime.submitAction(execution)
+        _ = runtime.step()
+        let command = try! XCTUnwrap(runtime.drainBodyCommands(for: actor.id).first)
+        runtime.submit(GameEvent(
+            kind: .userInteraction, actorID: actor.id, userAction: "grab"))
+        _ = runtime.step()
+        XCTAssertFalse(runtime.submitBodyResult(BodyResult(
+            behaviorID: command.behaviorID,
+            executionToken: command.executionToken,
+            outcome: .completed)))
+        XCTAssertNil(runtime.world.soloProps[actor.id.raw])
+    }
+
     func testNormalStepAndPlatformIngressRejectRawBehavior() {
         let actor = EntityState(id: EntityID("pet"), kind: .actor)
         let request = BehaviorRequest(

@@ -59,9 +59,11 @@ enum SceneDecision: Equatable {
 
 /// 场景对舞台的接口：每一步怎么落地由控制器（ActionDirector 侧）回答。
 /// 所有 onDone 必须最终被调用（含失败路径），否则场景卡死。
+enum SceneBodyCommitState { case pending, completed, failed }
+
 @MainActor
 protocol SceneStaging: AnyObject {
-    /// 宠物脚位（翻转坐标，spawnProp 摆放点用）。
+    /// 宠物脚位（翻转坐标）。
     var petX: CGFloat { get }
     var petYFeet: CGFloat { get }
     /// 表演候选是否存在（素材降级判定）。
@@ -72,8 +74,12 @@ protocol SceneStaging: AnyObject {
     func floorNearPoint() -> CGFloat
 
     func sceneMove(toX: CGFloat, top: Bool, window: WindowEntity?, onDone: @escaping () -> Void)
-    func sceneSpawnProp(_ id: String, at x: CGFloat, footY: CGFloat)
-    func sceneClearProps()
+    /// 仅用于道具步骤：身体回报是否已被同一个 Core pulse 承诺。
+    var sceneBodyCommitState: SceneBodyCommitState { get }
+    /// 场景收场时的视觉淡出，不是已授权 clearProps 步骤。
+    func sceneFadeProps()
+    /// 自然完成时保留已放下的道具，只处理仍在手上的道具。
+    func sceneFinishProps()
     /// 放下持有的道具（节拍由舞台配合）；返回 false = 手里没道具。
     @discardableResult
     func scenePutDown() -> Bool
@@ -85,6 +91,12 @@ protocol SceneStaging: AnyObject {
     func sceneSleep()
     /// 决策点：异步咨询行动脑（或内置策略），回答经 SceneBodyDriver.resume 生效。
     func sceneDecisionPoint(_ scene: SceneRecipe, stepIndex: Int, resume: @escaping (SceneDecision) -> Void)
+}
+
+extension SceneStaging {
+    var sceneBodyCommitState: SceneBodyCommitState { .completed }
+    func sceneFadeProps() {}
+    func sceneFinishProps() {}
 }
 
 /// AppKit body driver for the Core-owned semantic scene cursor.
@@ -112,6 +124,7 @@ final class SceneBodyDriver {
         case moving
         case performing
         case waiting(until: Double)
+        case committingProp
         case deciding
         case sleeping
         case finished
@@ -188,7 +201,7 @@ final class SceneBodyDriver {
         finishBody(success: false)
         phase = .finished
         semanticRunner.cancel()
-        stage?.sceneClearProps()
+        stage?.sceneFadeProps()
     }
 
     /// 每帧推进：看表（wait 到期 / 步骤超时自愈）。
@@ -198,12 +211,20 @@ final class SceneBodyDriver {
         switch phase {
         case .waiting(let until):
             if now >= until { finishStep() }
+        case .committingProp:
+            guard let stage else { failScene(); return }
+            switch stage.sceneBodyCommitState {
+            case .pending:
+                if now - stepStartedAt > stepTimeout { failScene() }
+            case .completed: completeStagedStep()
+            case .failed: failScene()
+            }
         case .authorizing:
             if now - stepStartedAt > stepTimeout {
                 finishBody(success: false)
                 phase = .finished
                 semanticRunner.cancel()
-                stage?.sceneClearProps()
+                stage?.sceneFadeProps()
             }
         case .moving, .performing:
             if now - stepStartedAt > stepTimeout { failScene() }
@@ -227,7 +248,7 @@ final class SceneBodyDriver {
                 self.phase = .finished
                 self.completed = true
                 self.semanticRunner.cancel()
-                stage?.sceneClearProps()
+                stage?.sceneFadeProps()
             }
         case .say(let intent):
             authorizeDecision(.say(intent.rawValue)) { [weak self, weak stage] in
@@ -259,7 +280,7 @@ final class SceneBodyDriver {
         guard let step = semanticRunner.currentStep else {
             phase = .finished
             completed = semanticRunner.status == .completed
-            stage.sceneClearProps()
+            stage.sceneFinishProps()
             return
         }
         stepGeneration += 1
@@ -300,7 +321,7 @@ final class SceneBodyDriver {
         finishBody(success: false)
         phase = .finished
         semanticRunner.cancel()
-        stage?.sceneClearProps()
+        stage?.sceneFadeProps()
     }
 
     private static func action(for operation: SimulationSceneOperation) -> SimulationNeedleAction {
@@ -345,13 +366,11 @@ final class SceneBodyDriver {
                 self?.stepDone(gen: gen)
             }
 
-        case .spawnProp(let id):
-            stage.sceneSpawnProp(id, at: stage.petX, footY: stage.petYFeet)
-            advanceStep()
+        case .spawnProp:
+            beginPropCommit()
 
         case .clearProps:
-            stage.sceneClearProps()
-            advanceStep()
+            beginPropCommit()
 
         case .putDown:
             if stage.scenePutDown() {
@@ -421,8 +440,31 @@ final class SceneBodyDriver {
         case .moving, .performing, .waiting: break
         default: return
         }
-        guard let stage else { return }
+        guard stage != nil else { return }
+        if let operation = semanticRunner.currentStep?.operation {
+            switch operation {
+            case .putDown, .pickUp:
+                beginPropCommit()
+                return
+            default: break
+            }
+        }
         finishBody(success: true)
+        completeStagedStep()
+    }
+
+    private func beginPropCommit() {
+        let expectsCoreCommit = activeBodyResultReporter != nil
+        finishBody(success: true)
+        if expectsCoreCommit {
+            phase = .committingProp
+        } else {
+            completeStagedStep()
+        }
+    }
+
+    private func completeStagedStep() {
+        guard let stage else { return }
         let idx = min(stepIndex, recipe.steps.count - 1)
         if recipe.steps[idx].decisionPoint {
             phase = .deciding
@@ -441,7 +483,7 @@ final class SceneBodyDriver {
         if semanticRunner.completeStep() {
             phase = .finished
             completed = true
-            stage?.sceneClearProps()
+            stage?.sceneFinishProps()
             return
         }
         phase = .ready

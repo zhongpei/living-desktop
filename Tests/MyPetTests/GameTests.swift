@@ -278,9 +278,8 @@ final class GameTests: XCTestCase {
             guardCounter += 1
         }
         XCTAssertTrue(runner.completed)
-        XCTAssertTrue(stage.propsCleared, "场景结束要回收道具")
-        XCTAssertFalse(stage.spawnedProps.isEmpty)
-        XCTAssertEqual(stage.spawnedProps, ["tea"])
+        XCTAssertTrue(stage.finishedProps, "自然结束只收束手持道具，保留已放下的道具")
+        XCTAssertFalse(stage.propsCleared)
     }
 
     func testSceneRunnerAbortsWhenAnchorVanishes() {
@@ -339,14 +338,12 @@ final class GameTests: XCTestCase {
         runner.tick(now: 0)
 
         XCTAssertEqual(actions, [.moveTo("floor_near")])
-        XCTAssertTrue(stage.spawnedProps.isEmpty)
 
         completions.removeFirst()(true)
         XCTAssertEqual(actions, [.moveTo("floor_near"), .spawnProp("tea")])
-        XCTAssertTrue(stage.spawnedProps.isEmpty)
 
         completions.removeFirst()(true)
-        XCTAssertEqual(stage.spawnedProps, ["tea"])
+        XCTAssertEqual(actions.count, 3, "第二步授权后才请求下一步")
     }
 
     func testSceneReportsBodyCompletionOnlyAfterPhysicalStepFinishes() {
@@ -371,6 +368,50 @@ final class GameTests: XCTestCase {
 
         XCTAssertEqual(results, [true])
         XCTAssertTrue(runner.completed)
+    }
+
+    func testSceneWaitsForCorePropCommitBeforeNextDependentStep() {
+        let recipe = SimulationSceneRecipe(
+            id: "prop-commit", goals: [.wander],
+            steps: [SimulationSceneStep(.spawnProp("tea")), SimulationSceneStep(.putDown)])
+        let stage = FakeStage()
+        var actions: [SimulationNeedleAction] = []
+        var results: [Bool] = []
+        let runner = SceneBodyDriver(recipe: recipe, authorize: { action, completion in
+            actions.append(action)
+            completion(true, { results.append($0) })
+        })
+
+        runner.start(stage: stage, activityWindow: nil, now: 0)
+        runner.tick(now: 0)
+        XCTAssertEqual(actions, [.spawnProp("tea")])
+        XCTAssertEqual(results, [true])
+        runner.tick(now: 1)
+        XCTAssertEqual(actions, [.spawnProp("tea")], "未见 Core 道具事实不能继续放下")
+
+        stage.sceneBodyCommitState = .completed
+        runner.tick(now: 2)
+        XCTAssertEqual(actions, [.spawnProp("tea"), .putDown])
+    }
+
+    func testRejectedPropCommitAbortsSceneWithoutExecutingNextStep() {
+        let recipe = SimulationSceneRecipe(
+            id: "prop-reject", goals: [.wander],
+            steps: [SimulationSceneStep(.spawnProp("tea")), SimulationSceneStep(.putDown)])
+        let stage = FakeStage()
+        var actions: [SimulationNeedleAction] = []
+        let runner = SceneBodyDriver(recipe: recipe, authorize: { action, completion in
+            actions.append(action)
+            completion(true, { _ in })
+        })
+        runner.start(stage: stage, activityWindow: nil, now: 0)
+        runner.tick(now: 0)
+        stage.sceneBodyCommitState = .failed
+        runner.tick(now: 1)
+
+        XCTAssertFalse(runner.isActive)
+        XCTAssertEqual(actions, [.spawnProp("tea")])
+        XCTAssertTrue(stage.propsCleared)
     }
 
     func testScenePhysicalTimeoutReportsFailureAndDoesNotAdvance() {
@@ -408,7 +449,7 @@ final class GameTests: XCTestCase {
             guardCounter += 1
         }
         XCTAssertGreaterThan(stage.decisionPoints, 0, "决策点必须咨询舞台")
-        XCTAssertTrue(stage.propsCleared)
+        XCTAssertTrue(stage.propsCleared || stage.finishedProps)
     }
 
     // MARK: Memory / Quips
@@ -914,8 +955,9 @@ private final class FakeStage: SceneStaging {
     var petX: CGFloat = 100
     var petYFeet: CGFloat = 800
     var resolveAnchorSucceeds = true
-    var spawnedProps: [String] = []
+    var sceneBodyCommitState: SceneBodyCommitState = .pending
     var propsCleared = false
+    var finishedProps = false
     var decisionPoints = 0
     var performedClips: [String] = []
     var hasClips = false
@@ -944,11 +986,8 @@ private final class FakeStage: SceneStaging {
         if completeMovesImmediately { onDone() }
     }
 
-    func sceneSpawnProp(_ id: String, at x: CGFloat, footY: CGFloat) {
-        spawnedProps.append(id)
-    }
-
-    func sceneClearProps() { propsCleared = true }
+    func sceneFadeProps() { propsCleared = true }
+    func sceneFinishProps() { finishedProps = true }
 
     var putDowns = 0
     var pickUps = 0
