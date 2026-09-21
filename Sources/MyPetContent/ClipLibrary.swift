@@ -58,7 +58,7 @@ public final class ClipLibrary: SpriteClipSource {
     public static let baselineRatio: CGFloat = 0.88
 
     /// 身体线槽位。idle 有变体池（idle, idle_2, ...），其余每槽一个 clip。
-    public enum BaseMotion: String, CaseIterable {
+    public enum BaseMotion: String, CaseIterable, Sendable {
         case idle, walk, run, airborne, drag
     }
 

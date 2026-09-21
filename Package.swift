@@ -68,7 +68,7 @@ let package = Package(
         ),
         .target(
             name: "MyPetRender",
-            dependencies: ["MyPetCore", "MyPetContent"],
+            dependencies: ["MyPetContent"],
             path: "Sources/MyPetRender"
         ),
         .executableTarget(
@@ -104,7 +104,7 @@ let package = Package(
         ),
         .testTarget(
             name: "MyPetRenderTests",
-            dependencies: ["MyPetRender", "MyPetCore", "MyPetContent"],
+            dependencies: ["MyPetRender", "MyPetContent"],
             path: "Tests/MyPetRenderTests"
         ),
         .testTarget(

@@ -72,7 +72,6 @@ final class PetController {
     let brain = RandomBrain()
     /// Needle 3 行动脑（模型缺失时 isAvailable == false）。
     let needle: NeedleBrain
-    let animator: SpriteAnimator
     let library: ClipLibrary
     /// 动作运行时：verbs 唯一入口（大脑/菜单/前台跟随都走它）。
     let actions: ActionRuntime
@@ -109,8 +108,7 @@ final class PetController {
     /// 下一个 runtime pulse 才会让 AppKit 身体执行。
     private var pendingRuntimeActions: [String: PendingRuntimeAction] = [:]
 
-    private let panel: OverlayPanel
-    private let view: PetView
+    private let presentation: ActorPresentation
     /// 右键角色时的快速操作环；它只属于当前角色，不进入全局菜单。
     private let actionRing = ActionRingPanel()
     /// 多角色共用的空间登记表；单宠物/测试装配仍可传 nil。
@@ -121,8 +119,6 @@ final class PetController {
     private var lastWindowTitleFingerprint: String?
     private var handledForegroundRevision = 0
     private let puller = WindowPuller()
-    /// 气泡（角色说话）。
-    private let bubble = SpeechBubble()
     /// 世界事件环（进 BrainContextSnapshot.recentEvents）。
     private var recentEvents: [(t: Double, text: String)] = []
     private var lastWorldFingerprint = ""
@@ -200,7 +196,6 @@ final class PetController {
         self.teacherBrain = teacherBrain ?? TeacherBrain()
         self.world = perception.world
         self.systemWorld = SystemWorld(world: world)
-        self.animator = SpriteAnimator(source: library)
         let graph = injectedSceneGraph ?? SceneGraph(rootID: "scene")
         let actorNode = SceneNode(id: "actor:\(runtimeActorID.raw)")
         let handSocket = try! actorNode.addSocket("hand")
@@ -228,8 +223,13 @@ final class PetController {
         model.spawn(onFloorAt: spawnPoint)
         self.actions = ActionRuntime(model: model, library: library)
 
-        self.view = PetView(frame: NSRect(x: 0, y: 0, width: displayW, height: displayH))
-        self.panel = OverlayPanel(contentView: view, initialFrame: NSRect(x: startX - displayW / 2, y: 0, width: displayW, height: displayH))
+        self.presentation = ActorPresentation(
+            source: library,
+            initialFrame: NSRect(
+                x: startX - displayW / 2,
+                y: 0,
+                width: displayW,
+                height: displayH))
 
         wireView()
         goalBrainCoordinator = GoalBrainCoordinator(local: self.localBrain, teacher: self.teacherBrain)
@@ -237,7 +237,7 @@ final class PetController {
         placePanel()
         pushFirstFrame()
         // 非激活面板不会自己上屏：不抢 key 也要 orderFront。
-        panel.orderFrontRegardless()
+        presentation.show()
     }
 
     func start() {
@@ -281,7 +281,7 @@ final class PetController {
         isDeparting = false
         castTransition = nil
         castTransitionStartedAt = nil
-        panel.alphaValue = 1
+        presentation.setOpacity(1)
         placePanel()
     }
 
@@ -481,7 +481,7 @@ final class PetController {
         isDeparting = false
         castTransition = nil
         castTransitionStartedAt = nil
-        panel.alphaValue = 1
+        presentation.setOpacity(1)
         timer?.invalidate()
         timer = nil
         cancelPendingRuntimeActions()
@@ -510,9 +510,8 @@ final class PetController {
     func closePanel() {
         actionRing.dismiss()
         actionRingOpen = false
-        panel.alphaValue = 1
-        panel.orderOut(nil)
-        bubble.dismiss()
+        presentation.setOpacity(1)
+        presentation.hide()
         props.clear()
     }
 
@@ -590,9 +589,9 @@ final class PetController {
         props.tick(petX: model.x, petYFeet: model.yFeet, facingRight: model.facingRight,
                    displayHeight: settings.displayHeight, now: clock)
         if let layout = props.heldLayout(displayHeight: settings.displayHeight) {
-            view.displayProp(image: layout.image, rect: layout.rect)
+            presentation.displayProp(image: layout.image, rect: layout.rect)
         } else {
-            view.displayProp(image: nil, rect: .zero)
+            presentation.displayProp(image: nil, rect: .zero)
         }
     }
 
@@ -709,7 +708,7 @@ final class PetController {
         guard pendingRuntimeActions.isEmpty else { return }
         // 表演收尾：once 型播完（isFinished）由这里清掉。
         if let p = actions.performance, p.endsAt == nil,
-           animator.clipName == p.clipKey, animator.isFinished {
+           presentation.clipName == p.clipKey, presentation.animationFinished {
             actions.cancelPerformance()
         }
 
@@ -1594,7 +1593,7 @@ final class PetController {
 
     private func showSpeech(_ text: String, emotion: String = "neutral") {
         model.wake()
-        bubble.show(text, headX: model.x, headY: model.yFeet)
+        presentation.speak(text, headX: model.x, headY: model.yFeet)
         brainState.apply(event: .spoke(text: text), now: clock)
         pushRecentEvent("pet spoke")
         // game.md §14：语言和动画结合 —— 情绪驱动一个短表演
@@ -2057,22 +2056,19 @@ final class PetController {
     private func pushFirstFrame() {
         let idle = idlePrimary
         if let frames = library.frames(for: idle), let img = frames.first {
-            animator.play(idle)
-            view.display(image: img, mirrored: false)
+            presentation.play(idle)
+            presentation.showInitial(image: img, mirrored: false)
         }
     }
 
     private func renderFrame(dt: Double) {
         selectClip()
-        let (image, changed) = animator.tick(dt: dt)
-        if changed, let image {
-            // 素材实况朝向 ⊕ 移动方向 = 是否镜像（rei_chibi 步态实为朝左，靠这个翻正）。
-            let authored = library.facing(for: animator.clipName)
-            view.display(
-                image: image,
-                mirrored: ClipLibrary.mirrorNeeded(authored: authored, movingRight: model.facingRight)
-            )
-        }
+        let authored = library.facing(for: presentation.clipName)
+        presentation.advance(
+            dt: dt,
+            mirrored: ClipLibrary.mirrorNeeded(
+                authored: authored,
+                movingRight: model.facingRight))
     }
 
     /// 身体状态 + 当前活动 → 该播哪个 clip。
@@ -2081,46 +2077,46 @@ final class PetController {
     private func selectClip() {
         switch model.state {
         case .asleep:
-            animator.play(sleepClip ?? idlePrimary)
+            presentation.play(sleepClip ?? idlePrimary)
         case .dragged:
-            animator.play(library.baseOrFallback(.drag))
+            presentation.play(library.baseOrFallback(.drag))
         case .tossed:
-            animator.play(library.baseOrFallback(.airborne))
+            presentation.play(library.baseOrFallback(.airborne))
         case .airborne:
             // 水平速度大 → 奔跑姿势飞跃；否则屏息。
-            animator.play(abs(model.vx) > 200
+            presentation.play(abs(model.vx) > 200
                 ? library.baseOrFallback(.run)
                 : library.baseOrFallback(.airborne))
         case .grounded, .perched:
             // 表演线：actions/ 覆盖层（tick 已保证身体一动就取消）。
             if let p = actions.performance {
-                animator.play(p.clipKey)
+                presentation.play(p.clipKey)
                 return
             }
             if model.walking {
-                animator.play(library.baseOrFallback(.walk))
+                presentation.play(library.baseOrFallback(.walk))
                 return
             }
             // 画面还挂在移动/睡眠 clip 上（刚停步/刚醒来）→ 立刻切回 idle。
-            if animator.clipName != idleClip {
+            if presentation.clipName != idleClip {
                 let movementKeys: Set<String> = [
                     library.baseOrFallback(.walk),
                     library.baseOrFallback(.run),
                     sleepClip ?? ""
                 ]
-                if movementKeys.contains(animator.clipName) {
+                if movementKeys.contains(presentation.clipName) {
                     idleClip = idlePrimary
-                    animator.play(idleClip, restart: true)
+                    presentation.play(idleClip, restart: true)
                 }
             }
             // 偶尔换一种闲姿（idle 变体池轮换）。
             if clock > idleSwapAt {
                 idleSwapAt = clock + Double.random(in: 4...9)
                 idleClip = library.idlePool.randomElement() ?? idlePrimary
-                animator.play(idleClip, restart: true)
+                presentation.play(idleClip, restart: true)
             } else {
                 if idleClip.isEmpty { idleClip = idlePrimary }
-                animator.play(idleClip)
+                presentation.play(idleClip)
             }
         }
     }
@@ -2141,7 +2137,7 @@ final class PetController {
             // Do not fit to one screen or run group layout while the mouse owns
             // the character; those policies made vertical and cross-screen drag
             // appear stuck. Release returns to normal toss/bounce physics.
-            panel.setFrame(
+            presentation.setFrame(
                 Screens.appKitRect(
                     flippedTop: model.yFeet - displayH * ClipLibrary.baselineRatio,
                     x: model.x - displayW / 2,
@@ -2178,7 +2174,7 @@ final class PetController {
                 x: CGFloat(presented.x),
                 width: CGFloat(presented.width),
                 height: CGFloat(presented.height))
-            panel.setFrame(rect, display: false)
+            presentation.setFrame(rect, display: false)
             return
         }
         // 工作区坐标本身是稳定的屏幕 seam：同一块显示器上的角色需要
@@ -2193,19 +2189,19 @@ final class PetController {
         } else {
             progress = 1
         }
-        let presentation = transition?.presentation(
+        let transitionPresentation = transition?.presentation(
             at: progress,
             leadingEdge: model.x <= (work.left + work.right) / 2)
         var presented = placed.frame
-        if let presentation {
+        if let transitionPresentation {
             presented = LayoutRect(
-                x: presented.x + presented.width * presentation.offsetXRatio,
-                y: presented.y + presented.height * presentation.offsetYRatio,
+                x: presented.x + presented.width * transitionPresentation.offsetXRatio,
+                y: presented.y + presented.height * transitionPresentation.offsetYRatio,
                 width: presented.width,
                 height: presented.height)
-            panel.alphaValue = CGFloat(presentation.opacity)
+            presentation.setOpacity(CGFloat(transitionPresentation.opacity))
         } else {
-            panel.alphaValue = 1
+            presentation.setOpacity(1)
         }
         let rect = Screens.appKitRect(
             flippedTop: CGFloat(presented.y),
@@ -2213,17 +2209,17 @@ final class PetController {
             width: CGFloat(presented.width),
             height: CGFloat(presented.height)
         )
-        panel.setFrame(rect, display: false)
+        presentation.setFrame(rect, display: false)
         if transition != nil, progress >= 1 {
             castTransition = nil
             castTransitionStartedAt = nil
-            panel.alphaValue = 1
+            presentation.setOpacity(1)
             let finalRect = Screens.appKitRect(
                 flippedTop: CGFloat(placed.frame.y),
                 x: CGFloat(placed.frame.x),
                 width: CGFloat(placed.frame.width),
                 height: CGFloat(placed.frame.height))
-            panel.setFrame(finalRect, display: false)
+            presentation.setFrame(finalRect, display: false)
         }
     }
 
@@ -2241,7 +2237,7 @@ final class PetController {
             self?.openChatInput()
         }
 
-        view.onMouseDown = { [weak self] cursor in
+        presentation.onMouseDown = { [weak self] cursor in
             guard let self else { return }
             self.actionRing.dismiss()
             self.actionRingOpen = false
@@ -2262,14 +2258,14 @@ final class PetController {
                 self.beginPull()
             }
         }
-        view.onMouseDragged = { [weak self] cursor in
+        presentation.onMouseDragged = { [weak self] cursor in
             guard let self else { return }
             self.model.drag(to: cursor, dt: 1.0 / 40.0)
             if self.model.isPulling() {
                 self.updatePull(cursor: cursor)
             }
         }
-        view.onMouseUp = { [weak self] cursor, wasClick in
+        presentation.onMouseUp = { [weak self] cursor, wasClick in
             guard let self else { return }
             if self.model.isPulling() {
                 self.puller.end()
@@ -2282,7 +2278,7 @@ final class PetController {
                 self.brainState.apply(event: .tossed, now: self.clock)
             }
         }
-        view.onRightMouseDown = { [weak self] cursor in
+        presentation.onRightMouseDown = { [weak self] cursor in
             self?.openActionRing(at: cursor)
         }
     }

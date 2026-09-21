@@ -1,6 +1,5 @@
 import CoreGraphics
 import MyPetContent
-import MyPetCore
 @testable import MyPetRender
 import XCTest
 
@@ -19,14 +18,18 @@ final class RenderBoundaryTests: XCTestCase {
         XCTAssertEqual(animator.frameIndex, 1)
     }
 
-    func testPresentationRendererOnlyConsumesValues() {
-        let renderer = RecordingRenderer()
-        let snapshot = PresentationSnapshot(tick: 4, entities: [])
+    func testActorPresentationOwnsTimelineBehindOneAdapter() {
+        let image = makeImage()
+        let source = StubClipSource(
+            clips: ["idle": SpriteClip(frames: [image, image], fps: 10, looping: true)])
+        let presentation = ActorPresentation(
+            source: source,
+            initialFrame: CGRect(x: 0, y: 0, width: 32, height: 32))
 
-        renderer.apply(snapshot: snapshot)
-        renderer.consume([])
+        presentation.play("idle")
+        presentation.advance(dt: 0.11, mirrored: false)
 
-        XCTAssertEqual(renderer.snapshots, [snapshot])
+        XCTAssertEqual(presentation.clipName, "idle")
     }
 
     private func makeImage() -> CGImage {
@@ -50,13 +53,4 @@ private struct StubClipSource: SpriteClipSource {
     let clips: [String: SpriteClip]
 
     func spriteClip(for name: String) -> SpriteClip? { clips[name] }
-}
-
-@MainActor
-private final class RecordingRenderer: PresentationRenderer {
-    var snapshots: [PresentationSnapshot] = []
-
-    func apply(snapshot: PresentationSnapshot) { snapshots.append(snapshot) }
-    func consume(_ effects: [PresentationEffect]) {}
-    func close(entityID: String) {}
 }
