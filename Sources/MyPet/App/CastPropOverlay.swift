@@ -1,5 +1,6 @@
 import AppKit
 import MyPetCore
+import MyPetRender
 
 /// CastProp 的 AppKit 表现适配器。
 ///

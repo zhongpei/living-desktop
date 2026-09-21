@@ -71,6 +71,16 @@ public struct PresentationSnapshot: Codable, Equatable, Sendable {
     public var tick: Int64
     public var entities: [PresentationEntitySnapshot]
     public var attachments: [SpatialAttachment]
+
+    public init(
+        tick: Int64,
+        entities: [PresentationEntitySnapshot],
+        attachments: [SpatialAttachment] = []
+    ) {
+        self.tick = tick
+        self.entities = entities
+        self.attachments = attachments
+    }
 }
 
 public enum PresentationEffectKind: String, Codable, Sendable {

@@ -59,6 +59,7 @@ enum SceneDecision: Equatable {
 
 /// 场景对舞台的接口：每一步怎么落地由控制器（ActionDirector 侧）回答。
 /// 所有 onDone 必须最终被调用（含失败路径），否则场景卡死。
+@MainActor
 protocol SceneStaging: AnyObject {
     /// 宠物脚位（翻转坐标，spawnProp 摆放点用）。
     var petX: CGFloat { get }
@@ -87,6 +88,7 @@ protocol SceneStaging: AnyObject {
 }
 
 /// AppKit body driver for the Core-owned semantic scene cursor.
+@MainActor
 final class SceneBodyDriver {
 
     typealias BodyResultReporter = (Bool) -> Void

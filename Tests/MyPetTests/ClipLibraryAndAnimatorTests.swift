@@ -2,6 +2,7 @@ import AppKit
 import XCTest
 
 @testable import MyPet
+import MyPetRender
 
 final class ClipLibraryAndAnimatorTests: XCTestCase {
 
@@ -134,7 +135,7 @@ final class ClipLibraryAndAnimatorTests: XCTestCase {
 
     func testFrameHoldsPerFps() throws {
         let library = try ClipLibrary.load(from: makePack())
-        let animator = SpriteAnimator(library: library)
+        let animator = SpriteAnimator(source: library)
         animator.play("base/idle", restart: true) // 5fps = 200ms/帧
 
         _ = animator.tick(dt: 0.1)
@@ -145,7 +146,7 @@ final class ClipLibraryAndAnimatorTests: XCTestCase {
 
     func testOnceClipFinishesAndHoldsLastFrame() throws {
         let library = try ClipLibrary.load(from: makePack())
-        let animator = SpriteAnimator(library: library)
+        let animator = SpriteAnimator(source: library)
         animator.play("actions/wave", restart: true) // once，2 帧 @2fps
 
         var finishedClip = ""
@@ -163,7 +164,7 @@ final class ClipLibraryAndAnimatorTests: XCTestCase {
 
     func testLoopClipNeverFinishes() throws {
         let library = try ClipLibrary.load(from: makePack())
-        let animator = SpriteAnimator(library: library)
+        let animator = SpriteAnimator(source: library)
         animator.play("actions/tail", restart: true)
         for _ in 0..<40 { _ = animator.tick(dt: 0.05) }
         XCTAssertFalse(animator.isFinished)
@@ -172,7 +173,7 @@ final class ClipLibraryAndAnimatorTests: XCTestCase {
 
     func testReplayingSameClipDoesNotReset() throws {
         let library = try ClipLibrary.load(from: makePack())
-        let animator = SpriteAnimator(library: library)
+        let animator = SpriteAnimator(source: library)
         animator.play("base/walk", restart: true) // 10fps = 100ms/帧
         _ = animator.tick(dt: 0.15)
         XCTAssertEqual(animator.frameIndex, 1)

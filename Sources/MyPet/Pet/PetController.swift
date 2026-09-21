@@ -3,6 +3,7 @@ import CoreGraphics
 import CoreText
 import MyPetCore
 import MyPetPlatform
+import MyPetRender
 
 /// WindowWorld + Screens + 系统空闲时间的生产装配，喂给 PetModel。
 final class SystemWorld: WorldReading {
@@ -49,6 +50,7 @@ final class SystemWorld: WorldReading {
 ///   Needle 缺模型时 Autopilot 按人格加权随机选场景；
 /// - **反射层**（<50ms，不进大脑）：摸头开心跳、连戳三下应激躲开；
 ///   事件进 recentEvents 供决策脑下一轮社会理解。
+@MainActor
 final class PetController {
     private enum PendingRuntimeAction {
         case semantic(NeedleBrain.SemanticAction)
@@ -197,7 +199,7 @@ final class PetController {
         self.teacherBrain = teacherBrain ?? TeacherBrain()
         self.world = perception.world
         self.systemWorld = SystemWorld(world: world)
-        self.animator = SpriteAnimator(library: library)
+        self.animator = SpriteAnimator(source: library)
         let graph = injectedSceneGraph ?? SceneGraph(rootID: "scene")
         let actorNode = SceneNode(id: "actor:\(runtimeActorID.raw)")
         let handSocket = try! actorNode.addSocket("hand")
@@ -1939,9 +1941,16 @@ final class PetController {
         actionRing.show(
             at: cursor,
             primary: ActionCatalog.rightClickMenuItems(available: Set(library.actionNames))
-                .filter(isAuthorizedMenuItem),
-            extended: [],
-            available: Set(library.actionNames))
+                .filter(isAuthorizedMenuItem)
+                .map { item in
+                    RenderActionItem(
+                        id: item.intent.rawValue,
+                        label: item.label,
+                        enabled: ActionCatalog.resolve(
+                            item.intent,
+                            available: Set(library.actionNames)) != nil)
+                },
+            extended: [])
     }
 
     private func isAuthorizedMenuItem(_ item: ActionCatalog.MenuItem) -> Bool {
@@ -2223,7 +2232,8 @@ final class PetController {
         actionRing.onDismiss = { [weak self] in
             self?.actionRingOpen = false
         }
-        actionRing.onAction = { [weak self] intent in
+        actionRing.onAction = { [weak self] id in
+            guard let intent = ActionIntent(rawValue: id) else { return }
             self?.performMenuAction(intent)
         }
         actionRing.onChat = { [weak self] in

@@ -15,6 +15,7 @@ let package = Package(
         .library(name: "MyPetCore", targets: ["MyPetCore"]),
         .library(name: "MyPetAI", targets: ["MyPetAI"]),
         .library(name: "MyPetPlatform", targets: ["MyPetPlatform"]),
+        .library(name: "MyPetRender", targets: ["MyPetRender"]),
         .library(name: "CNeedle", targets: ["CNeedle"]),
         .executable(name: "LivingDesktop", targets: ["MyPet"]),
     ],
@@ -60,18 +61,24 @@ let package = Package(
             name: "MyPetPlatform",
             path: "Sources/MyPetPlatform"
         ),
+        .target(
+            name: "MyPetRender",
+            dependencies: ["MyPetCore"],
+            path: "Sources/MyPetRender"
+        ),
         .executableTarget(
             name: "MyPet",
             dependencies: [
                 "MyPetCore",
                 "MyPetAI",
                 "MyPetPlatform",
+                "MyPetRender",
             ],
             path: "Sources/MyPet"
         ),
         .testTarget(
             name: "MyPetTests",
-            dependencies: ["MyPet", "MyPetCore", "MyPetPlatform"],
+            dependencies: ["MyPet", "MyPetCore", "MyPetPlatform", "MyPetRender"],
             path: "Tests/MyPetTests"
         ),
         .testTarget(
@@ -88,6 +95,11 @@ let package = Package(
             name: "MyPetPlatformTests",
             dependencies: ["MyPetPlatform"],
             path: "Tests/MyPetPlatformTests"
+        ),
+        .testTarget(
+            name: "MyPetRenderTests",
+            dependencies: ["MyPetRender", "MyPetCore"],
+            path: "Tests/MyPetRenderTests"
         )
     ]
 )

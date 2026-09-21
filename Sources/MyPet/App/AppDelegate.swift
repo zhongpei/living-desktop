@@ -4,6 +4,7 @@ import MyPetPlatform
 
 /// 应用委托：装配 设置 → 素材库 → 控制器 → 菜单栏/设置窗，然后交给主循环。
 /// 所有宠物（petpack 库）默认全部打包进 Resources，菜单可随时切换。
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var settings: Settings?

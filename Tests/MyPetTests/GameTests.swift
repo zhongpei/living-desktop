@@ -7,6 +7,7 @@ import MyPetPlatform
 
 /// game-v2 纯函数与执行器测试：活动归类、锚点、道具、目标策略、
 /// 场景配方执行（假舞台）、记忆、内置台词、设置兼容、OCR profile。
+@MainActor
 final class GameTests: XCTestCase {
 
     func testSharedPerceptionPublishesKernelEventOnlyFromOwner() {

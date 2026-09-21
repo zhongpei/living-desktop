@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import MyPetRender
 
 /// petpack-v2 manifest（desktop/scripts/sync_assets.py 产出）。
 /// 目录名即语义：base/* 是身体线的规范槽位，actions/* 是名字自由的表演素材。
@@ -51,7 +52,7 @@ struct PetPackManifest: Decodable {
 /// actions/<name> 是表演素材。帧**懒解码**——首次播放才 decode，LRU 上限缓存，
 /// 100+ 动作的包不再要求启动时全量驻留内存。
 /// 源 cell 统一 192×208，脚底共享基线（cell 高 × 0.88）。
-final class ClipLibrary {
+final class ClipLibrary: SpriteClipSource {
 
     /// 脚底基线在 cell 内的位置比例（素材工厂 `_cell_pack` 的共享基线约定）。
     static let baselineRatio: CGFloat = 0.88
@@ -247,6 +248,11 @@ final class ClipLibrary {
             decodedCache[oldest] = nil
         }
         return frames
+    }
+
+    func spriteClip(for name: String) -> SpriteClip? {
+        guard let meta = meta(for: name), let frames = frames(for: name) else { return nil }
+        return SpriteClip(frames: frames, fps: meta.fps, looping: playback(for: name) == .loop)
     }
 
     /// 当前缓存中的 clip 数（测试/诊断用）。

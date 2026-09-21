@@ -1,5 +1,6 @@
 import AppKit
 import MyPetCore
+import MyPetRender
 
 /// Deterministic presentation fallback for a logical mech whose dedicated
 /// sprite pack is not installed yet. It is deliberately a geometric overlay,
