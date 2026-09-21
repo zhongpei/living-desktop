@@ -398,27 +398,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return (entity.id.raw, frame)
         })
 
-        // StoryDirector 的节拍在 Core 中先完成全员行为确认，再把一次性的
-        // 语义动作交给各自身体。没有视觉包的道具/机甲仍可参与规则和关系，
+        // StoryDirector 的节拍在 Core 中先完成全员行为确认；StoryAction
+        // 只定位对应的 BodyCommand，身体参数一律以已授权命令为准。
+        // 没有视觉包的道具/机甲仍可参与规则和关系，
         // 这里只跳过它们的渲染，不影响剧情提交。
         for action in runtime.consumeStoryActions() {
-            let targetX = action.targetID.flatMap { targetFrames[$0] }
-                .map { CGFloat($0.x + $0.width / 2) }
             guard let behaviorID = action.behaviorID,
                   let command = runtime.runtime.takeBodyCommand(behaviorID: behaviorID) else { continue }
-            guard let pet = castControllers[action.actorID.raw] else {
+            let targetX = command.target.flatMap { targetFrames[$0.entityID.raw] }
+                .map { CGFloat($0.x + $0.width / 2) }
+            guard let pet = castControllers[command.actorID.raw] else {
                 // A logic participant without a visual pack still completes
                 // deterministically; presentation absence is reported by the
                 // asset audit rather than corrupting the story state machine.
                 runtime.runtime.submitBodyResult(BodyResult(
-                    behaviorID: behaviorID,
+                    behaviorID: command.behaviorID,
                     executionToken: command.executionToken,
                     outcome: .completed))
                 continue
             }
-            pet.performStoryIntent(action.intent, targetX: targetX) { success in
+            pet.performStoryIntent(command.intent, targetX: targetX) { success in
                 runtime.runtime.submitBodyResult(BodyResult(
-                    behaviorID: behaviorID,
+                    behaviorID: command.behaviorID,
                     executionToken: command.executionToken,
                     outcome: success ? .completed : .failed))
             }
