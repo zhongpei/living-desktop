@@ -251,7 +251,8 @@ final class CastSession: NSObject {
                     outcome: .completed))
                 continue
             }
-            pet.performStoryIntent(command.intent, targetX: targetX) { success in
+            pet.performStoryIntent(command.intent, targetX: targetX) { [weak self, weak runtime] success in
+                guard let self, let runtime, self.castRuntime === runtime else { return }
                 runtime.runtime.submitBodyResult(BodyResult(
                     behaviorID: command.behaviorID,
                     executionToken: command.executionToken,
