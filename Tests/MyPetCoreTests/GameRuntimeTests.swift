@@ -2,6 +2,18 @@ import XCTest
 @testable import MyPetCore
 
 final class GameRuntimeTests: XCTestCase {
+    func testFixedStepClockSeparatesFortyHertzFramesFromFiftyMillisecondTicks() {
+        var driver = FixedStepClock(stepMilliseconds: 50)
+        XCTAssertEqual(driver.advance(elapsedSeconds: 0.025), 0)
+        XCTAssertEqual(driver.advance(elapsedSeconds: 0.025), 1)
+        XCTAssertEqual(driver.advance(elapsedSeconds: 0.025), 0)
+        XCTAssertEqual(driver.advance(elapsedSeconds: 0.025), 1)
+        XCTAssertEqual(driver.advance(elapsedSeconds: 0.25), 5)
+        XCTAssertEqual(driver.advance(elapsedSeconds: 2), 5)
+        XCTAssertEqual(driver.advance(elapsedSeconds: -1), 0)
+        XCTAssertEqual(SimClock(stepMilliseconds: 50).seconds(forTicks: 4), 0.2)
+    }
+
     private final class BlockingGoalProvider: SimulationGoalProvider {
         let providerID = "blocking-test"
         let execution: SimulationProviderExecution = .requiresPrefetch

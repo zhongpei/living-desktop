@@ -643,4 +643,28 @@ public struct SimClock: Codable, Sendable, Equatable {
     public mutating func advance() {
         tick += 1
     }
+
+    public func seconds(forTicks count: Int64) -> Double {
+        Double(max(0, count)) * Double(stepMilliseconds) / 1_000
+    }
+}
+
+/// Samples a display timer without making its refresh rate the game clock.
+/// ponytail: cap catch-up at 250 ms so a stalled main run loop cannot freeze
+/// AppKit while replaying seconds of overdue ticks; missed real time is a pause.
+public struct FixedStepClock {
+    private let stepSeconds: Double
+    private var remainder = 0.0
+
+    public init(stepMilliseconds: Int64) {
+        stepSeconds = Double(max(1, stepMilliseconds)) / 1_000
+    }
+
+    public mutating func advance(elapsedSeconds: Double) -> Int {
+        guard elapsedSeconds.isFinite, elapsedSeconds > 0 else { return 0 }
+        remainder += min(elapsedSeconds, 0.25)
+        let steps = Int((remainder + 1e-9) / stepSeconds)
+        remainder -= Double(steps) * stepSeconds
+        return steps
+    }
 }

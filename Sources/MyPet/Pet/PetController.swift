@@ -123,7 +123,8 @@ final class PetController {
     private var lastWorldFingerprint = ""
 
     private var timer: Timer?
-    private var lastTick = Date()
+    private var lastTick = ProcessInfo.processInfo.systemUptime
+    private var runtimeFrameClock: FixedStepClock
     private var pollAccumulator: Double = 0
     private var foregroundCooldown: Double = 0
     private var speechCooldown: Double = 0
@@ -183,6 +184,7 @@ final class PetController {
         self.perceptionEventCursor = self.perception.latestInputSequence
         let runtime = injectedRuntime ?? GameRuntime(bodyExecutionMode: .external)
         self.gameplayRuntime = runtime
+        self.runtimeFrameClock = FixedStepClock(stepMilliseconds: runtime.clock.stepMilliseconds)
         self.semanticEngine = SemanticEngine(
             recipes: SceneCatalog.semanticRecipes,
             assetCatalog: AssetCatalog(exactActions: Set(library.actionNames)))
@@ -241,6 +243,8 @@ final class PetController {
     func start() {
         isStopped = false
         isDeparting = false
+        lastTick = ProcessInfo.processInfo.systemUptime
+        runtimeFrameClock = FixedStepClock(stepMilliseconds: gameplayRuntime.clock.stepMilliseconds)
         if isPerceptionOwner { perception.world.poll() }
         consumePerceptionEvents()
         // Cast 的 Runtime 与所有角色帧由 AppDelegate 的单一 driver 推进；
@@ -522,10 +526,11 @@ final class PetController {
     // ============ 主循环 ============
 
     @objc func tick() {
-        let now = Date()
-        let dt = now.timeIntervalSince(lastTick)
+        let now = ProcessInfo.processInfo.systemUptime
+        let dt = min(0.25, max(0, now - lastTick))
         lastTick = now
         clock += dt
+        let runtimeSteps = usesSharedGameplayKernel ? 0 : runtimeFrameClock.advance(elapsedSeconds: dt)
 
         // 感知只提交事件；单宠物的语义工作与 Kernel 推进由同一个
         // GameRuntime pulse 排序。Cast 的 pulse 由 CastRuntime 唯一拥有。
@@ -555,7 +560,7 @@ final class PetController {
         // 右键操作环是一个短暂的直接操控态。角色停在当前位姿，自动脑、
         // 场景和移动都暂时让出控制权；关闭环后下一帧自然恢复规划。
         if actionRingOpen {
-            if !usesSharedGameplayKernel { _ = gameplayRuntime.step() }
+            for _ in 0..<runtimeSteps { _ = gameplayRuntime.step() }
             model.stopWalk()
             placePanel()
             renderFrame(dt: 0)
@@ -563,7 +568,7 @@ final class PetController {
         }
 
         updateSleepState()
-        if !usesSharedGameplayKernel {
+        for _ in 0..<runtimeSteps {
             _ = gameplayRuntime.step { [weak self] _ in
                 self?.drainCommittedRuntimeActions()
                 self?.driveMind()
@@ -579,7 +584,7 @@ final class PetController {
             x: Double(model.x),
             yFeet: Double(model.yFeet),
             facingRight: model.facingRight,
-            motion: String(describing: model.state),
+            motion: model.walking ? "walking" : String(describing: model.state),
             action: actions.performance?.clipKey))
         placePanel()
         renderFrame(dt: dt)
@@ -2200,7 +2205,7 @@ final class PetController {
         let transition = castTransition
         let progress: Double
         if let transition, let startedAt = castTransitionStartedAt {
-            let duration = max(0.025, Double(transition.durationTicks) * 0.05)
+            let duration = max(0.025, gameplayRuntime.clock.seconds(forTicks: transition.durationTicks))
             progress = (ProcessInfo.processInfo.systemUptime - startedAt) / duration
         } else {
             progress = 1

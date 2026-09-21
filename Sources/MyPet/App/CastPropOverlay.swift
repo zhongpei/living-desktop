@@ -78,7 +78,8 @@ final class CastPropOverlay {
         from frame: LayoutRect,
         toActorFrame: LayoutRect,
         now: Double,
-        durationTicks: Int64
+        durationTicks: Int64,
+        stepMilliseconds: Int64
     ) {
         let propSize = min(frame.width, frame.height)
         let destination = CastVisualProjection.attachedPropFrame(
@@ -88,7 +89,7 @@ final class CastPropOverlay {
             from: frame,
             to: destination,
             startedAt: now,
-            duration: max(0.025, Double(max(1, durationTicks)) * 0.025))
+            duration: max(0.025, Double(max(1, durationTicks)) * Double(max(1, stepMilliseconds)) / 1_000))
     }
 
     func close() {

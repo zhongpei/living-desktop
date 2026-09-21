@@ -33,6 +33,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 专属机甲 sprite 尚未入库时的确定性几何降级层。
     private var castMechOverlays: [String: CastMechOverlay] = [:]
     private var castTimer: Timer?
+    private var castFrameClock: FixedStepClock?
+    private var lastCastFrameAt = ProcessInfo.processInfo.systemUptime
     /// Core 已确认离场后，渲染面板保留到 transition plan 完成。
     private var castDepartureDeadlines: [String: Int64] = [:]
     /// 发现的全部宠物包（id → 目录），按字母序。
@@ -259,6 +261,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = runtime.start()
         _ = runtime.tick()
         syncCastControllers()
+        castFrameClock = FixedStepClock(stepMilliseconds: runtime.clock.stepMilliseconds)
+        lastCastFrameAt = ProcessInfo.processInfo.systemUptime
 
         let timer = Timer(timeInterval: 1.0 / 40.0, target: self,
                           selector: #selector(tickCastRuntime), userInfo: nil, repeats: true)
@@ -278,6 +282,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let wasCastActive = castRuntime != nil || !castControllers.isEmpty
         castTimer?.invalidate()
         castTimer = nil
+        castFrameClock = nil
         for pet in castControllers.values {
             pet.stop()
             pet.closePanel()
@@ -298,8 +303,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func tickCastRuntime() {
         guard let runtime = castRuntime else { return }
-        _ = runtime.tick()
-        syncCastControllers()
+        let now = ProcessInfo.processInfo.systemUptime
+        let dt = min(0.25, max(0, now - lastCastFrameAt))
+        lastCastFrameAt = now
+        let steps = castFrameClock?.advance(elapsedSeconds: dt) ?? 0
+        if steps == 0 { syncCastControllers() }
+        for _ in 0..<steps {
+            _ = runtime.tick()
+            syncCastControllers()
+        }
         for pet in castControllers.values {
             pet.tick()
         }
@@ -428,7 +440,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 from: from,
                 toActorFrame: toActor,
                 now: now,
-                durationTicks: event.handoff.durationTicks)
+                durationTicks: event.handoff.durationTicks,
+                stepMilliseconds: runtime.clock.stepMilliseconds)
         }
 
         // 逻辑上可以在场但没有 visualPackID 的机甲/道具不能轮询桌面感知；
