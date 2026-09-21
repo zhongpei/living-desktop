@@ -147,8 +147,6 @@ final class PetController {
     /// A direct user drag detaches this panel from the automatic cast layout.
     /// Rebuilding the cast restores managed placement.
     private var userDetachedFromCastLayout = false
-    private var idleClip = ""
-    private var idleSwapAt: Double = 0
     private var clock: Double = 0
     private var pullCursorStart: CGPoint?
     /// 内置决策的随机源（可复现测试）。
@@ -229,13 +227,13 @@ final class PetController {
                 x: startX - displayW / 2,
                 y: 0,
                 width: displayW,
-                height: displayH))
+                height: displayH),
+            appearance: ActorAppearance(library: library))
 
         wireView()
         goalBrainCoordinator = GoalBrainCoordinator(local: self.localBrain, teacher: self.teacherBrain)
         refreshGoalBrains()
         placePanel()
-        pushFirstFrame()
         // 非激活面板不会自己上屏：不抢 key 也要 orderFront。
         presentation.show()
     }
@@ -525,7 +523,9 @@ final class PetController {
 
     // ============ 主循环 ============
 
-    @objc func tick() {
+    @objc func tick() { tickFrame(presentationEffects: nil) }
+
+    func tickFrame(presentationEffects: [PresentationEffect]?) {
         let now = ProcessInfo.processInfo.systemUptime
         let dt = min(0.25, max(0, now - lastTick))
         lastTick = now
@@ -562,8 +562,9 @@ final class PetController {
         if actionRingOpen {
             for _ in 0..<runtimeSteps { _ = gameplayRuntime.step() }
             model.stopWalk()
+            updatePresentationPose()
             placePanel()
-            renderFrame(dt: 0)
+            renderFrame(dt: 0, effects: presentationEffects)
             return
         }
 
@@ -579,15 +580,9 @@ final class PetController {
         tickScenePerform()
         model.update(dtIn: dt)
         actions.tick(now: clock)
-        gameplayRuntime.updateBodyPose(BodyPose(
-            actorID: runtimeActorID,
-            x: Double(model.x),
-            yFeet: Double(model.yFeet),
-            facingRight: model.facingRight,
-            motion: model.walking ? "walking" : String(describing: model.state),
-            action: actions.performance?.clipKey))
+        updatePresentationPose()
         placePanel()
-        renderFrame(dt: dt)
+        renderFrame(dt: dt, effects: presentationEffects)
         // 道具在物理/渲染之后推进：held 走合成层（本帧坐标已定），
         // placed/补间/淡出走自己的独立窗口。
         props.tick(petX: model.x, petYFeet: model.yFeet, facingRight: model.facingRight,
@@ -597,6 +592,17 @@ final class PetController {
         } else {
             presentation.displayProp(image: nil, rect: .zero)
         }
+    }
+
+    private func updatePresentationPose() {
+        gameplayRuntime.updateBodyPose(BodyPose(
+            actorID: runtimeActorID,
+            x: Double(model.x),
+            yFeet: Double(model.yFeet),
+            facingRight: model.facingRight,
+            motion: model.walking ? "walking" : String(describing: model.state),
+            action: actions.performance?.clipKey,
+            horizontalSpeed: Double(model.vx)))
     }
 
     private var displayHeadOffset: CGFloat { settings.displayHeight * 0.15 }
@@ -2071,75 +2077,13 @@ final class PetController {
     /// 身体线的第一选择（base/idle 保证存在，加载期已校验）。
     private var idlePrimary: String { library.baseOrFallback(.idle) }
 
-    /// 睡眠姿态 clip（actions/sleep*），包里没有就退回 idle。
-    private var sleepClip: String? { library.sleepActionKey() }
-
-    private func pushFirstFrame() {
-        let idle = idlePrimary
-        if let frames = library.frames(for: idle), let img = frames.first {
-            presentation.play(idle)
-            presentation.showInitial(image: img, mirrored: false)
-        }
-    }
-
-    private func renderFrame(dt: Double) {
-        selectClip()
-        let authored = library.facing(for: presentation.clipName)
-        presentation.advance(
+    private func renderFrame(dt: Double, effects: [PresentationEffect]?) {
+        presentation.apply(
+            snapshot: gameplayRuntime.presentationSnapshot(),
+            actorID: runtimeActorID,
+            effects: effects ?? gameplayRuntime.drainPresentationEffects(),
             dt: dt,
-            mirrored: ClipLibrary.mirrorNeeded(
-                authored: authored,
-                movingRight: model.facingRight))
-    }
-
-    /// 身体状态 + 当前活动 → 该播哪个 clip。
-    /// 身体线（走/跑/空中/拖拽/睡）每帧由状态直接推导，无「上一个 clip」记忆；
-    /// 表演线（actions/*）作为覆盖层，播完或到 deadline 回身体线。
-    private func selectClip() {
-        switch model.state {
-        case .asleep:
-            presentation.play(sleepClip ?? idlePrimary)
-        case .dragged:
-            presentation.play(library.baseOrFallback(.drag))
-        case .tossed:
-            presentation.play(library.baseOrFallback(.airborne))
-        case .airborne:
-            // 水平速度大 → 奔跑姿势飞跃；否则屏息。
-            presentation.play(abs(model.vx) > 200
-                ? library.baseOrFallback(.run)
-                : library.baseOrFallback(.airborne))
-        case .grounded, .perched:
-            // 表演线：actions/ 覆盖层（tick 已保证身体一动就取消）。
-            if let p = actions.performance {
-                presentation.play(p.clipKey)
-                return
-            }
-            if model.walking {
-                presentation.play(library.baseOrFallback(.walk))
-                return
-            }
-            // 画面还挂在移动/睡眠 clip 上（刚停步/刚醒来）→ 立刻切回 idle。
-            if presentation.clipName != idleClip {
-                let movementKeys: Set<String> = [
-                    library.baseOrFallback(.walk),
-                    library.baseOrFallback(.run),
-                    sleepClip ?? ""
-                ]
-                if movementKeys.contains(presentation.clipName) {
-                    idleClip = idlePrimary
-                    presentation.play(idleClip, restart: true)
-                }
-            }
-            // 偶尔换一种闲姿（idle 变体池轮换）。
-            if clock > idleSwapAt {
-                idleSwapAt = clock + Double.random(in: 4...9)
-                idleClip = library.idlePool.randomElement() ?? idlePrimary
-                presentation.play(idleClip, restart: true)
-            } else {
-                if idleClip.isEmpty { idleClip = idlePrimary }
-                presentation.play(idleClip)
-            }
-        }
+            now: clock)
     }
 
     // ---- 面板摆放 ----

@@ -312,8 +312,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             _ = runtime.tick()
             syncCastControllers()
         }
-        for pet in castControllers.values {
-            pet.tick()
+        let effects = runtime.runtime.drainPresentationEffects()
+        for (id, pet) in castControllers {
+            pet.tickFrame(presentationEffects: effects.filter { $0.actorID.raw == id })
         }
     }
 

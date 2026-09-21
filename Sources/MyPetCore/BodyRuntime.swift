@@ -41,6 +41,7 @@ public struct BodyPose: Codable, Equatable, Sendable {
     public var facingRight: Bool
     public var motion: String
     public var action: String?
+    public var horizontalSpeed: Double
 
     public init(
         actorID: EntityID,
@@ -48,7 +49,8 @@ public struct BodyPose: Codable, Equatable, Sendable {
         yFeet: Double,
         facingRight: Bool,
         motion: String,
-        action: String? = nil
+        action: String? = nil,
+        horizontalSpeed: Double = 0
     ) {
         self.actorID = actorID
         self.x = x
@@ -56,6 +58,23 @@ public struct BodyPose: Codable, Equatable, Sendable {
         self.facingRight = facingRight
         self.motion = motion
         self.action = action
+        self.horizontalSpeed = horizontalSpeed
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case actorID, x, yFeet, facingRight, motion, action, horizontalSpeed
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            actorID: try values.decode(EntityID.self, forKey: .actorID),
+            x: try values.decode(Double.self, forKey: .x),
+            yFeet: try values.decode(Double.self, forKey: .yFeet),
+            facingRight: try values.decode(Bool.self, forKey: .facingRight),
+            motion: try values.decode(String.self, forKey: .motion),
+            action: try values.decodeIfPresent(String.self, forKey: .action),
+            horizontalSpeed: try values.decodeIfPresent(Double.self, forKey: .horizontalSpeed) ?? 0)
     }
 }
 

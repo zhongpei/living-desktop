@@ -2,6 +2,15 @@ import XCTest
 @testable import MyPetCore
 
 final class BodyRuntimeTests: XCTestCase {
+    func testBodyPoseDecodesOldSnapshotWithoutHorizontalSpeed() throws {
+        let old = """
+        {"actorID":{"raw":"pet"},"x":10,"yFeet":20,"facingRight":true,"motion":"airborne","action":null}
+        """
+        let pose = try JSONDecoder().decode(BodyPose.self, from: Data(old.utf8))
+        XCTAssertEqual(pose.horizontalSpeed, 0)
+        XCTAssertEqual(pose.actorID, EntityID("pet"))
+    }
+
     func testExternalBodyBehaviorCompletesOnlyAfterAdapterResult() {
         let actor = EntityState(id: EntityID("pet"), kind: .actor)
         let runtime = GameRuntime(bodyExecutionMode: .external)
