@@ -111,7 +111,6 @@ final class PetController {
     /// 右键角色时的快速操作环；它只属于当前角色，不进入全局菜单。
     private let actionRing = ActionRingPanel()
     /// 多角色共用的空间登记表；单宠物/测试装配仍可传 nil。
-    private let layoutCoordinator: SpatialLayoutCoordinator?
     /// 窗口/AX/OCR 是桌面级感知；多角色只共享采集结果，不共享各自内核。
     private let perception: PerceptionHub
     private var perceptionEventCursor: Int64 = 0
@@ -137,16 +136,6 @@ final class PetController {
     private var isDeparting = false
     /// 操作环打开期间暂停自动决策和移动，避免用户选动作时角色被脑路抢走。
     private var actionRingOpen = false
-    /// Cast 生命周期的视觉过渡只改变面板表现，不改变 PetModel 的世界位姿。
-    /// 这样 Core 已确认的布局仍是唯一空间真相，过渡结束后不会留下第二套坐标。
-    private var castTransition: CastTransitionPlan?
-    private var castTransitionStartedAt: TimeInterval?
-    /// CastProjection 给出的最终面板框。多角色剧情中的人物—人物/机甲
-    /// 附着必须在 AppKit 面板上可见，不能只留在 Core 的报告里。
-    private var castPresentationFrame: LayoutRect?
-    /// A direct user drag detaches this panel from the automatic cast layout.
-    /// Rebuilding the cast restores managed placement.
-    private var userDetachedFromCastLayout = false
     private var clock: Double = 0
     private var pullCursorStart: CGPoint?
     /// 内置决策的随机源（可复现测试）。
@@ -177,7 +166,6 @@ final class PetController {
         self.library = library
         self.settings = settings
         self.runtimeActorID = actorID ?? EntityID(library.characterID)
-        self.layoutCoordinator = layoutCoordinator
         self.perception = perceptionHub ?? PerceptionHub(ownerID: actorID ?? EntityID(library.characterID))
         self.perceptionEventCursor = self.perception.latestInputSequence
         let runtime = injectedRuntime ?? GameRuntime(bodyExecutionMode: .external)
@@ -223,17 +211,19 @@ final class PetController {
 
         self.presentation = ActorPresentation(
             source: library,
-            initialFrame: NSRect(
-                x: startX - displayW / 2,
-                y: 0,
-                width: displayW,
-                height: displayH),
-            appearance: ActorAppearance(library: library))
+            initialFrame: Screens.appKitRect(
+                flippedTop: model.yFeet - displayH * ClipLibrary.baselineRatio,
+                x: model.x - displayW / 2,
+                width: displayW, height: displayH),
+            appearance: ActorAppearance(library: library),
+            actorID: runtimeActorID,
+            baselineRatio: Double(ClipLibrary.baselineRatio),
+            layoutCoordinator: layoutCoordinator,
+            stepMilliseconds: runtime.clock.stepMilliseconds)
 
         wireView()
         goalBrainCoordinator = GoalBrainCoordinator(local: self.localBrain, teacher: self.teacherBrain)
         refreshGoalBrains()
-        placePanel()
         // 非激活面板不会自己上屏：不抢 key 也要 orderFront。
         presentation.show()
     }
@@ -279,10 +269,8 @@ final class PetController {
 
     func cancelCastDeparture() {
         isDeparting = false
-        castTransition = nil
-        castTransitionStartedAt = nil
-        presentation.setOpacity(1)
-        placePanel()
+        presentation.cancelTransition()
+        renderFrame(dt: 0, effects: [])
     }
 
     /// 播放角色组剧情节拍。剧情层只传语义 intent，不能越过身体动作入口
@@ -462,16 +450,16 @@ final class PetController {
     /// 共享空间登记变化后重新把 AppKit 面板放到安全框。
     func relayout() {
         guard !isStopped else { return }
-        placePanel()
+        renderFrame(dt: 0, effects: [])
     }
 
     /// Apply the shared CastVisualProjection frame. `nil` returns the controller
     /// to its ordinary PetModel/SpatialLayoutCoordinator placement path.
     func applyCastProjectionFrame(_ frame: LayoutRect?) {
         guard !isStopped else { return }
-        guard !userDetachedFromCastLayout, model.state != .dragged else { return }
-        castPresentationFrame = frame
-        placePanel()
+        guard model.state != .dragged else { return }
+        presentation.setCastFrame(frame)
+        renderFrame(dt: 0, effects: [])
     }
 
     func stop() {
@@ -480,13 +468,10 @@ final class PetController {
         needle.invalidatePendingDecision()
         goalBrainCoordinator.cancelPendingPlan()
         isDeparting = false
-        castTransition = nil
-        castTransitionStartedAt = nil
-        presentation.setOpacity(1)
+        presentation.stop()
         timer?.invalidate()
         timer = nil
         cancelPendingRuntimeActions()
-        layoutCoordinator?.remove(runtimeActorID)
         // A shared Cast graph must not retain a departed actor root. Props are
         // cleared by closePanel, while this removes the actor/socket container
         // itself so a later invitation cannot collide with the old node ID.
@@ -511,7 +496,6 @@ final class PetController {
     func closePanel() {
         actionRing.dismiss()
         actionRingOpen = false
-        presentation.setOpacity(1)
         presentation.hide()
         props.clear()
     }
@@ -563,7 +547,6 @@ final class PetController {
             for _ in 0..<runtimeSteps { _ = gameplayRuntime.step() }
             model.stopWalk()
             updatePresentationPose()
-            placePanel()
             renderFrame(dt: 0, effects: presentationEffects)
             return
         }
@@ -581,7 +564,6 @@ final class PetController {
         model.update(dtIn: dt)
         actions.tick(now: clock)
         updatePresentationPose()
-        placePanel()
         renderFrame(dt: dt, effects: presentationEffects)
         // 道具在物理/渲染之后推进：held 走合成层（本帧坐标已定），
         // placed/补间/淡出走自己的独立窗口。
@@ -2080,7 +2062,6 @@ final class PetController {
     private func renderFrame(dt: Double, effects: [PresentationEffect]?) {
         presentation.apply(
             snapshot: gameplayRuntime.presentationSnapshot(),
-            actorID: runtimeActorID,
             effects: effects ?? gameplayRuntime.drainPresentationEffects(),
             dt: dt,
             now: clock)
@@ -2089,103 +2070,8 @@ final class PetController {
     // ---- 面板摆放 ----
 
     private func beginCastTransition(_ plan: CastTransitionPlan) {
-        castTransition = plan
-        castTransitionStartedAt = ProcessInfo.processInfo.systemUptime
-        placePanel()
-    }
-
-    private func placePanel() {
-        let displayH = settings.displayHeight
-        let displayW = library.cellSize.width / library.cellSize.height * displayH
-        if model.state == .dragged || userDetachedFromCastLayout {
-            // Direct manipulation follows the cursor in virtual-desktop space.
-            // Do not fit to one screen or run group layout while the mouse owns
-            // the character; those policies made vertical and cross-screen drag
-            // appear stuck. Release returns to normal toss/bounce physics.
-            presentation.setFrame(
-                Screens.appKitRect(
-                    flippedTop: model.yFeet - displayH * ClipLibrary.baselineRatio,
-                    x: model.x - displayW / 2,
-                    width: displayW,
-                    height: displayH),
-                display: false)
-            return
-        }
-        // 以当前屏幕的可见工作区为硬边界。窗口顶沿可能在菜单栏后面，
-        // 不能把“脚锚点”当成“面板必须原样放置”，否则最大化窗口会吃掉半个角色。
-        let work = Screens.workBox(containing: CGPoint(x: model.x, y: model.yFeet))
-        let safe = SpatialSafety.placeActor(
-            id: runtimeActorID,
-            anchorX: Double(model.x),
-            feetY: Double(model.yFeet),
-            width: Double(displayW),
-            height: Double(displayH),
-            baselineRatio: Double(ClipLibrary.baselineRatio),
-            in: LayoutRect(
-                x: Double(work.left),
-                y: Double(work.top),
-                width: Double(work.width),
-                height: Double(work.height))
-        )
-        let workBounds = LayoutRect(
-            x: Double(work.left),
-            y: Double(work.top),
-            width: Double(work.width),
-            height: Double(work.height))
-        if castTransition == nil, let castPresentationFrame {
-            let presented = SpatialSafety.fit(castPresentationFrame, in: workBounds)
-            let rect = Screens.appKitRect(
-                flippedTop: CGFloat(presented.y),
-                x: CGFloat(presented.x),
-                width: CGFloat(presented.width),
-                height: CGFloat(presented.height))
-            presentation.setFrame(rect, display: false)
-            return
-        }
-        // 工作区坐标本身是稳定的屏幕 seam：同一块显示器上的角色需要
-        // 分离，不同显示器上的角色不能被后一次更新重新打包到一起。
-        let groupID = "screen:\(Int(work.left)):\(Int(work.top)):\(Int(work.width))x\(Int(work.height))"
-        let placed = layoutCoordinator?.update(safe, in: workBounds, groupID: groupID) ?? safe
-        let transition = castTransition
-        let progress: Double
-        if let transition, let startedAt = castTransitionStartedAt {
-            let duration = max(0.025, gameplayRuntime.clock.seconds(forTicks: transition.durationTicks))
-            progress = (ProcessInfo.processInfo.systemUptime - startedAt) / duration
-        } else {
-            progress = 1
-        }
-        let transitionPresentation = transition?.presentation(
-            at: progress,
-            leadingEdge: model.x <= (work.left + work.right) / 2)
-        var presented = placed.frame
-        if let transitionPresentation {
-            presented = LayoutRect(
-                x: presented.x + presented.width * transitionPresentation.offsetXRatio,
-                y: presented.y + presented.height * transitionPresentation.offsetYRatio,
-                width: presented.width,
-                height: presented.height)
-            presentation.setOpacity(CGFloat(transitionPresentation.opacity))
-        } else {
-            presentation.setOpacity(1)
-        }
-        let rect = Screens.appKitRect(
-            flippedTop: CGFloat(presented.y),
-            x: CGFloat(presented.x),
-            width: CGFloat(presented.width),
-            height: CGFloat(presented.height)
-        )
-        presentation.setFrame(rect, display: false)
-        if transition != nil, progress >= 1 {
-            castTransition = nil
-            castTransitionStartedAt = nil
-            presentation.setOpacity(1)
-            let finalRect = Screens.appKitRect(
-                flippedTop: CGFloat(placed.frame.y),
-                x: CGFloat(placed.frame.x),
-                width: CGFloat(placed.frame.width),
-                height: CGFloat(placed.frame.height))
-            presentation.setFrame(finalRect, display: false)
-        }
+        presentation.beginTransition(plan)
+        renderFrame(dt: 0, effects: [])
     }
 
     // ---- 鼠标（反射层：<50ms，不进大脑） ----
@@ -2209,10 +2095,7 @@ final class PetController {
             // Direct user control temporarily owns the panel. The next Cast
             // tick may reapply the confirmed scene frame, but it must not pin
             // a dragged character to yesterday's relationship layout.
-            if self.castPresentationFrame != nil {
-                self.userDetachedFromCastLayout = true
-            }
-            self.castPresentationFrame = nil
+            self.presentation.detachFromCastLayout()
             self.model.wake()
             self.actions.cancelPerformance() // 用户触摸取消表演
             self.actions.clearPendingUserActions() // 抓起 = 接管，排队的菜单指令作废

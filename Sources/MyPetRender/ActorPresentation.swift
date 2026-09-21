@@ -55,9 +55,19 @@ public final class ActorPresentation {
     private let view: PetView
     private let bubble: SpeechBubble
     private let appearance: ActorAppearance
+    private let actorID: EntityID
+    private let coordinateSpace: any RenderCoordinateSpace
+    private let layoutCoordinator: SpatialLayoutCoordinator?
+    private let baselineRatio: Double
+    private let stepMilliseconds: Int64
+    private let visualSize: CGSize
     private var idleClip: String
     private var idleSwapAt = 0.0
     private var displayedMirrored = false
+    private var castFrame: LayoutRect?
+    private var detachedFromCastLayout = false
+    private var transition: (plan: CastTransitionPlan, startedAt: Double)?
+    public private(set) var projectedFrame: LayoutRect?
 
     public var onMouseDown: ((CGPoint) -> Void)? {
         get { view.onMouseDown }
@@ -76,13 +86,26 @@ public final class ActorPresentation {
         set { view.onRightMouseDown = newValue }
     }
 
-    public init(source: any SpriteClipSource, initialFrame: CGRect,
-                appearance: ActorAppearance) {
+    public init(
+        source: any SpriteClipSource, initialFrame: CGRect,
+        appearance: ActorAppearance, actorID: EntityID,
+        baselineRatio: Double = 0.88,
+        layoutCoordinator: SpatialLayoutCoordinator? = nil,
+        stepMilliseconds: Int64 = 50,
+        coordinateSpace: (any RenderCoordinateSpace)? = nil
+    ) {
+        let space = coordinateSpace ?? AppKitRenderCoordinateSpace()
         animator = SpriteAnimator(source: source)
-        view = PetView(frame: CGRect(origin: .zero, size: initialFrame.size))
+        view = PetView(frame: CGRect(origin: .zero, size: initialFrame.size), coordinateSpace: space)
         panel = OverlayPanel(contentView: view, initialFrame: initialFrame)
         bubble = SpeechBubble()
         self.appearance = appearance
+        self.actorID = actorID
+        self.coordinateSpace = space
+        self.layoutCoordinator = layoutCoordinator
+        self.baselineRatio = baselineRatio
+        self.stepMilliseconds = max(1, stepMilliseconds)
+        visualSize = initialFrame.size
         idleClip = appearance.idle
         animator.play(appearance.idle)
         if let image = animator.currentImage { view.display(image: image, mirrored: false) }
@@ -92,10 +115,11 @@ public final class ActorPresentation {
     public var animationFinished: Bool { animator.isFinished }
 
     public func apply(
-        snapshot: PresentationSnapshot, actorID: EntityID,
+        snapshot: PresentationSnapshot,
         effects: [PresentationEffect], dt: Double, now: Double
     ) {
         let pose = snapshot.entities.first { $0.id == actorID }?.pose
+        if let pose { place(pose: pose, now: ProcessInfo.processInfo.systemUptime) }
         let clip = selectedClip(for: pose, now: now)
         let previous = animator.clipName
         let restart = effects.contains { $0.actorID == actorID }
@@ -110,6 +134,84 @@ public final class ActorPresentation {
             view.display(image: image, mirrored: mirrored)
             displayedMirrored = mirrored
         }
+    }
+
+    public func setCastFrame(_ frame: LayoutRect?) {
+        guard !detachedFromCastLayout else { return }
+        castFrame = frame
+    }
+
+    public func detachFromCastLayout() {
+        if castFrame != nil { detachedFromCastLayout = true }
+        castFrame = nil
+    }
+
+    public func beginTransition(_ plan: CastTransitionPlan) {
+        transition = (plan, ProcessInfo.processInfo.systemUptime)
+    }
+
+    public func cancelTransition() {
+        transition = nil
+        panel.alphaValue = 1
+    }
+
+    public func stop() {
+        cancelTransition()
+        layoutCoordinator?.remove(actorID)
+    }
+
+    private func place(pose: BodyPose, now: Double) {
+        let width = Double(visualSize.width)
+        let height = Double(visualSize.height)
+        let raw = LayoutRect(
+            x: pose.x - width / 2,
+            y: pose.yFeet - height * baselineRatio,
+            width: width, height: height)
+        if pose.motion == "dragged" || detachedFromCastLayout {
+            show(frame: raw)
+            return
+        }
+        let work = coordinateSpace.flippedWorkArea(containing: CGPoint(
+            x: CGFloat(pose.x), y: CGFloat(pose.yFeet)))
+        let bounds = LayoutRect(
+            x: Double(work.minX), y: Double(work.minY),
+            width: Double(work.width), height: Double(work.height))
+        let safe = SpatialSafety.placeActor(
+            id: actorID, anchorX: pose.x, feetY: pose.yFeet,
+            width: width, height: height, baselineRatio: baselineRatio, in: bounds)
+        if transition == nil, let castFrame {
+            panel.alphaValue = 1
+            show(frame: SpatialSafety.fit(castFrame, in: bounds))
+            return
+        }
+        let groupID = "screen:\(Int(work.minX)):\(Int(work.minY)):\(Int(work.width))x\(Int(work.height))"
+        let placed = layoutCoordinator?.update(safe, in: bounds, groupID: groupID) ?? safe
+        var frame = placed.frame
+        if let transition {
+            let duration = max(0.025,
+                Double(transition.plan.durationTicks) * Double(stepMilliseconds) / 1_000)
+            let progress = (now - transition.startedAt) / duration
+            if progress >= 1 {
+                self.transition = nil
+                panel.alphaValue = 1
+            } else {
+                let cue = transition.plan.presentation(
+                    at: progress, leadingEdge: pose.x <= (bounds.minX + bounds.maxX) / 2)
+                frame.x += frame.width * cue.offsetXRatio
+                frame.y += frame.height * cue.offsetYRatio
+                panel.alphaValue = CGFloat(cue.opacity)
+            }
+        } else {
+            panel.alphaValue = 1
+        }
+        show(frame: frame)
+    }
+
+    private func show(frame: LayoutRect) {
+        projectedFrame = frame
+        panel.setFrame(coordinateSpace.appKitRect(
+            flippedTop: CGFloat(frame.y), x: CGFloat(frame.x),
+            width: CGFloat(frame.width), height: CGFloat(frame.height)), display: false)
     }
 
     private func selectedClip(for pose: BodyPose?, now: Double) -> String {
@@ -139,11 +241,6 @@ public final class ActorPresentation {
         view.displayProp(image: image, rect: rect)
     }
 
-    public func setFrame(_ frame: CGRect, display: Bool = false) {
-        panel.setFrame(frame, display: display)
-    }
-
-    public func setOpacity(_ opacity: CGFloat) { panel.alphaValue = opacity }
     public func show() { panel.orderFrontRegardless() }
     public func hide() { panel.orderOut(nil); bubble.dismiss() }
     public func speak(_ text: String, headX: CGFloat, headY: CGFloat) {
