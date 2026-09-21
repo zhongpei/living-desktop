@@ -59,8 +59,58 @@ final class GameRuntimeTests: XCTestCase {
             world: WorldState,
             actorID: EntityID
         ) -> SimulationNeedleAction? {
-            prepared ? .wait : nil
+            guard prepared else { return nil }
+            if case .perform(let name) = step.operation { return .perform(name) }
+            return .wait
         }
+    }
+
+    func testStoryActionRuntimeRejectsNeedleActionThatCannotRepresentAuthoredBeat() {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let world = WorldState(entities: [actor.id.raw: actor])
+        let runtime = ActionRuntime()
+
+        let mismatch = runtime.executeStory(
+            .wait, tick: 0, actorID: actor.id, world: world,
+            requestID: "story/mismatch", storyIntent: "wave",
+            target: nil, slot: nil, claims: ["body"],
+            durationTicks: 1, occupySlotOnSuccess: false)
+        XCTAssertFalse(mismatch.accepted)
+        XCTAssertNil(mismatch.request)
+
+        let match = runtime.executeStory(
+            .perform("wave"), tick: 0, actorID: actor.id, world: world,
+            requestID: "story/match", storyIntent: "wave",
+            target: nil, slot: nil, claims: ["body"],
+            durationTicks: 1, occupySlotOnSuccess: false)
+        XCTAssertTrue(match.accepted)
+        XCTAssertEqual(match.request?.intent, "wave")
+    }
+
+    func testStoryMismatchCannotEmitBodyCommandOrSuccessEffects() {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let director = StoryDirector(
+            episodes: [StoryEpisode(
+                id: "mismatch", title: "Mismatch", participants: [actor.id.raw],
+                beats: [StoryBeat(id: "wave", actorIDs: [actor.id.raw], intent: "wave")])],
+            executionProvider: SemanticStoryExecutionProvider(
+                needleProvider: MismatchedNeedleProvider()))
+        let runtime = GameRuntime(kernel: GameKernel(scenario: HarnessScenario(
+            id: "story-mismatch", entities: [actor])), bodyExecutionMode: .external)
+
+        _ = runtime.startStory(director)
+        _ = runtime.step(storyDirector: director)
+        XCTAssertEqual(director.interruptedEpisodeID, "mismatch")
+        XCTAssertTrue(runtime.drainBodyCommands().isEmpty)
+        XCTAssertNil(runtime.world.facts["episode/mismatch/completed"])
+    }
+
+    private final class MismatchedNeedleProvider: SimulationNeedleProvider {
+        let providerID = "mismatch-test"
+        func decide(
+            step: SimulationSceneStep, tick: Int64, context: RuntimeContext,
+            world: WorldState, actorID: EntityID
+        ) -> SimulationNeedleAction? { .wait }
     }
 
     private final class DeferredGoalProvider: SimulationGoalProvider {

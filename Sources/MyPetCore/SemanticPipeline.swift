@@ -969,15 +969,13 @@ public final class ActionRuntime {
         durationTicks: Int64,
         occupySlotOnSuccess: Bool
     ) -> ActionExecution {
-        let resolution: SimulationAssetResolution?
-        switch action {
-        case .perform(let actionName):
-            resolution = assetCatalog.resolve(actionName)
-        case .performCandidates(let candidates):
-            resolution = candidates.map(assetCatalog.resolve).first(where: { $0.kind != .missing })
-        default:
-            resolution = nil
+        // A Story beat is authored, not a free-play decision point. Needle may
+        // confirm that beat, but a different action cannot be logged as chosen
+        // while the body still performs the authored intent.
+        guard action == .perform(storyIntent) else {
+            return ActionExecution(accepted: false, reason: "story_action_mismatch")
         }
+        let resolution = assetCatalog.resolve(storyIntent)
         let epoch = world.planEpochs[actorID.raw, default: 0]
         return ActionExecution(
             accepted: true,
