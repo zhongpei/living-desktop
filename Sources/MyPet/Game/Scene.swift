@@ -89,10 +89,16 @@ protocol SceneStaging: AnyObject {
 /// AppKit body driver for the Core-owned semantic scene cursor.
 final class SceneBodyDriver {
 
+    typealias BodyResultReporter = (Bool) -> Void
+
     private(set) var recipe: SceneRecipe
     private let semanticRunner: MyPetCore.SceneRunner
     private let goal: SimulationGoalDecision
-    private let authorize: (SimulationNeedleAction, @escaping (Bool) -> Void) -> Void
+    private let authorize: (
+        SimulationNeedleAction,
+        @escaping (Bool, BodyResultReporter?) -> Void
+    ) -> Void
+    private var activeBodyResultReporter: BodyResultReporter?
     private(set) weak var stage: SceneStaging?
     private(set) var startedAt: Double = 0
     var stepIndex: Int { semanticRunner.stepIndex }
@@ -123,14 +129,34 @@ final class SceneBodyDriver {
         recipe: SceneRecipe,
         goal: SimulationGoalDecision? = nil,
         semanticRunner: MyPetCore.SceneRunner? = nil,
-        authorize: @escaping (SimulationNeedleAction, @escaping (Bool) -> Void) -> Void = { _, completion in
-            completion(true)
+        authorize: @escaping (
+            SimulationNeedleAction,
+            @escaping (Bool, BodyResultReporter?) -> Void
+        ) -> Void = { _, completion in
+            completion(true, nil)
         }
     ) {
         self.recipe = recipe
         self.goal = goal ?? SimulationGoalDecision(goal: recipe.goals.first ?? .wander)
         self.semanticRunner = semanticRunner ?? MyPetCore.SceneRunner(recipes: [recipe])
         self.authorize = authorize
+    }
+
+    /// Test/content compatibility seam for callers that only model admission.
+    /// Production uses the reporter-bearing initializer above.
+    convenience init(
+        recipe: SceneRecipe,
+        goal: SimulationGoalDecision? = nil,
+        semanticRunner: MyPetCore.SceneRunner? = nil,
+        authorize: @escaping (SimulationNeedleAction, @escaping (Bool) -> Void) -> Void
+    ) {
+        self.init(
+            recipe: recipe,
+            goal: goal,
+            semanticRunner: semanticRunner,
+            authorize: { action, completion in
+                authorize(action) { accepted in completion(accepted, nil) }
+            })
     }
 
     var isActive: Bool { phase != .finished }
@@ -157,6 +183,7 @@ final class SceneBodyDriver {
     /// 强制结束（用户抓起 / 目标变更 / 醒来）。回收道具。
     func abort() {
         guard phase != .finished else { return }
+        finishBody(success: false)
         phase = .finished
         semanticRunner.cancel()
         stage?.sceneClearProps()
@@ -171,12 +198,13 @@ final class SceneBodyDriver {
             if now >= until { finishStep() }
         case .authorizing:
             if now - stepStartedAt > stepTimeout {
+                finishBody(success: false)
                 phase = .finished
                 semanticRunner.cancel()
                 stage?.sceneClearProps()
             }
         case .moving, .performing:
-            if now - stepStartedAt > stepTimeout { finishStep() }  // 看门狗
+            if now - stepStartedAt > stepTimeout { failScene() }
         case .ready:
             startStep(now: now)   // ready 不会跨帧存在，防御性兜底
         case .deciding, .sleeping, .finished:
@@ -193,6 +221,7 @@ final class SceneBodyDriver {
         case .leaveScene:
             authorizeDecision(.leaveScene) { [weak self, weak stage] in
                 guard let self else { return }
+                self.finishBody(success: true)
                 self.phase = .finished
                 self.completed = true
                 self.semanticRunner.cancel()
@@ -235,12 +264,13 @@ final class SceneBodyDriver {
         stepStartedAt = now
         phase = .authorizing
         let generation = stepGeneration
-        authorize(Self.action(for: step.operation)) { [weak self] accepted in
+        authorize(Self.action(for: step.operation)) { [weak self] accepted, reporter in
             guard let self, generation == self.stepGeneration, self.phase == .authorizing else { return }
             guard accepted else {
                 self.failScene()
                 return
             }
+            self.activeBodyResultReporter = reporter
             self.execute(step: step, now: now, generation: generation)
         }
     }
@@ -253,17 +283,19 @@ final class SceneBodyDriver {
         let generation = stepGeneration
         stepStartedAt = currentClock
         phase = .authorizing
-        authorize(action) { [weak self] accepted in
+        authorize(action) { [weak self] accepted, reporter in
             guard let self, generation == self.stepGeneration, self.phase == .authorizing else { return }
             guard accepted else {
                 self.failScene()
                 return
             }
+            self.activeBodyResultReporter = reporter
             onAccepted()
         }
     }
 
     private func failScene() {
+        finishBody(success: false)
         phase = .finished
         semanticRunner.cancel()
         stage?.sceneClearProps()
@@ -369,6 +401,7 @@ final class SceneBodyDriver {
         case .sleep:
             phase = .sleeping
             stage.sceneSleep()
+            finishBody(success: true)
         }
     }
 
@@ -387,6 +420,7 @@ final class SceneBodyDriver {
         default: return
         }
         guard let stage else { return }
+        finishBody(success: true)
         let idx = min(stepIndex, recipe.steps.count - 1)
         if recipe.steps[idx].decisionPoint {
             phase = .deciding
@@ -401,6 +435,7 @@ final class SceneBodyDriver {
     /// Advance the shared Core cursor, then stage its next command.
     private func advanceStep() {
         guard isActive else { return }
+        finishBody(success: true)
         if semanticRunner.completeStep() {
             phase = .finished
             completed = true
@@ -409,5 +444,11 @@ final class SceneBodyDriver {
         }
         phase = .ready
         startStep(now: currentClock)
+    }
+
+    private func finishBody(success: Bool) {
+        let reporter = activeBodyResultReporter
+        activeBodyResultReporter = nil
+        reporter?(success)
     }
 }

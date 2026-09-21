@@ -815,7 +815,7 @@ public final class ActionRuntime {
         case .chooseScene(let sceneID):
             return ActionExecution(accepted: true, request: BehaviorRequest(
                 id: id, actorID: actorID, intent: "choose_scene:\(sceneID)", priority: .brainReactive,
-                planEpoch: epoch, durationTicks: 1))
+                planEpoch: epoch, completionMode: .body, durationTicks: 1, timeoutTicks: 400))
         case .moveTo(let anchor):
             let slot = slot(for: anchor, world: world, context: context)
             if anchor.isEmpty || (anchor.hasPrefix("@activity.") && context.focus == nil) {
@@ -823,7 +823,8 @@ public final class ActionRuntime {
             }
             return ActionExecution(accepted: true, request: BehaviorRequest(
                 id: id, actorID: actorID, intent: "move_to:\(anchor)", priority: .brainReactive,
-                planEpoch: epoch, slot: slot, durationTicks: 1, occupySlotOnSuccess: false))
+                planEpoch: epoch, slot: slot, completionMode: .body,
+                durationTicks: 1, timeoutTicks: 400, occupySlotOnSuccess: false))
         case .perform(let actionName):
             let resolution = assetCatalog.resolve(actionName)
             guard resolution.kind != .missing else {
@@ -832,7 +833,8 @@ public final class ActionRuntime {
             return ActionExecution(accepted: true, request: BehaviorRequest(
                 id: id, actorID: actorID,
                 intent: "perform:\(resolution.resolvedAction ?? actionName)",
-                priority: .brainReactive, planEpoch: epoch, durationTicks: 1), resolution: resolution)
+                priority: .brainReactive, planEpoch: epoch, completionMode: .body,
+                durationTicks: 1, timeoutTicks: 400), resolution: resolution)
         case .performCandidates(let candidates):
             let resolutions = candidates.map(assetCatalog.resolve)
             guard let resolution = resolutions.first(where: { $0.kind != .missing }) else {
@@ -845,39 +847,44 @@ public final class ActionRuntime {
             return ActionExecution(accepted: true, request: BehaviorRequest(
                 id: id, actorID: actorID,
                 intent: "perform:\(resolution.resolvedAction ?? resolution.action)",
-                priority: .brainReactive, planEpoch: epoch, durationTicks: 1), resolution: resolution)
+                priority: .brainReactive, planEpoch: epoch, completionMode: .body,
+                durationTicks: 1, timeoutTicks: 400), resolution: resolution)
         case .spawnProp(let propID):
             return ActionExecution(accepted: true, request: BehaviorRequest(
                 id: id, actorID: actorID, intent: "spawn_prop:\(propID)", priority: .brainReactive,
-                planEpoch: epoch, claims: ["manipulator"], durationTicks: 1))
+                planEpoch: epoch, claims: ["manipulator"], completionMode: .body,
+                durationTicks: 1, timeoutTicks: 400))
         case .clearProps:
             return ActionExecution(accepted: true, request: BehaviorRequest(
                 id: id, actorID: actorID, intent: "clear_props", priority: .brainReactive,
-                planEpoch: epoch, claims: ["manipulator"], durationTicks: 1))
+                planEpoch: epoch, claims: ["manipulator"], completionMode: .body,
+                durationTicks: 1, timeoutTicks: 400))
         case .putDown:
             return ActionExecution(accepted: true, request: BehaviorRequest(
                 id: id, actorID: actorID, intent: "put_down", priority: .brainReactive,
-                planEpoch: epoch, claims: ["manipulator"], durationTicks: 1))
+                planEpoch: epoch, claims: ["manipulator"], completionMode: .body,
+                durationTicks: 1, timeoutTicks: 400))
         case .pickUp:
             return ActionExecution(accepted: true, request: BehaviorRequest(
                 id: id, actorID: actorID, intent: "pick_up", priority: .brainReactive,
-                planEpoch: epoch, claims: ["manipulator"], durationTicks: 1))
+                planEpoch: epoch, claims: ["manipulator"], completionMode: .body,
+                durationTicks: 1, timeoutTicks: 400))
         case .leaveScene:
             return ActionExecution(accepted: true, request: BehaviorRequest(
                 id: id, actorID: actorID, intent: "leave_scene", priority: .brainReactive,
-                planEpoch: epoch, durationTicks: 1))
+                planEpoch: epoch, completionMode: .body, durationTicks: 1, timeoutTicks: 400))
         case .wait:
             return ActionExecution(accepted: true, request: BehaviorRequest(
                 id: id, actorID: actorID, intent: "wait", priority: .brainReactive,
-                planEpoch: epoch, durationTicks: 1))
+                planEpoch: epoch, completionMode: .body, durationTicks: 1, timeoutTicks: 400))
         case .say(let intent):
             return ActionExecution(accepted: true, request: BehaviorRequest(
                 id: id, actorID: actorID, intent: "say:\(intent)", priority: .brainReactive,
-                planEpoch: epoch, durationTicks: 1))
+                planEpoch: epoch, completionMode: .body, durationTicks: 1, timeoutTicks: 400))
         case .sleep:
             return ActionExecution(accepted: true, request: BehaviorRequest(
                 id: id, actorID: actorID, intent: "sleep", priority: .ambient,
-                planEpoch: epoch, durationTicks: 2))
+                planEpoch: epoch, completionMode: .body, durationTicks: 2, timeoutTicks: 400))
         case .body(let body):
             let intent: String
             switch body {
@@ -889,7 +896,7 @@ public final class ActionRuntime {
             }
             return ActionExecution(accepted: true, request: BehaviorRequest(
                 id: id, actorID: actorID, intent: intent, priority: .brainReactive,
-                planEpoch: epoch, durationTicks: 1))
+                planEpoch: epoch, completionMode: .body, durationTicks: 1, timeoutTicks: 400))
         }
     }
 
@@ -931,7 +938,9 @@ public final class ActionRuntime {
                 target: target,
                 slot: slot,
                 claims: claims,
+                completionMode: .body,
                 durationTicks: max(1, durationTicks),
+                timeoutTicks: max(400, durationTicks),
                 occupySlotOnSuccess: occupySlotOnSuccess),
             resolution: resolution)
     }

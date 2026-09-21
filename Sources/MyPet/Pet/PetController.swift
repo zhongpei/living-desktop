@@ -53,7 +53,10 @@ final class PetController {
     private enum PendingRuntimeAction {
         case semantic(NeedleBrain.SemanticAction)
         case random(PetIntent)
-        case scene(SimulationNeedleAction, (Bool) -> Void)
+        case scene(
+            SimulationNeedleAction,
+            (Bool, SceneBodyDriver.BodyResultReporter?) -> Void
+        )
     }
 
     let world: WindowWorld
@@ -180,7 +183,7 @@ final class PetController {
         self.layoutCoordinator = layoutCoordinator
         self.perception = perceptionHub ?? PerceptionHub(ownerID: actorID ?? EntityID(library.characterID))
         self.perceptionEventCursor = self.perception.latestInputSequence
-        let runtime = injectedRuntime ?? GameRuntime()
+        let runtime = injectedRuntime ?? GameRuntime(bodyExecutionMode: .external)
         self.gameplayRuntime = runtime
         self.semanticPipeline = SemanticPipeline(configuration: SemanticPipelineConfiguration(
             actorID: actorID ?? EntityID(library.characterID),
@@ -282,8 +285,12 @@ final class PetController {
     /// 播放角色组剧情节拍。剧情层只传语义 intent，不能越过身体动作入口
     /// 直接操作动画器；这里负责把跨角色通用词映射到当前 petpack 可用的
     /// 动作，并在需要时触发一条短台词。
-    func performStoryIntent(_ intent: String, targetX: CGFloat? = nil) {
-        guard !isStopped else { return }
+    func performStoryIntent(
+        _ intent: String,
+        targetX: CGFloat? = nil,
+        completion: @escaping (Bool) -> Void = { _ in }
+    ) {
+        guard !isStopped else { completion(false); return }
         model.wake()
         model.stopWalk()
         cancelGoalAndScene(reason: "story beat")
@@ -427,7 +434,11 @@ final class PetController {
         let key = ActionCatalog.resolve(semantic, available: library.actionNames)
             .flatMap(library.action(named:)) ?? idlePrimary
         if !key.isEmpty {
-            actions.inject(.perform(key))
+            scenePerform([key]) { completion(true) }
+        } else {
+            // Missing presentation content is a content degradation, not a
+            // failure of the committed story logic.
+            completion(true)
         }
 
         if let speech = storySpeechIntent(normalized) {
@@ -470,7 +481,7 @@ final class PetController {
         panel.alphaValue = 1
         timer?.invalidate()
         timer = nil
-        pendingRuntimeActions.removeAll()
+        cancelPendingRuntimeActions()
         layoutCoordinator?.remove(runtimeActorID)
         // A shared Cast graph must not retain a departed actor root. Props are
         // cleared by closePanel, while this removes the actor/socket container
@@ -562,6 +573,13 @@ final class PetController {
         tickScenePerform()
         model.update(dtIn: dt)
         actions.tick(now: clock)
+        gameplayRuntime.updateBodyPose(BodyPose(
+            actorID: runtimeActorID,
+            x: Double(model.x),
+            yFeet: Double(model.yFeet),
+            facingRight: model.facingRight,
+            motion: String(describing: model.state),
+            action: actions.performance?.clipKey))
         placePanel()
         renderFrame(dt: dt)
         // 道具在物理/渲染之后推进：held 走合成层（本帧坐标已定），
@@ -890,7 +908,7 @@ final class PetController {
     /// 没有目标但仍有挂起场景时，保留纯场景中断路径。
     private func cancelGoalAndScene(reason: String) {
         goalBrainCoordinator.cancelPendingPlan()
-        pendingRuntimeActions.removeAll()
+        cancelPendingRuntimeActions()
         if reason.localizedCaseInsensitiveContains("user") ||
             reason.localizedCaseInsensitiveContains("grab") {
             gameplayRuntime.submitPlatform(PlatformEvent(GameEvent(
@@ -971,7 +989,7 @@ final class PetController {
             goal: currentGoal?.semanticDecision(atTick: gameplayRuntime.clock.tick),
             semanticRunner: semanticPipeline.sceneRunner,
             authorize: { [weak self] action, completion in
-                guard let self else { completion(false); return }
+                guard let self else { completion(false, nil); return }
                 self.authorizeSceneAction(action, completion: completion)
             })
         // "@activity" 锚点绑定：优先前台窗口，其次最近的活动匹配窗口。
@@ -1094,9 +1112,18 @@ final class PetController {
         gameplayRuntime.submit(GameEvent(kind: .behaviorRequest, request: request))
     }
 
+    private func cancelPendingRuntimeActions() {
+        let pending = pendingRuntimeActions
+        pendingRuntimeActions.removeAll()
+        for (id, action) in pending {
+            gameplayRuntime.submitBodyResult(BodyResult(behaviorID: id, outcome: .cancelled))
+            if case .scene(_, let completion) = action { completion(false, nil) }
+        }
+    }
+
     private func authorizeSceneAction(
         _ action: SimulationNeedleAction,
-        completion: @escaping (Bool) -> Void
+        completion: @escaping (Bool, SceneBodyDriver.BodyResultReporter?) -> Void
     ) {
         let execution = semanticPipeline.actionRuntime.execute(
             action,
@@ -1104,32 +1131,49 @@ final class PetController {
             actorID: runtimeActorID,
             world: gameplayRuntime.world,
             context: runtimeContext())
-        guard execution.accepted else { completion(false); return }
+        guard execution.accepted else { completion(false, nil); return }
         guard let request = execution.request else {
             // Missing optional content is a valid degradation, not a logic
             // failure; the body driver will skip the unavailable clip.
-            completion(true)
+            completion(true, nil)
             return
         }
         pendingRuntimeActions[request.id] = .scene(action, completion)
         gameplayRuntime.submit(GameEvent(kind: .behaviorRequest, request: request))
     }
 
-    /// 只消费 Kernel 已经接受的动作。同一 pulse 中到达的用户抢占会先
-    /// 推进 plan epoch，因此即使旧请求曾经 completed，也不会在真实身体上“诈尸”。
+    /// 只消费 Engine 发出的一次性 BodyCommand。命令执行完毕后，生产身体
+    /// 必须把结果送回同一事件入口；Kernel 不再用计时器冒充物理完成。
     private func drainCommittedRuntimeActions() {
-        for id in pendingRuntimeActions.keys.sorted() {
-            guard let action = pendingRuntimeActions[id],
-                  let state = gameplayRuntime.world.behaviors[id] else { continue }
-            switch state.status {
-            case .running, .completed:
+        for command in gameplayRuntime.drainBodyCommands(for: runtimeActorID) {
+            guard let action = pendingRuntimeActions.removeValue(forKey: command.behaviorID) else {
+                gameplayRuntime.submitBodyResult(BodyResult(
+                    behaviorID: command.behaviorID, outcome: .cancelled))
+                continue
+            }
+            guard gameplayRuntime.world.planEpochs[runtimeActorID.raw, default: 0]
+                    == command.planEpoch else {
+                gameplayRuntime.submitBodyResult(BodyResult(
+                    behaviorID: command.behaviorID, outcome: .cancelled))
+                if case .scene(_, let completion) = action { completion(false, nil) }
+                continue
+            }
+            let report: SceneBodyDriver.BodyResultReporter = { [weak self] success in
+                self?.gameplayRuntime.submitBodyResult(BodyResult(
+                    behaviorID: command.behaviorID,
+                    outcome: success ? .completed : .failed))
+            }
+            executeCommitted(action, report: report)
+        }
+        let terminal = pendingRuntimeActions.keys.filter { id in
+            guard let status = gameplayRuntime.world.behaviors[id]?.status else { return false }
+            return status == .cancelled || status == .rejected
+        }
+        for id in terminal {
+            if case .scene(_, let completion) = pendingRuntimeActions.removeValue(forKey: id) {
+                completion(false, nil)
+            } else {
                 pendingRuntimeActions[id] = nil
-                guard gameplayRuntime.world.planEpochs[runtimeActorID.raw, default: 0]
-                        == state.request.planEpoch else { continue }
-                executeCommitted(action)
-            case .cancelled, .rejected:
-                pendingRuntimeActions[id] = nil
-                if case .scene(_, let completion) = action { completion(false) }
             }
         }
     }
@@ -1146,70 +1190,88 @@ final class PetController {
         }
     }
 
-    private func executeCommitted(_ action: PendingRuntimeAction) {
+    private func executeCommitted(
+        _ action: PendingRuntimeAction,
+        report: @escaping SceneBodyDriver.BodyResultReporter
+    ) {
         switch action {
-        case .semantic(let semantic): executeCommitted(semantic)
-        case .random(let intent): executeCommitted(intent)
-        case .scene(_, let completion): completion(true)
+        case .semantic(let semantic): executeCommitted(semantic, report: report)
+        case .random(let intent): executeCommitted(intent, report: report)
+        case .scene(_, let completion): completion(true, report)
         }
     }
 
-    private func executeCommitted(_ intent: PetIntent) {
+    private func executeCommitted(
+        _ intent: PetIntent,
+        report: @escaping SceneBodyDriver.BodyResultReporter
+    ) {
         switch intent {
-        case .stroll(let target): actions.inject(.moveTo(target))
-        case .walkAlong: model.startWalk(CGFloat.random(in: 0..<1) < 0.5 ? -1 : 1)
-        case .gesture(let clip): actions.inject(.perform(clip))
+        case .stroll(let target):
+            sceneMove(toX: target, top: false, window: nil) { report(true) }
+        case .walkAlong:
+            model.startWalk(CGFloat.random(in: 0..<1) < 0.5 ? -1 : 1)
+            report(true)
+        case .gesture(let clip):
+            scenePerform([clip]) { report(true) }
         case .leap(let window):
-            if settings.perchingEnabled { actions.inject(.interact(window)) }
-        case .hop, .dropOff: model.hop()
-        case .nothing: break
+            guard settings.perchingEnabled else { report(false); return }
+            sceneMove(toX: window.bounds.midX, top: true, window: window) { report(true) }
+        case .hop, .dropOff:
+            model.hop()
+            report(true)
+        case .nothing:
+            report(true)
         }
     }
 
     /// Kernel 承诺后的平台适配：从此开始才允许操作 AppKit/精灵身体。
-    private func executeCommitted(_ semantic: NeedleBrain.SemanticAction) {
+    private func executeCommitted(
+        _ semantic: NeedleBrain.SemanticAction,
+        report: @escaping SceneBodyDriver.BodyResultReporter
+    ) {
         switch semantic {
         case .chooseScene(let id):
-            guard let recipe = SceneCatalog.recipe(id: id) else { return }
+            guard let recipe = SceneCatalog.recipe(id: id) else { report(false); return }
             beginScene(recipe)
+            report(true)
         case .moveTo(let text):
-            // 与场景移动同一套机制（走到/跳上），只是没有 onDone。
-            if let resolved = resolveAnchor(text) {
-                sceneMove(toX: resolved.x, top: resolved.top, window: resolved.window) {}
-            }
+            guard let resolved = resolveAnchor(text) else { report(false); return }
+            sceneMove(toX: resolved.x, top: resolved.top, window: resolved.window) { report(true) }
         case .spawnProp(let id):
-            guard settings.propsEnabled else { return }
+            guard settings.propsEnabled else { report(false); return }
             model.wake()
             props.spawnHeld(id, petX: model.x, petYFeet: model.yFeet,
                             facingRight: model.facingRight, now: clock)
+            report(true)
         case .putDown:
-            semanticPutDown()
+            report(semanticPutDown())
         case .pickUp:
-            semanticPickUp()
+            report(semanticPickUp())
         case .perform(let name):
-            if let key = library.action(named: name) {
-                model.wake()
-                model.stopWalk()
-                actions.inject(.perform(key))
-            }
+            guard let key = library.action(named: name) else { report(false); return }
+            scenePerform([key]) { report(true) }
         case .performCandidates(let names):
-            if let key = names.lazy.compactMap({ self.library.action(named: $0) }).first {
-                model.wake()
-                model.stopWalk()
-                actions.inject(.perform(key))
+            guard let key = names.lazy.compactMap({ self.library.action(named: $0) }).first else {
+                report(false)
+                return
             }
+            scenePerform([key]) { report(true) }
         case .clearProps:
             props.clear()
+            report(true)
         case .say(let intent):
             if let intent = SpeechIntent(rawValue: intent) { speak(intent: intent) }
+            report(true)
         case .leaveScene:
             cancelGoalAndScene(reason: "action brain left scene")
+            report(true)
         case .sleep:
             actions.inject(.sleep)
+            report(true)
         case .wait:
-            break
+            report(true)
         case .body:
-            break
+            report(false)
         }
     }
 

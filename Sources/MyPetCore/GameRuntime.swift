@@ -32,6 +32,7 @@ public struct RuntimeContext: Codable, Equatable, Sendable {
 public final class GameRuntime {
     public private(set) var kernel: GameKernel
     private let platformIngress: PlatformEventBuffer
+    private let bodyRuntime: BodyRuntime
 
     // Semantic work is allowed to submit late events from inside `step`, hence
     // a recursive lock. The lock is held for the entire pulse so background
@@ -39,9 +40,14 @@ public final class GameRuntime {
     private let stateLock = NSRecursiveLock()
     private var stepping = false
 
-    public init(kernel: GameKernel = GameKernel(), platformIngressCapacity: Int = 256) {
+    public init(
+        kernel: GameKernel = GameKernel(),
+        platformIngressCapacity: Int = 256,
+        bodyExecutionMode: BodyExecutionMode = .headless
+    ) {
         self.kernel = kernel
         self.platformIngress = PlatformEventBuffer(capacity: platformIngressCapacity)
+        self.bodyRuntime = BodyRuntime(mode: bodyExecutionMode)
     }
 
     public convenience init(snapshot: KernelSnapshot) {
@@ -85,9 +91,45 @@ public final class GameRuntime {
         for event in platformIngress.drain() {
             kernel.enqueue(event.gameEvent, atTick: tick)
         }
-        return kernel.tick {
-            semanticWork?(self)
+        let report = kernel.tick(
+            afterEvents: { semanticWork?(self) },
+            beforeBehaviorAdvance: {
+                self.bodyRuntime.reconcile(world: self.kernel.world, tick: tick)
+                for result in self.bodyRuntime.dueResults(at: tick) {
+                    if let event = self.bodyRuntime.event(for: result) {
+                        self.kernel.enqueue(event, atTick: tick)
+                    }
+                }
+            })
+        bodyRuntime.reconcile(world: kernel.world, tick: tick)
+        return report
+    }
+
+    public func submitBodyResult(_ result: BodyResult) {
+        withState {
+            guard let event = bodyRuntime.event(for: result) else { return }
+            platformIngress.publish(PlatformEvent(event, delivery: .mustDeliver))
         }
+    }
+
+    public func drainBodyCommands(for actorID: EntityID? = nil) -> [BodyCommand] {
+        withState { bodyRuntime.drainCommands(actorID: actorID) }
+    }
+
+    public func takeBodyCommand(behaviorID: String) -> BodyCommand? {
+        withState { bodyRuntime.takeCommand(behaviorID: behaviorID) }
+    }
+
+    public func updateBodyPose(_ pose: BodyPose) {
+        withState { bodyRuntime.update(pose) }
+    }
+
+    public func presentationSnapshot() -> PresentationSnapshot {
+        withState { bodyRuntime.snapshot(world: kernel.world, tick: kernel.clock.tick) }
+    }
+
+    public func drainPresentationEffects() -> [PresentationEffect] {
+        withState { bodyRuntime.drainEffects() }
     }
 
     public func snapshot() -> KernelSnapshot { withState { kernel.snapshot() } }
@@ -97,6 +139,8 @@ public final class GameRuntime {
             guard !stepping else { return }
             kernel = GameKernel(snapshot: snapshot)
             platformIngress.removeAll()
+            bodyRuntime.reset()
+            bodyRuntime.reconcile(world: kernel.world, tick: kernel.clock.tick)
         }
     }
 

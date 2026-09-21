@@ -347,6 +347,53 @@ final class GameTests: XCTestCase {
         XCTAssertEqual(stage.spawnedProps, ["tea"])
     }
 
+    func testSceneReportsBodyCompletionOnlyAfterPhysicalStepFinishes() {
+        let recipe = SimulationSceneRecipe(
+            id: "body-result", goals: [.wander],
+            steps: [SimulationSceneStep(.wait(2))])
+        let stage = FakeStage()
+        var authorization: ((Bool, SceneBodyDriver.BodyResultReporter?) -> Void)?
+        var results: [Bool] = []
+        let runner = SceneBodyDriver(
+            recipe: recipe,
+            authorize: { _, completion in authorization = completion })
+
+        runner.start(stage: stage, activityWindow: nil, now: 0)
+        runner.tick(now: 0)
+        authorization?(true, { results.append($0) })
+        XCTAssertTrue(results.isEmpty)
+
+        runner.tick(now: 0.05)
+        XCTAssertTrue(results.isEmpty)
+        runner.tick(now: 0.1)
+
+        XCTAssertEqual(results, [true])
+        XCTAssertTrue(runner.completed)
+    }
+
+    func testScenePhysicalTimeoutReportsFailureAndDoesNotAdvance() {
+        let recipe = SimulationSceneRecipe(
+            id: "body-timeout", goals: [.wander],
+            steps: [SimulationSceneStep(.moveTo("floor_near"))])
+        let stage = FakeStage()
+        stage.completeMovesImmediately = false
+        var results: [Bool] = []
+        let runner = SceneBodyDriver(
+            recipe: recipe,
+            authorize: { _, completion in
+                completion(true, { results.append($0) })
+            })
+        runner.stepTimeout = 0.05
+
+        runner.start(stage: stage, activityWindow: nil, now: 0)
+        runner.tick(now: 0)
+        runner.tick(now: 0.1)
+
+        XCTAssertEqual(results, [false])
+        XCTAssertFalse(runner.completed)
+        XCTAssertFalse(runner.isActive)
+    }
+
     func testSceneRunnerDecisionPointAsksStage() {
         let recipe = SceneCatalog.recipe(id: "complain")!
         let stage = FakeStage()
@@ -894,6 +941,7 @@ private final class FakeStage: SceneStaging {
     var decisionPoints = 0
     var performedClips: [String] = []
     var hasClips = false
+    var completeMovesImmediately = true
     var nextDecision: SceneDecision?
     /// 场景等待的绝对时钟（elapse 推进）。
     var fakeClock: Double = 0
@@ -915,7 +963,7 @@ private final class FakeStage: SceneStaging {
     func floorNearPoint() -> CGFloat { petX + 60 }
 
     func sceneMove(toX: CGFloat, top: Bool, window: WindowEntity?, onDone: @escaping () -> Void) {
-        onDone()   // 假舞台：移动立即完成
+        if completeMovesImmediately { onDone() }
     }
 
     func sceneSpawnProp(_ id: String, at x: CGFloat, footY: CGFloat) {

@@ -347,6 +347,14 @@ public final class GameKernel {
 
     @discardableResult
     public func tick(afterEvents: (() -> Void)? = nil) -> TickReport {
+        tick(afterEvents: afterEvents, beforeBehaviorAdvance: {})
+    }
+
+    @discardableResult
+    func tick(
+        afterEvents: (() -> Void)?,
+        beforeBehaviorAdvance: () -> Void
+    ) -> TickReport {
         let currentTick = clock.tick
         let manualViolationStart = manualViolations.count
         let events = inbox.drain(atTick: currentTick)
@@ -360,7 +368,13 @@ public final class GameKernel {
             apply(scheduled.event, tick: currentTick)
             record(kind: "event", detail: scheduled.event.traceDetail)
         }
-        let appliedEventCount = events.count + lateEvents.count
+        beforeBehaviorAdvance()
+        let bodyEvents = inbox.drain(atTick: currentTick)
+        for scheduled in bodyEvents {
+            apply(scheduled.event, tick: currentTick)
+            record(kind: "event", detail: scheduled.event.traceDetail)
+        }
+        let appliedEventCount = events.count + lateEvents.count + bodyEvents.count
         advanceBehaviors(tick: currentTick)
         expireFacts(tick: currentTick)
         expireInputObservations(tick: currentTick)
@@ -460,7 +474,11 @@ public final class GameKernel {
             start(request, tick: tick)
         case .completeBehavior:
             guard let id = event.behaviorID else { return }
-            finishBehavior(id, success: event.success ?? true, tick: tick)
+            if event.success ?? true {
+                finishBehavior(id, success: true, tick: tick)
+            } else {
+                cancelBehavior(id, tick: tick, reason: "body_failed")
+            }
         case .cancelBehavior:
             guard let id = event.behaviorID else { return }
             cancelBehavior(id, tick: tick, reason: "cancelled")
@@ -655,7 +673,11 @@ public final class GameKernel {
             behavior.remainingTicks -= 1
             world.behaviors[id] = behavior
             if behavior.remainingTicks <= 0 {
-                finishBehavior(id, success: true, tick: tick)
+                if behavior.request.completionMode == .body {
+                    cancelBehavior(id, tick: tick, reason: "body_timeout")
+                } else {
+                    finishBehavior(id, success: true, tick: tick)
+                }
             }
         }
     }

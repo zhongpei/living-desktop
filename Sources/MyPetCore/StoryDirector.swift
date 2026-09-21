@@ -67,6 +67,8 @@ public struct StoryDirectorConfiguration: Codable, Equatable, Sendable {
 }
 
 public struct StoryAction: Codable, Equatable, Sendable {
+    /// Links this presentation request to the Kernel-authorized body command.
+    public let behaviorID: String?
     public let episodeID: String
     public let beatID: String
     public let actorID: EntityID
@@ -80,12 +82,14 @@ public struct StoryAction: Codable, Equatable, Sendable {
     public let slotID: String?
     public let branchID: String?
 
-    public init(episodeID: String, beatID: String, actorID: EntityID,
+    public init(behaviorID: String? = nil,
+                episodeID: String, beatID: String, actorID: EntityID,
                 intent: String, durationTicks: Int64,
                 inviteMemberIDs: [String]? = nil,
                 targetID: String? = nil,
                 slotID: String? = nil,
                 branchID: String? = nil) {
+        self.behaviorID = behaviorID
         self.episodeID = episodeID
         self.beatID = beatID
         self.actorID = actorID
@@ -610,6 +614,7 @@ public final class StoryDirector {
             }
             kernel.enqueue(GameEvent(kind: .behaviorRequest, request: plan.request), atTick: kernel.clock.tick)
             queuedActions.append(StoryAction(
+                behaviorID: requestID,
                 episodeID: episode.id,
                 beatID: beat.id,
                 actorID: entityID,
@@ -620,6 +625,7 @@ public final class StoryDirector {
                 branchID: currentBranchID))
             if index == 0, let inviteMemberIDs = beat.inviteMemberIDs, !inviteMemberIDs.isEmpty {
                 queuedActions[queuedActions.count - 1] = StoryAction(
+                    behaviorID: requestID,
                     episodeID: episode.id,
                     beatID: beat.id,
                     actorID: entityID,

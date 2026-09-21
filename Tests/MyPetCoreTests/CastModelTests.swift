@@ -214,6 +214,11 @@ final class CastModelTests: XCTestCase {
         XCTAssertEqual(director.currentBranchID, "ready")
         XCTAssertEqual(director.drainActions().map { $0.branchID }, ["ready", "ready"])
         _ = kernel.tick()
+        for state in kernel.runningBehaviorStates {
+            kernel.enqueue(GameEvent(
+                kind: .completeBehavior, behaviorID: state.request.id, success: true))
+        }
+        _ = kernel.tick()
         director.tick(in: kernel)
         XCTAssertNil(director.currentEpisodeID)
         XCTAssertNil(director.startNext(in: kernel))
@@ -796,6 +801,48 @@ final class CastModelTests: XCTestCase {
         XCTAssertTrue(runtime.kernel.manualViolations.isEmpty)
     }
 
+    func testExternalCastStoryWaitsForBodyResultBeforeCommitting() {
+        let pack = CastPack(
+            id: "external-story", groupID: "test", displayName: "External", summary: "",
+            members: [CastMember(
+                id: "actor", kind: .character, displayName: "Actor", role: "lead")],
+            episodes: [StoryEpisode(
+                id: "wave", title: "Wave", participants: ["actor"],
+                beats: [StoryBeat(
+                    id: "wave", actorIDs: ["actor"], intent: "wave", durationTicks: 1)])])
+        let runtime = CastRuntime(
+            packs: [pack],
+            selection: CastSelection(
+                allGroupsEnabled: false, enabledGroupIDs: ["test"],
+                allMembersEnabled: true, maxActiveMembers: 1,
+                automaticArrivalsEnabled: false),
+            bodyExecutionMode: .external,
+            arrivalDelayTicks: 1,
+            storyConfiguration: StoryDirectorConfiguration(repeatEpisodes: false))
+        _ = runtime.start()
+        XCTAssertTrue(runtime.invite(memberID: "actor"))
+
+        var action: StoryAction?
+        for _ in 0..<5 where action == nil {
+            _ = runtime.tick()
+            action = runtime.consumeStoryActions().first
+        }
+        let behaviorID = try! XCTUnwrap(action?.behaviorID)
+        XCTAssertNotNil(runtime.runtime.takeBodyCommand(behaviorID: behaviorID))
+
+        for _ in 0..<3 { _ = runtime.tick() }
+        XCTAssertEqual(runtime.kernel.world.behaviors[behaviorID]?.status, .running)
+        XCTAssertEqual(runtime.storyDirector.completedEpisodeCount, 0)
+
+        runtime.runtime.submitBodyResult(BodyResult(
+            behaviorID: behaviorID, outcome: .completed))
+        _ = runtime.tick()
+        _ = runtime.tick()
+
+        XCTAssertEqual(runtime.kernel.world.behaviors[behaviorID]?.status, .completed)
+        XCTAssertEqual(runtime.storyDirector.completedEpisodeCount, 1)
+    }
+
     func testStoryBeatTargetsCastPropAndOccupiesItsSlot() {
         let pack = CastPack(
             id: "prop-story", groupID: "test", displayName: "Prop story", summary: "",
@@ -1126,6 +1173,11 @@ final class CastModelTests: XCTestCase {
         XCTAssertEqual(director.startNext(in: kernel), "argument")
         XCTAssertEqual(director.drainActions().count, 2)
         _ = kernel.tick()
+        for state in kernel.runningBehaviorStates {
+            kernel.enqueue(GameEvent(
+                kind: .completeBehavior, behaviorID: state.request.id, success: true))
+        }
+        _ = kernel.tick()
         director.tick(in: kernel)
         XCTAssertEqual(kernel.world.relationValues["a/b/tension"], 0.1)
         XCTAssertEqual(kernel.world.facts["episode/argument/completed"]?.value,
@@ -1212,6 +1264,11 @@ final class CastModelTests: XCTestCase {
             configuration: StoryDirectorConfiguration(relationshipEffectsEnabled: false))
 
         XCTAssertEqual(director.startNext(in: kernel), "quiet")
+        _ = kernel.tick()
+        for state in kernel.runningBehaviorStates {
+            kernel.enqueue(GameEvent(
+                kind: .completeBehavior, behaviorID: state.request.id, success: true))
+        }
         _ = kernel.tick()
         director.tick(in: kernel)
 

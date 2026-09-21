@@ -36,13 +36,15 @@ public final class CastRuntime {
         resolvedPacks: [ResolvedCastPack],
         selection: CastSelection,
         seed: UInt64 = 0,
+        bodyExecutionMode: BodyExecutionMode = .headless,
         arrivalDelayTicks: Int64 = 2,
         storyConfiguration: StoryDirectorConfiguration = StoryDirectorConfiguration(),
         storyExecutionProvider: (any StoryExecutionProvider)? = nil
     ) {
         self.init(
             packs: resolvedPacks.map(\.pack), selection: selection, seed: seed,
-            arrivalDelayTicks: arrivalDelayTicks, storyConfiguration: storyConfiguration,
+            bodyExecutionMode: bodyExecutionMode, arrivalDelayTicks: arrivalDelayTicks,
+            storyConfiguration: storyConfiguration,
             storyExecutionProvider: storyExecutionProvider,
             characterDefinitions: resolvedPacks.reduce(into: [:]) { result, resolved in
                 result.merge(resolved.characters) { first, _ in first }
@@ -53,6 +55,7 @@ public final class CastRuntime {
         packs: [CastPack],
         selection: CastSelection,
         seed: UInt64 = 0,
+        bodyExecutionMode: BodyExecutionMode = .headless,
         arrivalDelayTicks: Int64 = 2,
         storyConfiguration: StoryDirectorConfiguration = StoryDirectorConfiguration(),
         storyExecutionProvider: (any StoryExecutionProvider)? = nil,
@@ -61,7 +64,8 @@ public final class CastRuntime {
         self.characterDefinitions = characterDefinitions
         runtime = GameRuntime(kernel: GameKernel(
             seed: seed,
-            storyInterruptionPolicy: storyConfiguration.interruptionPolicy))
+            storyInterruptionPolicy: storyConfiguration.interruptionPolicy),
+            bodyExecutionMode: bodyExecutionMode)
         director = CastDirector(
             packs: packs,
             selection: selection,

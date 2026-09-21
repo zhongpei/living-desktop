@@ -299,6 +299,11 @@ public struct SuccessEffect: Codable, Sendable, Equatable {
     }
 }
 
+public enum BehaviorCompletionMode: String, Codable, Sendable {
+    case timed
+    case body
+}
+
 public struct BehaviorRequest: Codable, Sendable, Equatable {
     public var id: String
     public var actorID: EntityID
@@ -309,6 +314,10 @@ public struct BehaviorRequest: Codable, Sendable, Equatable {
     public var slot: SlotRef?
     public var claims: [String]
     public var durationTicks: Int64
+    /// Optional on the wire so existing recordings keep their timed behavior.
+    public var completionMode: BehaviorCompletionMode?
+    /// A body-managed behavior fails closed when its adapter never replies.
+    public var timeoutTicks: Int64?
     public var occupySlotOnSuccess: Bool
     public var effectsOnSuccess: [SuccessEffect]
     public var observationID: String?
@@ -322,7 +331,9 @@ public struct BehaviorRequest: Codable, Sendable, Equatable {
         target: EntityRef? = nil,
         slot: SlotRef? = nil,
         claims: [String] = ["body"],
+        completionMode: BehaviorCompletionMode = .timed,
         durationTicks: Int64 = 1,
+        timeoutTicks: Int64? = nil,
         occupySlotOnSuccess: Bool = false,
         effectsOnSuccess: [SuccessEffect] = [],
         observationID: String? = nil
@@ -335,7 +346,9 @@ public struct BehaviorRequest: Codable, Sendable, Equatable {
         self.target = target
         self.slot = slot
         self.claims = claims
+        self.completionMode = completionMode
         self.durationTicks = max(1, durationTicks)
+        self.timeoutTicks = timeoutTicks.map { max(1, $0) }
         self.occupySlotOnSuccess = occupySlotOnSuccess
         self.effectsOnSuccess = effectsOnSuccess
         self.observationID = observationID
@@ -354,7 +367,9 @@ public struct BehaviorState: Codable, Sendable, Equatable {
         self.status = .running
         self.startedAtTick = startedAtTick
         self.endedAtTick = nil
-        self.remainingTicks = request.durationTicks
+        self.remainingTicks = request.completionMode == .body
+            ? (request.timeoutTicks ?? max(400, request.durationTicks))
+            : request.durationTicks
     }
 }
 

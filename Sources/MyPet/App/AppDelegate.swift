@@ -243,12 +243,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 resolvedPacks: resolvedCastPacks,
                 selection: settings.castSelection,
                 seed: UInt64(Date().timeIntervalSince1970),
+                bodyExecutionMode: .external,
                 storyConfiguration: settings.storySettings.coreConfiguration)
         } else {
             runtime = CastRuntime(
                 packs: castPacks,
                 selection: settings.castSelection,
                 seed: UInt64(Date().timeIntervalSince1970),
+                bodyExecutionMode: .external,
                 storyConfiguration: settings.storySettings.coreConfiguration)
         }
         castRuntime = runtime
@@ -391,8 +393,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for action in runtime.consumeStoryActions() {
             let targetX = action.targetID.flatMap { targetFrames[$0] }
                 .map { CGFloat($0.x + $0.width / 2) }
-            castControllers[action.actorID.raw]?.performStoryIntent(
-                action.intent, targetX: targetX)
+            guard let behaviorID = action.behaviorID,
+                  runtime.runtime.takeBodyCommand(behaviorID: behaviorID) != nil else { continue }
+            guard let pet = castControllers[action.actorID.raw] else {
+                // A logic participant without a visual pack still completes
+                // deterministically; presentation absence is reported by the
+                // asset audit rather than corrupting the story state machine.
+                runtime.runtime.submitBodyResult(BodyResult(
+                    behaviorID: behaviorID, outcome: .completed))
+                continue
+            }
+            pet.performStoryIntent(action.intent, targetX: targetX) { success in
+                runtime.runtime.submitBodyResult(BodyResult(
+                    behaviorID: behaviorID,
+                    outcome: success ? .completed : .failed))
+            }
         }
 
         // A hand-off is a presentation cue emitted by Core at the successful
