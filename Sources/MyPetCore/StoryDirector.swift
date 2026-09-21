@@ -118,6 +118,7 @@ public struct StoryBehaviorPlan: Sendable {
 public protocol StoryExecutionProvider: AnyObject {
     var runtimeSafe: Bool { get }
     var waitingForPrefetch: Bool { get }
+    var trace: [PipelineTraceEntry] { get }
     func setStoryScope(_ scope: String?)
 
     func plan(
@@ -134,7 +135,50 @@ public protocol StoryExecutionProvider: AnyObject {
 public extension StoryExecutionProvider {
     var runtimeSafe: Bool { false }
     var waitingForPrefetch: Bool { false }
+    var trace: [PipelineTraceEntry] { [] }
     func setStoryScope(_ scope: String?) {}
+}
+
+/// Fixed Story beats have one authored action. No model is asked to repeat
+/// that choice; ActionRuntime still applies the same Core authorization as
+/// dynamic play before the body can execute it.
+public final class AuthoredStoryExecutionProvider: StoryExecutionProvider {
+    private let actionRuntime = ActionRuntime()
+    public let runtimeSafe = true
+    public private(set) var trace: [PipelineTraceEntry] = []
+
+    public init() {}
+
+    public func plan(
+        requestID: String,
+        beat: StoryBeat,
+        actorID: EntityID,
+        target: EntityRef?,
+        slot: SlotRef?,
+        world: WorldState,
+        tick: Int64
+    ) -> StoryBehaviorPlan? {
+        let action = SimulationNeedleAction.perform(beat.intent)
+        let execution = actionRuntime.executeStory(
+            action,
+            tick: tick,
+            actorID: actorID,
+            world: world,
+            requestID: requestID,
+            storyIntent: beat.intent,
+            target: target,
+            slot: slot,
+            claims: beat.claims ?? ["body"],
+            durationTicks: beat.durationTicks,
+            occupySlotOnSuccess: beat.occupySlotOnSuccess)
+        trace.append(PipelineTraceEntry(
+            tick: tick, stage: "story.authored",
+            detail: execution.accepted
+                ? "accepted:" + beat.id
+                : "rejected:" + (execution.reason ?? "unknown")))
+        guard execution.accepted, let request = execution.request else { return nil }
+        return StoryBehaviorPlan(request: request, semanticAction: action)
+    }
 }
 
 /// Pure-data story implementation. A real Harness provider can replace the
@@ -425,7 +469,7 @@ public final class StoryDirector {
     /// separate from Kernel trace so model inputs/outputs stay in the Harness
     /// provider records while stage ordering remains visible in cast reports.
     public var executionTrace: [PipelineTraceEntry] {
-        (executionProvider as? SemanticStoryExecutionProvider)?.trace ?? []
+        executionProvider.trace
     }
 
     private var currentEpisode: StoryEpisode?
@@ -445,7 +489,7 @@ public final class StoryDirector {
     ) {
         self.episodes = episodes.sorted { $0.id < $1.id }
         self.configuration = configuration
-        self.executionProvider = executionProvider ?? SemanticStoryExecutionProvider()
+        self.executionProvider = executionProvider ?? AuthoredStoryExecutionProvider()
     }
 
     @discardableResult

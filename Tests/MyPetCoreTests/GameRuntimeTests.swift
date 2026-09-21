@@ -610,6 +610,19 @@ final class GameRuntimeTests: XCTestCase {
         XCTAssertNil(director.currentEpisodeID)
     }
 
+    func testDefaultStoryExecutesAuthoredBeatWithoutModelDecisionStages() {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let director = StoryDirector(episodes: [StoryEpisode(
+            id: "authored", title: "Authored", participants: [actor.id.raw],
+            beats: [StoryBeat(id: "wave", actorIDs: [actor.id.raw], intent: "wave")])])
+        let runtime = GameRuntime(kernel: GameKernel(
+            scenario: HarnessScenario(id: "authored-story", entities: [actor])))
+
+        XCTAssertEqual(runtime.startStory(director), "authored")
+        XCTAssertEqual(director.executionTrace.map(\.stage), ["story.authored"])
+        XCTAssertEqual(director.snapshot().requestIDs.count, 1)
+    }
+
     func testRuntimeNeverCallsNeedleProviderThatRequiresPrefetchWhileLocked() {
         let actor = EntityState(id: EntityID("pet"), kind: .actor)
         let provider = BlockingNeedleProvider()
