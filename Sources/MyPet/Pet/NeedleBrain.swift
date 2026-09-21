@@ -19,7 +19,7 @@ import MyPetCore
 ///   内置 Autopilot（场景兜底）/ RandomBrain。
 final class NeedleBrain {
 
-    // MARK: 语义动作（世界无关，控制器负责翻译成 ActionRuntime verb）
+    // MARK: 语义动作（世界无关，Core ActionRuntime 授权后交给身体 driver）
 
     typealias SemanticAction = SimulationNeedleAction
 
@@ -267,6 +267,17 @@ final class NeedleBrain {
     private let runtime = CNeedleRuntime.shared
     private var pending = false
     private var nextDecisionAt: Double = 0
+    private(set) var requestGeneration: Int64 = 0
+
+    func isCurrentGeneration(_ generation: Int64) -> Bool {
+        requestGeneration == generation
+    }
+
+    /// CNeedle may finish naturally; invalidation only discards its old
+    /// semantic result. The shared model session is never interrupted here.
+    func invalidatePendingDecision() {
+        requestGeneration &+= 1
+    }
 
     /// 决策间隔（秒）。模型有思考成本，节奏比 RandomBrain 略缓。
     var interval: ClosedRange<Double> = NeedleBrain.defaultInterval
@@ -301,7 +312,10 @@ final class NeedleBrain {
 
     /// 世界大变化 / 有趣事件（game.md §4 行动边界触发器）：
     /// 把下一次决策提前到现在，下一个 tick 的边界询问立即发出。
-    func expedite() { nextDecisionAt = 0 }
+    func expedite() {
+        invalidatePendingDecision()
+        nextDecisionAt = 0
+    }
 
     /// 到点且闲着才发起决策。回调在主队列，返回 nil = 决策失败（调用方自行兜底）。
     func maybeDecide(
@@ -331,6 +345,7 @@ final class NeedleBrain {
     ) {
         guard let modelURL = Self.modelURL() else { return }
         pending = true
+        let generation = requestGeneration
 
         let schema = Self.toolSchema(facts: facts)
         let snapshotForLog = Self.snapshot(facts: facts)
@@ -346,12 +361,14 @@ final class NeedleBrain {
         ) { [weak self] output in
             let latency = Date().timeIntervalSince(t0)
             DispatchQueue.main.async { [weak self] in
-                self?.pending = false
+                guard let self else { return }
+                self.pending = false
                 let calls = output.flatMap { Self.parseCalls($0) } ?? []
                 let valid = calls.first { Self.validate($0, facts: facts) }
-                self?.log(facts: facts, schema: schema, snapshot: snapshotForLog,
+                self.log(facts: facts, schema: schema, snapshot: snapshotForLog,
                           modelInput: modelInput, output: output, chosen: valid,
                           calls: calls, latency: latency)
+                guard self.isCurrentGeneration(generation) else { return }
                 completion(valid, calls.map(Self.describe))
             }
         }

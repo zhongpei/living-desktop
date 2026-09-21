@@ -56,10 +56,18 @@ public enum SimulationGoalBrainMode: String, Codable, Sendable {
     case replay
 }
 
+public enum SimulationProviderExecution: String, Codable, Sendable {
+    case runtimeImmediate
+    case requiresPrefetch
+}
+
 /// Small seam for replacing the deterministic GoalBrain with a real provider.
 /// Providers return a goal only; they never create a BehaviorRequest.
 public protocol SimulationGoalProvider: AnyObject {
     var providerID: String { get }
+    var execution: SimulationProviderExecution { get }
+    var missPolicy: SimulationNeedleMissPolicy { get }
+    func setStoryScope(_ scope: String?)
 
     func decide(
         tick: Int64,
@@ -67,6 +75,12 @@ public protocol SimulationGoalProvider: AnyObject {
         world: WorldState,
         actorID: EntityID
     ) -> SimulationGoalDecision?
+}
+
+public extension SimulationGoalProvider {
+    var execution: SimulationProviderExecution { .runtimeImmediate }
+    var missPolicy: SimulationNeedleMissPolicy { .reject }
+    func setStoryScope(_ scope: String?) {}
 }
 
 public struct SimulationGoalBrainSnapshot: Codable, Equatable, Sendable {
@@ -604,11 +618,19 @@ public enum SimulationNeedleBrainMode: String, Codable, Sendable {
     case replay
 }
 
+public enum SimulationNeedleMissPolicy: String, Codable, Sendable {
+    case reject
+    case waitForPrefetch
+}
+
 /// Small seam for replacing the deterministic NeedleBrain with a real C/API
 /// provider. Providers return a semantic action only; ActionRuntime remains the
 /// sole producer of BehaviorRequest values.
 public protocol SimulationNeedleProvider: AnyObject {
     var providerID: String { get }
+    var execution: SimulationProviderExecution { get }
+    var missPolicy: SimulationNeedleMissPolicy { get }
+    func setStoryScope(_ scope: String?)
 
     func decide(
         step: SimulationSceneStep,
@@ -617,6 +639,12 @@ public protocol SimulationNeedleProvider: AnyObject {
         world: WorldState,
         actorID: EntityID
     ) -> SimulationNeedleAction?
+}
+
+public extension SimulationNeedleProvider {
+    var execution: SimulationProviderExecution { .runtimeImmediate }
+    var missPolicy: SimulationNeedleMissPolicy { .reject }
+    func setStoryScope(_ scope: String?) {}
 }
 
 public struct SimulationNeedleBrainSnapshot: Codable, Equatable, Sendable {
@@ -773,12 +801,12 @@ public struct PipelineTraceEntry: Codable, Equatable, Sendable {
 }
 
 public struct ActionExecution: Codable, Equatable, Sendable {
-    public var accepted: Bool
-    public var reason: String?
-    public var request: BehaviorRequest?
-    public var resolution: SimulationAssetResolution?
+    public let accepted: Bool
+    public let reason: String?
+    public let request: BehaviorRequest?
+    public let resolution: SimulationAssetResolution?
 
-    public init(
+    init(
         accepted: Bool,
         reason: String? = nil,
         request: BehaviorRequest? = nil,
@@ -1027,12 +1055,36 @@ public struct SemanticPipelineSnapshot: Codable, Equatable, Sendable {
     }
 }
 
+/// Shared Goal/Scene/Needle body of both production and simulation. Adapters
+/// decide when a Goal or Needle result arrives; scene cursor and action
+/// authorization live here exactly once.
+public final class SemanticEngine {
+    public let sceneRunner: SceneRunner
+    public let actionRuntime: ActionRuntime
+
+    public init(
+        recipes: [SimulationSceneRecipe] = SceneRunner.defaultRecipes,
+        assetCatalog: AssetCatalog = AssetCatalog()
+    ) {
+        self.sceneRunner = SceneRunner(recipes: recipes)
+        self.actionRuntime = ActionRuntime(assetCatalog: assetCatalog)
+    }
+
+    /// Authored story beats already are scene intents. Keep their conversion
+    /// inside the same semantic engine without creating a second SceneRunner
+    /// or a second action authority.
+    public func storyStep(for beat: StoryBeat) -> SimulationSceneStep {
+        SimulationSceneStep(.perform(beat.intent))
+    }
+}
+
 public final class SemanticPipeline {
     public let configuration: SemanticPipelineConfiguration
     public let goalBrain: GoalBrain
-    public let sceneRunner: SceneRunner
     public let needleBrain: NeedleBrain
-    public let actionRuntime: ActionRuntime
+    public let engine: SemanticEngine
+    public var sceneRunner: SceneRunner { engine.sceneRunner }
+    public var actionRuntime: ActionRuntime { engine.actionRuntime }
     public private(set) var trace: [PipelineTraceEntry] = []
     public private(set) var findings: [SimulationContentFinding] = []
     public private(set) var logicFailures: [String] = []
@@ -1053,22 +1105,25 @@ public final class SemanticPipeline {
             mode: configuration.goalMode,
             replayCommands: configuration.goalCommands,
             initialGoal: configuration.initialGoal)
-        self.sceneRunner = SceneRunner()
+        self.engine = SemanticEngine(assetCatalog: configuration.assetCatalog)
         self.needleBrain = NeedleBrain(
             mode: configuration.needleMode,
             replayCommands: configuration.needleCommands)
-        self.actionRuntime = ActionRuntime(assetCatalog: configuration.assetCatalog)
     }
 
     /// Run the four semantic stages after this tick's environment events have
     /// been applied and before behavior advancement. Only the final
     /// ActionRuntime output crosses the GameEvent boundary.
-    public func beforeTick(kernel: GameKernel, context: RuntimeContext) {
+    func beforeTick(kernel: GameKernel, context: RuntimeContext) {
         guard configuration.enabled, pendingActionID == nil,
               kernel.world.isAlive(configuration.actorID) else { return }
         let tick = kernel.clock.tick
         if sceneRunner.status != .running {
             let provider = goalProvider ?? goalBrain
+            guard provider.execution == .runtimeImmediate else {
+                logicFailures.append("blocking_goal_provider_requires_prefetch")
+                return
+            }
             guard let goal = provider.decide(
                 tick: tick, context: context, world: kernel.world, actorID: configuration.actorID) else { return }
             trace.append(PipelineTraceEntry(
@@ -1086,9 +1141,14 @@ public final class SemanticPipeline {
             return
         }
         let provider = needleProvider ?? needleBrain
+        guard provider.execution == .runtimeImmediate else {
+            logicFailures.append("blocking_needle_provider_requires_prefetch")
+            return
+        }
         guard let action = provider.decide(
                 step: step, tick: tick, context: context,
                 world: kernel.world, actorID: configuration.actorID) else {
+            if provider.missPolicy == .waitForPrefetch { return }
             logicFailures.append("needle_no_legal_action")
             sceneRunner.cancel()
             return
@@ -1127,7 +1187,7 @@ public final class SemanticPipeline {
 
     /// Consume the kernel result after the tick boundary. The pipeline never
     /// edits behavior state directly.
-    public func afterTick(kernel: GameKernel) {
+    func afterTick(kernel: GameKernel) {
         guard let actionID = pendingActionID,
               let state = kernel.world.behaviors[actionID] else { return }
         switch state.status {
@@ -1168,7 +1228,7 @@ public final class SemanticPipeline {
         actionRuntime.restore(sequence: snapshot.actionSequence)
     }
 
-    public func logicVerdict(kernel: GameKernel, expectations: ScenarioExpectations) -> LogicVerdict {
+    func logicVerdict(kernel: GameKernel, expectations: ScenarioExpectations) -> LogicVerdict {
         var failures = logicFailures
         failures.append(contentsOf: expectations.check(kernel: kernel, pipelineTrace: trace))
         return LogicVerdict(failures: Array(Set(failures)).sorted())
@@ -1329,7 +1389,7 @@ public struct DataSimulationSnapshot: Codable, Equatable, Sendable {
 public final class DataSimulation {
     public let scenario: HarnessScenario
     public private(set) var runtime: GameRuntime
-    public var kernel: GameKernel { runtime.kernel }
+    public var kernel: KernelSnapshot { runtime.snapshot() }
     public private(set) var desktop: VirtualDesktop
     public let pipeline: SemanticPipeline?
 
@@ -1357,11 +1417,13 @@ public final class DataSimulation {
     public func step() -> TickReport {
         let tick = runtime.clock.tick
         let events = desktop.advance(to: tick)
-        let report = runtime.step(events: events) { runtime in
-            self.pipeline?.beforeTick(kernel: runtime.kernel, context: self.desktop.runtimeContext)
-        }!
-        pipeline?.afterTick(kernel: runtime.kernel)
-        return report
+        if let pipeline {
+            return runtime.step(
+                events: events,
+                pipeline: pipeline,
+                context: desktop.runtimeContext)!
+        }
+        return runtime.step(events: events)!
     }
 
     @discardableResult

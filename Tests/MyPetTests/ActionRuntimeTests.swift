@@ -4,7 +4,7 @@ import MyPetContent
 
 @testable import MyPet
 
-/// ActionRuntime 测试：verbs 注入 + 表演取消规则。
+/// PetBodyDriver 测试：verbs 注入 + 表演取消规则。
 final class ActionRuntimeTests: XCTestCase {
 
     /// 极简假世界：一块平地板。
@@ -25,21 +25,21 @@ final class ActionRuntimeTests: XCTestCase {
 
     private var world: StubWorld!
     private var model: PetModel!
-    private var runtime: ActionRuntime!
+    private var runtime: PetBodyDriver!
 
     override func setUp() {
         super.setUp()
         world = StubWorld()
         model = PetModel(world: world, displayHeight: 110, startAt: CGPoint(x: 700, y: 800))
         model.spawn(onFloorAt: CGPoint(x: 700, y: 800))
-        runtime = ActionRuntime(model: model, library: makeLibrary())
+        runtime = PetBodyDriver(model: model, library: makeLibrary())
     }
 
     /// 内存里的最小 v2 库：base/idle + base/walk + 两个 actions（once / loop）。
     private func makeLibrary() -> ClipLibrary {
         let library = ClipLibrary(characterID: "test", cellSize: CGSize(width: 192, height: 208))
         // 直接借 ClipLibrary 的 clips 注入不可行（private），
-        // 测试用磁盘 fixture：ActionRuntime 只读 meta/playback，帧不参与断言。
+        // 测试用磁盘 fixture：身体 driver 只读 meta/playback，帧不参与断言。
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("runtime-lib-\(UUID().uuidString)", isDirectory: true)
         for rel in ["base/idle", "base/walk", "actions/wave", "actions/bathe"] {

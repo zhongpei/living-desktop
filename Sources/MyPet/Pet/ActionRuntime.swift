@@ -2,7 +2,7 @@ import CoreGraphics
 import Foundation
 import MyPetContent
 
-/// 动作运行时：一切「下一步做什么」指令（verbs）的唯一入口。
+/// AppKit 身体动作 driver：只执行 Runtime 已提交的身体指令。
 /// 大脑（过渡期 RandomBrain，将来 Needle）、菜单、前台跟随都只说 verbs；
 /// 身体反射（拖拽/抛掷/点击弹跳）不经这里——它们直接操作 PetModel。
 ///
@@ -10,7 +10,7 @@ import MyPetContent
 /// 1. 身体离开 grounded/perched（跳/拖/抛/睡）→ 取消，**不补演**；
 /// 2. 走路开始 → 取消（表演只发生在原地）；
 /// 3. loop 型表演到 endsAt → 自然收尾；once 型由控制器播完（animator.isFinished）后清掉。
-final class ActionRuntime {
+final class PetBodyDriver {
 
     enum Verb: Equatable {
         case moveTo(CGFloat)      // 走向目标 x

@@ -10,16 +10,20 @@ final class BodyRuntimeTests: XCTestCase {
             priority: .brainReactive, completionMode: .body,
             durationTicks: 2, timeoutTicks: 20)
 
-        _ = runtime.step(events: [
+        _ = runtime.stepReplayOrFault(events: [
             GameEvent(kind: .registerEntity, entity: actor),
             GameEvent(kind: .behaviorRequest, request: request),
         ])
 
         XCTAssertEqual(runtime.world.behaviors[request.id]?.status, .running)
-        XCTAssertEqual(runtime.drainBodyCommands().map(\.behaviorID), [request.id])
+        let command = try! XCTUnwrap(runtime.drainBodyCommands().first)
+        XCTAssertEqual(command.behaviorID, request.id)
         XCTAssertTrue(runtime.drainBodyCommands().isEmpty)
 
-        runtime.submitBodyResult(BodyResult(behaviorID: request.id, outcome: .completed))
+        runtime.submitBodyResult(BodyResult(
+            behaviorID: request.id,
+            executionToken: command.executionToken,
+            outcome: .completed))
         _ = runtime.step()
 
         XCTAssertEqual(runtime.world.behaviors[request.id]?.status, .completed)
@@ -33,7 +37,7 @@ final class BodyRuntimeTests: XCTestCase {
             priority: .brainReactive, completionMode: .body,
             durationTicks: 2, timeoutTicks: 20)
 
-        _ = runtime.step(events: [
+        _ = runtime.stepReplayOrFault(events: [
             GameEvent(kind: .registerEntity, entity: actor),
             GameEvent(kind: .behaviorRequest, request: request),
         ])
@@ -52,7 +56,7 @@ final class BodyRuntimeTests: XCTestCase {
             priority: .brainReactive, completionMode: .body,
             durationTicks: 2, timeoutTicks: 20)
 
-        _ = runtime.step(events: [
+        _ = runtime.stepReplayOrFault(events: [
             GameEvent(kind: .registerEntity, entity: actor),
             GameEvent(kind: .behaviorRequest, request: request),
         ])
@@ -77,7 +81,7 @@ final class BodyRuntimeTests: XCTestCase {
             priority: .brainReactive, slot: slot.ref,
             completionMode: .body, durationTicks: 1, timeoutTicks: 2)
 
-        _ = runtime.step(events: [
+        _ = runtime.stepReplayOrFault(events: [
             GameEvent(kind: .registerEntity, entity: actor),
             GameEvent(kind: .registerEntity, entity: surface),
             GameEvent(kind: .createSlot, slot: slot),
@@ -96,7 +100,7 @@ final class BodyRuntimeTests: XCTestCase {
         let actor = EntityState(id: EntityID("pet"), kind: .actor)
         let prop = EntityState(id: EntityID("book"), kind: .prop)
         let runtime = GameRuntime(bodyExecutionMode: .external)
-        _ = runtime.step(events: [
+        _ = runtime.stepReplayOrFault(events: [
             GameEvent(kind: .registerEntity, entity: actor),
             GameEvent(kind: .registerEntity, entity: prop),
         ])
@@ -119,11 +123,15 @@ final class BodyRuntimeTests: XCTestCase {
             id: "wave", actorID: actor.id, intent: "perform:wave",
             priority: .brainReactive, completionMode: .body,
             durationTicks: 1, timeoutTicks: 10)
-        _ = runtime.step(events: [
+        _ = runtime.stepReplayOrFault(events: [
             GameEvent(kind: .registerEntity, entity: actor),
             GameEvent(kind: .behaviorRequest, request: request),
         ])
-        runtime.submitBodyResult(BodyResult(behaviorID: request.id, outcome: .completed))
+        let command = try! XCTUnwrap(runtime.drainBodyCommands().first)
+        runtime.submitBodyResult(BodyResult(
+            behaviorID: request.id,
+            executionToken: command.executionToken,
+            outcome: .completed))
         _ = runtime.step()
 
         XCTAssertEqual(
@@ -140,12 +148,45 @@ final class BodyRuntimeTests: XCTestCase {
             priority: .brainReactive, completionMode: .body,
             durationTicks: 1, timeoutTicks: 20)
         runtime.submit(GameEvent(kind: .registerEntity, entity: actor))
-        runtime.submit(GameEvent(kind: .behaviorRequest, request: request))
-        runtime.submitBodyResult(BodyResult(behaviorID: request.id, outcome: .cancelled))
+        runtime.submitReplayOrFault(GameEvent(kind: .behaviorRequest, request: request))
+        runtime.cancelBodyBehavior(request.id)
 
         _ = runtime.step()
 
         XCTAssertEqual(runtime.world.behaviors[request.id]?.status, .cancelled)
         XCTAssertTrue(runtime.drainBodyCommands().isEmpty)
+    }
+
+    func testRestoreInvalidatesOldExternalBodyCallbackAndReissuesCommand() {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let runtime = GameRuntime(bodyExecutionMode: .external)
+        let request = BehaviorRequest(
+            id: "restore-body", actorID: actor.id, intent: "perform:wave",
+            priority: .brainReactive, completionMode: .body,
+            durationTicks: 1, timeoutTicks: 20)
+        _ = runtime.stepReplayOrFault(events: [
+            GameEvent(kind: .registerEntity, entity: actor),
+            GameEvent(kind: .behaviorRequest, request: request),
+        ])
+        let oldCommand = try! XCTUnwrap(runtime.drainBodyCommands().first)
+        let checkpoint = runtime.checkpoint()
+
+        runtime.restore(checkpoint)
+        let resumedCommand = try! XCTUnwrap(runtime.drainBodyCommands().first)
+
+        XCTAssertNotEqual(resumedCommand.executionToken, oldCommand.executionToken)
+        XCTAssertFalse(runtime.submitBodyResult(BodyResult(
+            behaviorID: request.id,
+            executionToken: oldCommand.executionToken,
+            outcome: .completed)))
+        _ = runtime.step()
+        XCTAssertEqual(runtime.world.behaviors[request.id]?.status, .running)
+
+        XCTAssertTrue(runtime.submitBodyResult(BodyResult(
+            behaviorID: request.id,
+            executionToken: resumedCommand.executionToken,
+            outcome: .completed)))
+        _ = runtime.step()
+        XCTAssertEqual(runtime.world.behaviors[request.id]?.status, .completed)
     }
 }

@@ -74,7 +74,7 @@ final class PetController {
     let needle: NeedleBrain
     let library: ClipLibrary
     /// 动作运行时：verbs 唯一入口（大脑/菜单/前台跟随都走它）。
-    let actions: ActionRuntime
+    let actions: PetBodyDriver
     private(set) var settings: Settings
 
     /// 高层决策脑适配器：本地决策脑与高阶教师脑可独立启用。
@@ -100,8 +100,7 @@ final class PetController {
     /// 桌面程序与 headless harness 共用的确定性世界写入边界。
     /// AppKit/LLM 只投递事件，状态由 tick 内核消费。
     let gameplayRuntime: GameRuntime
-    var gameplayKernel: GameKernel { gameplayRuntime.kernel }
-    private let semanticPipeline: SemanticPipeline
+    private let semanticEngine: SemanticEngine
     /// 角色组使用 CastRuntime 的共享 kernel，由 CastRuntime 统一推进时钟。
     private let usesSharedGameplayKernel: Bool
     /// 行动脑只提交语义请求。只有 Kernel 接受且计划世代仍有效时，
@@ -184,10 +183,9 @@ final class PetController {
         self.perceptionEventCursor = self.perception.latestInputSequence
         let runtime = injectedRuntime ?? GameRuntime(bodyExecutionMode: .external)
         self.gameplayRuntime = runtime
-        self.semanticPipeline = SemanticPipeline(configuration: SemanticPipelineConfiguration(
-            actorID: actorID ?? EntityID(library.characterID),
-            enabled: false,
-            assetCatalog: AssetCatalog(exactActions: Set(library.actionNames))))
+        self.semanticEngine = SemanticEngine(
+            recipes: SceneCatalog.semanticRecipes,
+            assetCatalog: AssetCatalog(exactActions: Set(library.actionNames)))
         self.usesSharedGameplayKernel = injectedRuntime != nil
         self.characterDefinition = characterDefinition
         self.declaredCapabilities = capabilities.map(Set.init)
@@ -221,7 +219,7 @@ final class PetController {
 
         self.model = PetModel(world: systemWorld, displayHeight: displayH, startAt: spawnPoint)
         model.spawn(onFloorAt: spawnPoint)
-        self.actions = ActionRuntime(model: model, library: library)
+        self.actions = PetBodyDriver(model: model, library: library)
 
         self.presentation = ActorPresentation(
             source: library,
@@ -477,6 +475,7 @@ final class PetController {
     func stop() {
         guard !isStopped else { return }
         isStopped = true
+        needle.invalidatePendingDecision()
         goalBrainCoordinator.cancelPendingPlan()
         isDeparting = false
         castTransition = nil
@@ -790,7 +789,7 @@ final class PetController {
             NeedleBrain.logFallback(facts: facts, chosen: "wait()",
                                     mode: "random", reason: reason)
         }
-        let execution = semanticPipeline.actionRuntime.execute(
+        let execution = semanticEngine.actionRuntime.execute(
             semanticBodyAction(for: decision),
             tick: gameplayRuntime.clock.tick,
             actorID: runtimeActorID,
@@ -889,6 +888,7 @@ final class PetController {
     }
 
     private func clearGoal(reason: String) {
+        needle.invalidatePendingDecision()
         guard let goal = currentGoal else { return }
         pushRecentEvent("goal cleared: \(reason)")
         // 先结束场景再清目标，确保 outcome 与原目标共享同一个 trace_id。
@@ -909,6 +909,7 @@ final class PetController {
     /// 用户/行动脑主动接管时，同时终止当前场景和它所属的目标。
     /// 没有目标但仍有挂起场景时，保留纯场景中断路径。
     private func cancelGoalAndScene(reason: String) {
+        needle.invalidatePendingDecision()
         goalBrainCoordinator.cancelPendingPlan()
         cancelPendingRuntimeActions()
         if reason.localizedCaseInsensitiveContains("user") ||
@@ -949,6 +950,7 @@ final class PetController {
         facts.mode = .ambient
         needle.maybeDecide(now: clock, facts: facts) { [weak self] semantic, _ in
             guard let self else { return }
+            guard !self.isStopped, self.currentGoal != nil else { return }
             guard let semantic else {
                 // 决策失败：这轮交给 Autopilot，保证玩法不中断。
                 if self.settings.scenesEnabled { self.autopilotPickScene() }
@@ -989,7 +991,7 @@ final class PetController {
         let runner = SceneBodyDriver(
             recipe: recipe,
             goal: currentGoal?.semanticDecision(atTick: gameplayRuntime.clock.tick),
-            semanticRunner: semanticPipeline.sceneRunner,
+            semanticRunner: semanticEngine.sceneRunner,
             authorize: { [weak self] action, completion in
                 guard let self else { completion(false, nil); return }
                 self.authorizeSceneAction(action, completion: completion)
@@ -1006,6 +1008,7 @@ final class PetController {
     }
 
     private func finishScene() {
+        needle.invalidatePendingDecision()
         guard let runner = sceneRunner else { return }
         let stayed = stayedSeconds(since: runner.startedAt)
         brainState.apply(event: .sceneFinished(scene: runner.recipe.id, stayedSeconds: stayed), now: clock)
@@ -1032,6 +1035,7 @@ final class PetController {
     }
 
     private func abortScene(reason: String = "interrupted") {
+        needle.invalidatePendingDecision()
         guard let runner = sceneRunner else {
             // 没场景也可能有挂起的场景移动（Needle 的 move_to 语义）。
             sceneMoveDone = nil
@@ -1087,7 +1091,7 @@ final class PetController {
 
     /// 语义动作先进入共享 Kernel；表现层不再直接接受模型结果。
     private func apply(_ semantic: NeedleBrain.SemanticAction) {
-        let execution = semanticPipeline.actionRuntime.execute(
+        let execution = semanticEngine.actionRuntime.execute(
             semantic,
             tick: gameplayRuntime.clock.tick,
             actorID: runtimeActorID,
@@ -1111,14 +1115,17 @@ final class PetController {
         guard execution.accepted, let request = execution.request else { return }
         let id = request.id
         pendingRuntimeActions[id] = action
-        gameplayRuntime.submit(GameEvent(kind: .behaviorRequest, request: request))
+        guard gameplayRuntime.submitAction(execution) != nil else {
+            pendingRuntimeActions[id] = nil
+            return
+        }
     }
 
     private func cancelPendingRuntimeActions() {
         let pending = pendingRuntimeActions
         pendingRuntimeActions.removeAll()
         for (id, action) in pending {
-            gameplayRuntime.submitBodyResult(BodyResult(behaviorID: id, outcome: .cancelled))
+            gameplayRuntime.cancelBodyBehavior(id)
             if case .scene(_, let completion) = action { completion(false, nil) }
         }
     }
@@ -1127,7 +1134,7 @@ final class PetController {
         _ action: SimulationNeedleAction,
         completion: @escaping (Bool, SceneBodyDriver.BodyResultReporter?) -> Void
     ) {
-        let execution = semanticPipeline.actionRuntime.execute(
+        let execution = semanticEngine.actionRuntime.execute(
             action,
             tick: gameplayRuntime.clock.tick,
             actorID: runtimeActorID,
@@ -1141,7 +1148,11 @@ final class PetController {
             return
         }
         pendingRuntimeActions[request.id] = .scene(action, completion)
-        gameplayRuntime.submit(GameEvent(kind: .behaviorRequest, request: request))
+        guard gameplayRuntime.submitAction(execution) != nil else {
+            pendingRuntimeActions[request.id] = nil
+            completion(false, nil)
+            return
+        }
     }
 
     /// 只消费 Engine 发出的一次性 BodyCommand。命令执行完毕后，生产身体
@@ -1150,19 +1161,24 @@ final class PetController {
         for command in gameplayRuntime.drainBodyCommands(for: runtimeActorID) {
             guard let action = pendingRuntimeActions.removeValue(forKey: command.behaviorID) else {
                 gameplayRuntime.submitBodyResult(BodyResult(
-                    behaviorID: command.behaviorID, outcome: .cancelled))
+                    behaviorID: command.behaviorID,
+                    executionToken: command.executionToken,
+                    outcome: .cancelled))
                 continue
             }
             guard gameplayRuntime.world.planEpochs[runtimeActorID.raw, default: 0]
                     == command.planEpoch else {
                 gameplayRuntime.submitBodyResult(BodyResult(
-                    behaviorID: command.behaviorID, outcome: .cancelled))
+                    behaviorID: command.behaviorID,
+                    executionToken: command.executionToken,
+                    outcome: .cancelled))
                 if case .scene(_, let completion) = action { completion(false, nil) }
                 continue
             }
             let report: SceneBodyDriver.BodyResultReporter = { [weak self] success in
                 self?.gameplayRuntime.submitBodyResult(BodyResult(
                     behaviorID: command.behaviorID,
+                    executionToken: command.executionToken,
                     outcome: success ? .completed : .failed))
             }
             executeCommitted(action, report: report)
@@ -1775,7 +1791,7 @@ final class PetController {
         // 旧设置键的迁移兜底：Settings 由测试或旧调用方直接构造时仍有效。
         if settings.sensesEnabled { catalog.setEnabled(true, for: "accessibility") }
         if settings.ocrEnabled { catalog.setEnabled(true, for: "ocr") }
-        let tick = gameplayKernel.clock.tick
+        let tick = gameplayRuntime.clock.tick
         let app = observation.app.isEmpty ? foreground.owner : observation.app
         let bundleID = observation.pid == Int(foreground.pid) ? foreground.bundleID : nil
         let stamp = Int(observation.timestamp * 1000)
@@ -1834,7 +1850,7 @@ final class PetController {
               !foreground.windowTitle.isEmpty else { return }
         var catalog = settings.inputPlugins
         if settings.sensesEnabled { catalog.setEnabled(true, for: "accessibility") }
-        let tick = gameplayKernel.clock.tick
+        let tick = gameplayRuntime.clock.tick
         let input = InputObservation(
             id: "window-title:\(foreground.id):\(tick)",
             pluginID: "window-title",
@@ -1864,8 +1880,8 @@ final class PetController {
             let ago = max(0, Int(clock - event.t))
             return "\(ago)s ago \(event.text)"
         }
-        let tick = gameplayKernel.clock.tick
-        let inputObservations = gameplayKernel.world.inputObservations.values
+        let tick = gameplayRuntime.clock.tick
+        let inputObservations = gameplayRuntime.world.inputObservations.values
             .filter { $0.isValid(at: tick) && settings.isInputPluginEnabled($0.pluginID) }
         return BrainContextSnapshotBuilder.build(
             clock: clock,

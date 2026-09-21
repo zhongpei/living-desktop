@@ -407,13 +407,13 @@ public enum ScenarioLoader {
 }
 
 public enum ScenarioRunner {
-    public static func report(_ scenario: HarnessScenario, kernel: GameKernel) -> ScenarioReport {
+    public static func report(_ scenario: HarnessScenario, kernel: KernelSnapshot) -> ScenarioReport {
         report(scenario, kernel: kernel, desktop: scenario.desktop, pipeline: nil)
     }
 
     public static func report(
         _ scenario: HarnessScenario,
-        kernel: GameKernel,
+        kernel: KernelSnapshot,
         desktop: VirtualDesktop,
         pipeline: SemanticPipeline?
     ) -> ScenarioReport {
@@ -426,13 +426,16 @@ public enum ScenarioRunner {
         var contentVerdict: ContentVerdict
         var pipelineTrace: [PipelineTraceEntry]
         if let pipeline {
-            logicVerdict = pipeline.logicVerdict(kernel: kernel, expectations: scenario.expectations)
+            let inspectionKernel = GameKernel(snapshot: kernel)
+            logicVerdict = pipeline.logicVerdict(
+                kernel: inspectionKernel, expectations: scenario.expectations)
             contentVerdict = pipeline.contentVerdict()
             pipelineTrace = pipeline.trace
         } else {
             logicVerdict = LogicVerdict(failures: violations.map { "\($0.code):\($0.message)" })
-            logicVerdict = LogicVerdict(
-                failures: logicVerdict.failures + scenario.expectations.check(kernel: kernel, pipelineTrace: []))
+            let inspectionKernel = GameKernel(snapshot: kernel)
+            logicVerdict = LogicVerdict(failures: logicVerdict.failures +
+                scenario.expectations.check(kernel: inspectionKernel, pipelineTrace: []))
             contentVerdict = ContentVerdict()
             pipelineTrace = []
         }
@@ -450,7 +453,7 @@ public enum ScenarioRunner {
             contentVerdict: contentVerdict)
     }
 
-    public static func run(_ scenario: HarnessScenario) -> (ScenarioReport, GameKernel) {
+    public static func run(_ scenario: HarnessScenario) -> (ScenarioReport, KernelSnapshot) {
         let simulation = DataSimulation(scenario: scenario)
         _ = simulation.run(ticks: scenario.durationTicks)
         return (

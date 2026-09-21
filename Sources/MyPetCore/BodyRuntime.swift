@@ -7,6 +7,7 @@ public enum BodyExecutionMode: String, Codable, Sendable {
 
 public struct BodyCommand: Codable, Equatable, Sendable {
     public var behaviorID: String
+    public var executionToken: Int64
     public var actorID: EntityID
     public var intent: String
     public var target: EntityRef?
@@ -23,10 +24,12 @@ public enum BodyResultOutcome: String, Codable, Sendable {
 
 public struct BodyResult: Codable, Equatable, Sendable {
     public var behaviorID: String
+    public var executionToken: Int64
     public var outcome: BodyResultOutcome
 
-    public init(behaviorID: String, outcome: BodyResultOutcome) {
+    public init(behaviorID: String, executionToken: Int64, outcome: BodyResultOutcome) {
         self.behaviorID = behaviorID
+        self.executionToken = executionToken
         self.outcome = outcome
     }
 }
@@ -96,6 +99,41 @@ public struct PresentationEffect: Codable, Equatable, Sendable {
     public var intent: String
 }
 
+public struct BodyRuntimeSnapshot: Codable, Equatable, Sendable {
+    public struct ActiveCommand: Codable, Equatable, Sendable {
+        public var command: BodyCommand
+        public var completesAtTick: Int64
+
+        public init(command: BodyCommand, completesAtTick: Int64) {
+            self.command = command
+            self.completesAtTick = completesAtTick
+        }
+    }
+
+    public var mode: BodyExecutionMode
+    public var nextExecutionToken: Int64
+    public var active: [String: ActiveCommand]
+    public var commands: [BodyCommand]
+    public var effects: [PresentationEffect]
+    public var poses: [String: BodyPose]
+
+    public init(
+        mode: BodyExecutionMode,
+        nextExecutionToken: Int64 = 0,
+        active: [String: ActiveCommand] = [:],
+        commands: [BodyCommand] = [],
+        effects: [PresentationEffect] = [],
+        poses: [String: BodyPose] = [:]
+    ) {
+        self.mode = mode
+        self.nextExecutionToken = max(0, nextExecutionToken)
+        self.active = active
+        self.commands = commands
+        self.effects = effects
+        self.poses = poses
+    }
+}
+
 /// Owns body command/result bookkeeping only. Kernel remains the authority for
 /// behavior, claims and attachments; render receives immutable projections.
 final class BodyRuntime {
@@ -109,6 +147,7 @@ final class BodyRuntime {
     private var commands: [BodyCommand] = []
     private var effects: [PresentationEffect] = []
     private var poses: [String: BodyPose] = [:]
+    private var nextExecutionToken: Int64 = 0
 
     init(mode: BodyExecutionMode) {
         self.mode = mode
@@ -121,12 +160,14 @@ final class BodyRuntime {
             if behavior.status == .running, active[id] == nil {
                 let command = BodyCommand(
                     behaviorID: id,
+                    executionToken: nextExecutionToken,
                     actorID: behavior.request.actorID,
                     intent: behavior.request.intent,
                     target: behavior.request.target,
                     slot: behavior.request.slot,
                     durationTicks: behavior.request.durationTicks,
                     planEpoch: behavior.request.planEpoch)
+                nextExecutionToken += 1
                 active[id] = Active(
                     command: command,
                     completesAtTick: behavior.startedAtTick + behavior.request.durationTicks - 1)
@@ -156,16 +197,20 @@ final class BodyRuntime {
         return active.values
             .filter { $0.completesAtTick <= tick }
             .sorted { $0.command.behaviorID < $1.command.behaviorID }
-            .map { BodyResult(behaviorID: $0.command.behaviorID, outcome: .completed) }
+            .map { BodyResult(
+                behaviorID: $0.command.behaviorID,
+                executionToken: $0.command.executionToken,
+                outcome: .completed) }
     }
 
     func event(for result: BodyResult) -> GameEvent? {
+        guard active[result.behaviorID]?.command.executionToken == result.executionToken else {
+            return nil
+        }
         switch result.outcome {
         case .completed:
-            guard active[result.behaviorID] != nil else { return nil }
             return GameEvent(kind: .completeBehavior, behaviorID: result.behaviorID, success: true)
         case .failed:
-            guard active[result.behaviorID] != nil else { return nil }
             return GameEvent(kind: .completeBehavior, behaviorID: result.behaviorID, success: false)
         case .cancelled:
             return GameEvent(kind: .cancelBehavior, behaviorID: result.behaviorID)
@@ -260,5 +305,42 @@ final class BodyRuntime {
         commands.removeAll()
         effects.removeAll()
         poses.removeAll()
+    }
+
+    func checkpoint() -> BodyRuntimeSnapshot {
+        BodyRuntimeSnapshot(
+            mode: mode,
+            nextExecutionToken: nextExecutionToken,
+            active: active.mapValues {
+                BodyRuntimeSnapshot.ActiveCommand(
+                    command: $0.command, completesAtTick: $0.completesAtTick)
+            },
+            commands: commands,
+            effects: effects,
+            poses: poses)
+    }
+
+    func restore(_ snapshot: BodyRuntimeSnapshot) {
+        precondition(snapshot.mode == mode, "body execution mode must match checkpoint")
+        nextExecutionToken = max(
+            snapshot.nextExecutionToken,
+            (snapshot.active.values.map(\.command.executionToken).max() ?? -1) + 1)
+        var restored: [String: Active] = [:]
+        for id in snapshot.active.keys.sorted() {
+            guard let item = snapshot.active[id] else { continue }
+            var command = item.command
+            command.executionToken = nextExecutionToken
+            nextExecutionToken += 1
+            restored[id] = Active(command: command, completesAtTick: item.completesAtTick)
+        }
+        active = restored
+        // An external adapter is not part of the Core checkpoint. Reissue all
+        // active commands with fresh tokens; any callback from before restore
+        // is rejected by `event(for:)`.
+        commands = mode == .external
+            ? restored.values.map(\.command).sorted { $0.behaviorID < $1.behaviorID }
+            : []
+        effects = snapshot.effects
+        poses = snapshot.poses
     }
 }

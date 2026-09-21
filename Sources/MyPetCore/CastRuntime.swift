@@ -2,17 +2,20 @@ import Foundation
 
 public struct CastRuntimeSnapshot: Codable, Equatable, Sendable {
     public let kernel: KernelSnapshot
+    public let runtimeCheckpoint: GameRuntimeCheckpoint?
     public let director: CastDirectorSnapshot
     public let storyDirector: StoryDirectorSnapshot
     public let started: Bool
 
     public init(
         kernel: KernelSnapshot,
+        runtimeCheckpoint: GameRuntimeCheckpoint? = nil,
         director: CastDirectorSnapshot,
         storyDirector: StoryDirectorSnapshot,
         started: Bool
     ) {
         self.kernel = kernel
+        self.runtimeCheckpoint = runtimeCheckpoint
         self.director = director
         self.storyDirector = storyDirector
         self.started = started
@@ -26,10 +29,19 @@ public struct CastRuntimeSnapshot: Codable, Equatable, Sendable {
 /// 面板、harness 和未来的剧情调度器都从同一个“已确认在场名单”读取状态。
 public final class CastRuntime {
     public let runtime: GameRuntime
-    public var kernel: GameKernel { runtime.kernel }
+    public var world: WorldState { runtime.world }
+    public var clock: SimClock { runtime.clock }
+    public var trace: [TraceEntry] { runtime.trace }
+    public var manualViolations: [InvariantViolation] { runtime.manualViolations }
     public let director: CastDirector
     public let storyDirector: StoryDirector
-    public private(set) var started = false
+    private let lifecycleLock = NSLock()
+    private var isStarted = false
+    public var started: Bool {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
+        return isStarted
+    }
     private let characterDefinitions: [String: CharacterDefinition]
 
     public convenience init(
@@ -83,7 +95,8 @@ public final class CastRuntime {
         storyExecutionProvider: (any StoryExecutionProvider)? = nil
     ) {
         characterDefinitions = [:]
-        runtime = GameRuntime(snapshot: snapshot.kernel)
+        runtime = snapshot.runtimeCheckpoint.map(GameRuntime.init(checkpoint:))
+            ?? GameRuntime(snapshot: snapshot.kernel)
         director = CastDirector(
             packs: packs,
             selection: snapshot.director.selection,
@@ -94,34 +107,36 @@ public final class CastRuntime {
             episodes: packs.flatMap(\.episodes),
             configuration: snapshot.storyDirector.configuration,
             executionProvider: storyExecutionProvider)
-        kernel.storyInterruptionPolicy = snapshot.storyDirector.configuration.interruptionPolicy
+        if snapshot.runtimeCheckpoint == nil {
+            runtime.configureStoryInterruptionPolicy(
+                snapshot.storyDirector.configuration.interruptionPolicy)
+        }
         storyDirector.restore(from: snapshot.storyDirector)
-        started = snapshot.started
+        isStarted = snapshot.started
     }
 
     /// 安装关系和第一批事件；不会越过 tick 边界替内核“偷改”状态。
     @discardableResult
     public func start() -> [String] {
-        guard !started else { return activeMemberIDs }
-        started = true
-        return director.install(in: kernel)
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
+        guard !isStarted else {
+            let world = runtime.world
+            return director.declaredMemberIDs.filter { world.isAlive(EntityID($0)) }
+        }
+        isStarted = true
+        return runtime.installCast(director)
     }
 
     @discardableResult
     public func tick() -> TickReport {
         _ = start()
-        return runtime.step { runtime in
-            if self.storyDirector.currentEpisodeID == nil {
-                _ = self.storyDirector.startNext(in: runtime.kernel)
-            } else {
-                self.storyDirector.tick(in: runtime.kernel)
-            }
-            self.director.tick(in: runtime.kernel)
-        }!
+        return runtime.step(storyDirector: storyDirector, castDirector: director)!
     }
 
     public var activeMemberIDs: [String] {
-        director.declaredMemberIDs.filter { kernel.world.isAlive(EntityID($0)) }
+        let world = runtime.world
+        return director.declaredMemberIDs.filter { world.isAlive(EntityID($0)) }
     }
 
     public var activeMembers: [CastMember] {
@@ -135,20 +150,22 @@ public final class CastRuntime {
     /// 已被 CastDirector 安装且仍存活的道具。它们是世界中的实体，
     /// 但不参加角色轮换；表现层可据此建立独立的 prop adapter。
     public var activeProps: [CastProp] {
-        director.availableProps.filter { kernel.world.isAlive(EntityID($0.id)) }
+        let world = runtime.world
+        return director.availableProps.filter { world.isAlive(EntityID($0.id)) }
     }
 
     /// Registered props are world resources, not stage decorations.  Only a
     /// prop currently claimed by a behavior/slot or attached to an actor is
     /// part of the visual cast projection.
     public var presentedProps: [CastProp] {
-        activeProps.filter { prop in
+        let world = runtime.world
+        return activeProps.filter { prop in
             let id = EntityID(prop.id)
-            if kernel.world.spatialAttachments[id.raw] != nil { return true }
-            if kernel.world.slots.values.contains(where: {
+            if world.spatialAttachments[id.raw] != nil { return true }
+            if world.slots.values.contains(where: {
                 $0.entityID == id && ($0.status == .occupied || !$0.occupants.isEmpty)
             }) { return true }
-            return kernel.runningBehaviorStates.contains {
+            return world.behaviors.values.contains {
                 $0.status == .running && $0.request.target?.entityID == id
             }
         }
@@ -157,13 +174,13 @@ public final class CastRuntime {
     @discardableResult
     public func invite(memberID: String, from sourceActorID: EntityID? = nil) -> Bool {
         _ = start()
-        return director.invite(memberID: memberID, from: sourceActorID, in: kernel)
+        return runtime.invite(director, memberID: memberID, from: sourceActorID)
     }
 
     @discardableResult
     public func inviteManually(memberID: String) -> Bool {
         _ = start()
-        return director.inviteManually(memberID: memberID, in: kernel)
+        return runtime.invite(director, memberID: memberID, manually: true)
     }
 
     public func expandCapacity(to count: Int) {
@@ -173,21 +190,11 @@ public final class CastRuntime {
     @discardableResult
     public func depart(memberID: String) -> Bool {
         _ = start()
-        return director.depart(memberID: memberID, in: kernel)
+        return runtime.depart(director, memberID: memberID)
     }
 
     public func consumeStoryActions() -> [StoryAction] {
-        let actions = storyDirector.drainActions()
-        for action in actions {
-            for memberID in action.inviteMemberIDs ?? [] {
-                _ = director.invite(
-                    memberID: memberID,
-                    from: action.actorID,
-                    in: kernel,
-                    atTick: kernel.clock.tick)
-            }
-        }
-        return actions
+        runtime.consumeStoryActions(storyDirector: storyDirector, castDirector: director)
     }
 
     public func consumeStoryHandoffEvents() -> [StoryHandoffEvent] {
@@ -195,10 +202,11 @@ public final class CastRuntime {
     }
 
     public func snapshot() -> CastRuntimeSnapshot {
-        CastRuntimeSnapshot(
-            kernel: runtime.snapshot(),
-            director: director.snapshot(),
-            storyDirector: storyDirector.snapshot(),
-            started: started)
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
+        return runtime.checkpointCast(
+            director: director,
+            storyDirector: storyDirector,
+            started: isStarted)
     }
 }

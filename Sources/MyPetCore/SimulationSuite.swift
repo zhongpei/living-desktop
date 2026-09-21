@@ -399,7 +399,7 @@ public struct SimulationSuiteRunner {
                 status: status, resolvedAction: execution.resolution?.resolvedAction,
                 completed: false)
         }
-        game.submit(GameEvent(kind: .behaviorRequest, request: request))
+        _ = game.submitAction(execution)
         for _ in 0..<3 where game.world.behaviors[request.id]?.status != .completed {
             _ = game.step()
         }

@@ -308,7 +308,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func syncCastControllers() {
         guard let settings, let runtime = castRuntime else { return }
         let activeIDs = Set(runtime.activeMemberIDs)
-        let nowTick = runtime.kernel.clock.tick
+        let nowTick = runtime.clock.tick
 
         // 离场与入场都经过 Core 统一的表现计划。角色可能在过渡窗口内
         // 被重新邀请；此时取消收起，继续使用原来的面板实例。
@@ -396,18 +396,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let targetX = action.targetID.flatMap { targetFrames[$0] }
                 .map { CGFloat($0.x + $0.width / 2) }
             guard let behaviorID = action.behaviorID,
-                  runtime.runtime.takeBodyCommand(behaviorID: behaviorID) != nil else { continue }
+                  let command = runtime.runtime.takeBodyCommand(behaviorID: behaviorID) else { continue }
             guard let pet = castControllers[action.actorID.raw] else {
                 // A logic participant without a visual pack still completes
                 // deterministically; presentation absence is reported by the
                 // asset audit rather than corrupting the story state machine.
                 runtime.runtime.submitBodyResult(BodyResult(
-                    behaviorID: behaviorID, outcome: .completed))
+                    behaviorID: behaviorID,
+                    executionToken: command.executionToken,
+                    outcome: .completed))
                 continue
             }
             pet.performStoryIntent(action.intent, targetX: targetX) { success in
                 runtime.runtime.submitBodyResult(BodyResult(
                     behaviorID: behaviorID,
+                    executionToken: command.executionToken,
                     outcome: success ? .completed : .failed))
             }
         }

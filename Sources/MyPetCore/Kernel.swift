@@ -236,6 +236,23 @@ public struct KernelSnapshot: Codable, Equatable, Sendable {
         self.trace = trace
         self.manualViolations = manualViolations
     }
+
+    public var pendingEventCount: Int { pendingEvents.count }
+
+    public func terminalViolations() -> [InvariantViolation] {
+        manualViolations + InvariantChecker.checkTerminal(world, tick: clock.tick)
+    }
+
+    public func traceJSONL() throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        var data = Data()
+        for entry in trace {
+            data.append(try encoder.encode(entry))
+            data.append(0x0A)
+        }
+        return data
+    }
 }
 
 public final class GameKernel {

@@ -33,7 +33,7 @@ final class CastModelTests: XCTestCase {
         let report = runtime.tick()
 
         XCTAssertEqual(report.tick, 0)
-        XCTAssertEqual(runtime.kernel.world.behaviors[requestID]?.status, .completed)
+        XCTAssertEqual(runtime.world.behaviors[requestID]?.status, .completed)
         XCTAssertEqual(runtime.consumeStoryActions().map(\.beatID), ["greet"])
     }
 
@@ -366,7 +366,7 @@ final class CastModelTests: XCTestCase {
         _ = runtime.start()
         _ = runtime.tick()
 
-        XCTAssertEqual(runtime.kernel.world.relationValues["sun_wukong/tang_sanzang/trust"], 0.72)
+        XCTAssertEqual(runtime.world.relationValues["sun_wukong/tang_sanzang/trust"], 0.72)
         XCTAssertEqual(runtime.characterDefinition(for: "sun_wukong")?.id, "sun_wukong")
         XCTAssertEqual(runtime.director.member("sun_wukong")?.visualPackID, "sun_wukong")
     }
@@ -465,7 +465,7 @@ final class CastModelTests: XCTestCase {
         }
 
         XCTAssertTrue(queued)
-        runtime.storyDirector.abortCurrent(in: runtime.kernel)
+        runtime.runtime.abortStory(runtime.storyDirector)
         let events = runtime.consumeStoryHandoffEvents()
         XCTAssertEqual(events.count, 1)
         XCTAssertEqual(events.first?.handoff.propID, "sacred_scroll")
@@ -493,7 +493,7 @@ final class CastModelTests: XCTestCase {
             for _ in 0..<ticks { _ = runtime.tick() }
 
             let projection = CastVisualProjection.project(runtime: runtime)
-            XCTAssertTrue(runtime.kernel.manualViolations.isEmpty, pack.id)
+            XCTAssertTrue(runtime.manualViolations.isEmpty, pack.id)
             XCTAssertTrue(projection.violations.isEmpty, pack.id)
             XCTAssertTrue(
                 projection.entities.contains { $0.kind == .actor && $0.attachedToID != nil },
@@ -647,7 +647,7 @@ final class CastModelTests: XCTestCase {
         _ = runtime.tick()
         XCTAssertTrue(runtime.invite(memberID: "rei"))
         XCTAssertFalse(runtime.invite(memberID: "rei"), "同一角色尚未入场时不能重复排队")
-        _ = runtime.kernel.run(ticks: 3)
+        for _ in 0..<3 { _ = runtime.tick() }
         XCTAssertEqual(runtime.activeMemberIDs, ["rei"])
 
         XCTAssertTrue(runtime.depart(memberID: "rei"))
@@ -665,10 +665,10 @@ final class CastModelTests: XCTestCase {
             automaticArrivalsEnabled: false)
         let runtime = CastRuntime(packs: [pack], selection: selection)
         _ = runtime.start()
-        _ = runtime.kernel.run(ticks: 3)
+        for _ in 0..<3 { _ = runtime.tick() }
         XCTAssertTrue(runtime.activeMemberIDs.isEmpty)
         XCTAssertTrue(runtime.invite(memberID: "actor"))
-        _ = runtime.kernel.run(ticks: 3)
+        for _ in 0..<3 { _ = runtime.tick() }
         XCTAssertTrue(runtime.activeMemberIDs.contains("actor"))
     }
 
@@ -689,7 +689,7 @@ final class CastModelTests: XCTestCase {
 
         XCTAssertFalse(runtime.invite(memberID: "guest"))
         XCTAssertTrue(runtime.inviteManually(memberID: "guest"))
-        _ = runtime.kernel.run(ticks: 3)
+        for _ in 0..<3 { _ = runtime.tick() }
         XCTAssertTrue(runtime.activeMemberIDs.contains("guest"))
     }
 
@@ -761,11 +761,11 @@ final class CastModelTests: XCTestCase {
             XCTAssertLessThanOrEqual(first.activeMemberIDs.count, 1)
             XCTAssertLessThanOrEqual(second.activeMemberIDs.count, 1)
         }
-        XCTAssertEqual(first.kernel.trace, second.kernel.trace)
-        XCTAssertEqual(first.kernel.world.stableDigest(), second.kernel.world.stableDigest())
+        XCTAssertEqual(first.trace, second.trace)
+        XCTAssertEqual(first.world.stableDigest(), second.world.stableDigest())
         XCTAssertEqual(first.activeMemberIDs.count, 1)
-        XCTAssertEqual(first.kernel.trace.filter { $0.kind == "event" && $0.detail.contains("castDepart") }.count, 1)
-        XCTAssertEqual(first.kernel.trace.filter { $0.kind == "event" && $0.detail.contains("castArrive") }.count, 2)
+        XCTAssertEqual(first.trace.filter { $0.kind == "event" && $0.detail.contains("castDepart") }.count, 1)
+        XCTAssertEqual(first.trace.filter { $0.kind == "event" && $0.detail.contains("castArrive") }.count, 2)
     }
 
     func testStoryBeatCanInviteAnotherMemberThroughCastRuntime() {
@@ -795,10 +795,10 @@ final class CastModelTests: XCTestCase {
         }
         XCTAssertTrue(runtime.activeMemberIDs.contains("host"))
         XCTAssertTrue(runtime.activeMemberIDs.contains("guest"))
-        XCTAssertTrue(runtime.kernel.trace.contains {
+        XCTAssertTrue(runtime.trace.contains {
             $0.kind == "event" && $0.detail.contains("castInvite") && $0.detail.contains("guest")
         })
-        XCTAssertTrue(runtime.kernel.manualViolations.isEmpty)
+        XCTAssertTrue(runtime.manualViolations.isEmpty)
     }
 
     func testExternalCastStoryWaitsForBodyResultBeforeCommitting() {
@@ -828,18 +828,21 @@ final class CastModelTests: XCTestCase {
             action = runtime.consumeStoryActions().first
         }
         let behaviorID = try! XCTUnwrap(action?.behaviorID)
-        XCTAssertNotNil(runtime.runtime.takeBodyCommand(behaviorID: behaviorID))
+        let command = try! XCTUnwrap(
+            runtime.runtime.takeBodyCommand(behaviorID: behaviorID))
 
         for _ in 0..<3 { _ = runtime.tick() }
-        XCTAssertEqual(runtime.kernel.world.behaviors[behaviorID]?.status, .running)
+        XCTAssertEqual(runtime.world.behaviors[behaviorID]?.status, .running)
         XCTAssertEqual(runtime.storyDirector.completedEpisodeCount, 0)
 
         runtime.runtime.submitBodyResult(BodyResult(
-            behaviorID: behaviorID, outcome: .completed))
+            behaviorID: behaviorID,
+            executionToken: command.executionToken,
+            outcome: .completed))
         _ = runtime.tick()
         _ = runtime.tick()
 
-        XCTAssertEqual(runtime.kernel.world.behaviors[behaviorID]?.status, .completed)
+        XCTAssertEqual(runtime.world.behaviors[behaviorID]?.status, .completed)
         XCTAssertEqual(runtime.storyDirector.completedEpisodeCount, 1)
     }
 
@@ -872,8 +875,8 @@ final class CastModelTests: XCTestCase {
             _ = runtime.tick()
             actions.append(contentsOf: runtime.consumeStoryActions())
         }
-        XCTAssertEqual(runtime.kernel.world.entities["tea-prop"]?.kind, .prop)
-        XCTAssertEqual(runtime.kernel.world.slots["tea-prop/handle"]?.status, .occupied)
+        XCTAssertEqual(runtime.world.entities["tea-prop"]?.kind, .prop)
+        XCTAssertEqual(runtime.world.slots["tea-prop/handle"]?.status, .occupied)
         XCTAssertEqual(actions.first?.targetID, "tea-prop")
         let projection = CastVisualProjection.project(
             runtime: runtime,
@@ -883,7 +886,7 @@ final class CastModelTests: XCTestCase {
             "actor")
         XCTAssertTrue(projection.entities.first(where: { $0.id.raw == "tea-prop" })?.renderable == true)
         XCTAssertTrue(projection.violations.isEmpty)
-        XCTAssertTrue(runtime.kernel.manualViolations.isEmpty)
+        XCTAssertTrue(runtime.manualViolations.isEmpty)
     }
 
     func testStoryBeatReleasesPropForNextActorToReceiveIt() {
@@ -937,12 +940,12 @@ final class CastModelTests: XCTestCase {
         XCTAssertEqual(handoffs.first?.handoff.propID, "scroll")
         XCTAssertEqual(handoffs.first?.handoff.fromActorID, "giver")
         XCTAssertEqual(handoffs.first?.handoff.toActorID, "receiver")
-        let slot = runtime.kernel.world.slots["scroll/surface"]
+        let slot = runtime.world.slots["scroll/surface"]
         XCTAssertEqual(slot?.status, .occupied)
         XCTAssertEqual(slot?.occupants.map(\.actorID.raw), ["receiver"])
-        XCTAssertEqual(runtime.kernel.world.spatialAttachments["scroll"]?.parentID.raw, "receiver")
-        XCTAssertEqual(runtime.kernel.world.spatialAttachments["scroll"]?.socketID, "surface")
-        XCTAssertTrue(runtime.kernel.trace.contains {
+        XCTAssertEqual(runtime.world.spatialAttachments["scroll"]?.parentID.raw, "receiver")
+        XCTAssertEqual(runtime.world.spatialAttachments["scroll"]?.socketID, "surface")
+        XCTAssertTrue(runtime.trace.contains {
             $0.kind == "event" && $0.detail.hasPrefix("releaseSlot:scroll/surface:scope=story/")
         })
         let projection = CastVisualProjection.project(
@@ -952,7 +955,7 @@ final class CastModelTests: XCTestCase {
             projection.entities.first(where: { $0.id.raw == "scroll" })?.attachedToID?.raw,
             "receiver")
         XCTAssertTrue(projection.violations.isEmpty)
-        XCTAssertTrue(runtime.kernel.manualViolations.isEmpty)
+        XCTAssertTrue(runtime.manualViolations.isEmpty)
     }
 
     func testStoryHandoffIgnoresAnUnmatchedReceiveBeat() {
@@ -997,7 +1000,7 @@ final class CastModelTests: XCTestCase {
         }
 
         XCTAssertTrue(handoffs.isEmpty)
-        XCTAssertTrue(runtime.kernel.manualViolations.isEmpty)
+        XCTAssertTrue(runtime.manualViolations.isEmpty)
     }
 
     func testStoryBeatCanReleaseAnOccupiedMechCockpitWithoutReclaimingIt() {
@@ -1035,12 +1038,12 @@ final class CastModelTests: XCTestCase {
             _ = runtime.consumeStoryActions()
         }
 
-        XCTAssertEqual(runtime.kernel.world.slots["mech/cockpit"]?.status, .free)
-        XCTAssertNil(runtime.kernel.world.spatialAttachments["pilot"])
-        XCTAssertTrue(runtime.kernel.trace.contains {
+        XCTAssertEqual(runtime.world.slots["mech/cockpit"]?.status, .free)
+        XCTAssertNil(runtime.world.spatialAttachments["pilot"])
+        XCTAssertTrue(runtime.trace.contains {
             $0.kind == "event" && $0.detail == "releaseSlot:mech/cockpit:scope=pilot"
         })
-        XCTAssertTrue(runtime.kernel.manualViolations.isEmpty)
+        XCTAssertTrue(runtime.manualViolations.isEmpty)
     }
 
     func testCastProjectionIncludesMissingVisualMembersButNotDormantProps() {
@@ -1062,8 +1065,8 @@ final class CastModelTests: XCTestCase {
         _ = runtime.start()
         _ = runtime.tick()
         _ = runtime.tick()
-        let cockpit = try! XCTUnwrap(runtime.kernel.world.slots["mech/cockpit"])
-        runtime.kernel.enqueue(GameEvent(kind: .behaviorRequest, request: BehaviorRequest(
+        let cockpit = try! XCTUnwrap(runtime.world.slots["mech/cockpit"])
+        runtime.runtime.submitReplayOrFault(GameEvent(kind: .behaviorRequest, request: BehaviorRequest(
             id: "pilot-enter", actorID: EntityID("actor"), intent: "enter_cockpit",
             priority: .story, target: EntityRef(entityID: EntityID("mech"), revision: 0),
             slot: cockpit.ref, claims: ["body", "locomotion"], durationTicks: 1,
@@ -1079,7 +1082,7 @@ final class CastModelTests: XCTestCase {
         XCTAssertEqual(
             snapshot.entities.first { $0.id.raw == "actor" }?.attachedToID?.raw,
             "mech")
-        XCTAssertEqual(runtime.kernel.world.spatialAttachments["actor"]?.parentID.raw, "mech")
+        XCTAssertEqual(runtime.world.spatialAttachments["actor"]?.parentID.raw, "mech")
         let actorFrame = try! XCTUnwrap(snapshot.entities.first { $0.id.raw == "actor" }?.frame)
         let mechFrame = try! XCTUnwrap(snapshot.entities.first { $0.id.raw == "mech" }?.frame)
         XCTAssertTrue(mechFrame.contains(actorFrame), "attached cockpit actor must be rendered inside its mech")
@@ -1113,7 +1116,7 @@ final class CastModelTests: XCTestCase {
         _ = runtime.start()
         for _ in 0..<5 { _ = runtime.tick(); _ = runtime.consumeStoryActions() }
 
-        XCTAssertEqual(runtime.kernel.world.spatialAttachments["guest"]?.parentID.raw, "host")
+        XCTAssertEqual(runtime.world.spatialAttachments["guest"]?.parentID.raw, "host")
         let snapshot = CastVisualProjection.project(
             runtime: runtime,
             in: LayoutRect(x: 0, y: 0, width: 600, height: 400))
@@ -1245,6 +1248,30 @@ final class CastModelTests: XCTestCase {
                        "episode/long/interrupted")
     }
 
+    func testStoryCompletionWinsWhenBehaviorFinishesAtDurationBoundary() {
+        let actor = EntityState(id: EntityID("a"), kind: .actor)
+        let episode = StoryEpisode(
+            id: "boundary", title: "Boundary", participants: ["a"],
+            beats: [StoryBeat(id: "wave", actorIDs: ["a"], intent: "wave", durationTicks: 1)])
+        let runtime = GameRuntime(kernel: GameKernel(
+            scenario: HarnessScenario(id: "story-boundary", entities: [actor])))
+        let director = StoryDirector(
+            episodes: [episode],
+            configuration: StoryDirectorConfiguration(
+                repeatEpisodes: false,
+                maxDurationTicks: 1))
+
+        XCTAssertEqual(runtime.startStory(director), "boundary")
+        _ = runtime.step(storyDirector: director)
+        _ = runtime.step(storyDirector: director)
+
+        XCTAssertEqual(director.completedEpisodeCount, 1)
+        XCTAssertNil(director.interruptedEpisodeID)
+        XCTAssertEqual(
+            runtime.world.facts["episode/boundary/completed"]?.value,
+            "episode/boundary/completed")
+    }
+
     func testStoryConfigurationCanKeepFactsWithoutApplyingRelationshipEffects() {
         let actors = [
             EntityState(id: EntityID("a"), kind: .actor),
@@ -1305,16 +1332,16 @@ final class CastModelTests: XCTestCase {
         let checkpoint = runtime.snapshot()
 
         for _ in 0..<2 { _ = runtime.tick() }
-        let expectedDigest = runtime.kernel.world.stableDigest()
-        let expectedTrace = runtime.kernel.trace
-        XCTAssertEqual(runtime.kernel.world.relationValues["a/b/trust"], 0.25)
+        let expectedDigest = runtime.world.stableDigest()
+        let expectedTrace = runtime.trace
+        XCTAssertEqual(runtime.world.relationValues["a/b/trust"], 0.25)
         XCTAssertEqual(runtime.storyDirector.completedEpisodeCount, 1)
 
         let restored = CastRuntime(snapshot: checkpoint, packs: [pack])
         for _ in 0..<2 { _ = restored.tick() }
-        XCTAssertEqual(restored.kernel.world.stableDigest(), expectedDigest)
-        XCTAssertEqual(restored.kernel.trace, expectedTrace)
-        XCTAssertEqual(restored.kernel.world.relationValues["a/b/trust"], 0.25)
+        XCTAssertEqual(restored.world.stableDigest(), expectedDigest)
+        XCTAssertEqual(restored.trace, expectedTrace)
+        XCTAssertEqual(restored.world.relationValues["a/b/trust"], 0.25)
         XCTAssertEqual(restored.storyDirector.completedEpisodeCount, 1)
 
         let completedSnapshot = runtime.snapshot()
@@ -1324,5 +1351,45 @@ final class CastModelTests: XCTestCase {
         let decodedDirector = try! JSONDecoder().decode(
             StoryDirectorSnapshot.self, from: encodedDirector)
         XCTAssertEqual(decodedDirector.completedEpisodeCount, 1)
+    }
+
+    func testCastCheckpointPolicyRemainsAuthoritativeOnRestore() {
+        let pack = CastPack(
+            id: "policy", groupID: "test", displayName: "Policy", summary: "",
+            members: [CastMember(
+                id: "actor", kind: .character, displayName: "Actor", role: "lead")])
+        let runtime = CastRuntime(
+            packs: [pack], selection: CastSelection(),
+            storyConfiguration: StoryDirectorConfiguration(
+                interruptOnForeground: true, interruptOnContent: false))
+        let checkpointPolicy = StoryInterruptionPolicy(foreground: false, content: true)
+        runtime.runtime.configureStoryInterruptionPolicy(checkpointPolicy)
+
+        let restored = CastRuntime(snapshot: runtime.snapshot(), packs: [pack])
+
+        XCTAssertEqual(restored.runtime.storyInterruptionPolicy, checkpointPolicy)
+    }
+
+    func testLegacyCastSnapshotWithoutRuntimeCheckpointStillDecodes() throws {
+        let snapshot = CastRuntimeSnapshot(
+            kernel: GameKernel().snapshot(),
+            director: CastDirectorSnapshot(
+                selection: CastSelection(), seed: 1, arrivalDelayTicks: 2,
+                pendingArrivals: []),
+            storyDirector: StoryDirectorSnapshot(
+                currentEpisode: nil, currentEpisodeID: nil, currentBeatID: nil,
+                interruptedEpisodeID: nil, beatIndex: 0, requestIDs: [],
+                cooldownUntil: [:], runCounter: 0, queuedActions: []),
+            started: false)
+        let encoded = try JSONEncoder().encode(snapshot)
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object.removeValue(forKey: "runtimeCheckpoint")
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+
+        let decoded = try JSONDecoder().decode(CastRuntimeSnapshot.self, from: legacyData)
+
+        XCTAssertNil(decoded.runtimeCheckpoint)
+        XCTAssertEqual(decoded.kernel, snapshot.kernel)
     }
 }

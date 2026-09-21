@@ -7,6 +7,16 @@ import XCTest
 /// 模型推理本身不进单测（需要 needle3.cact，由冒烟路径覆盖）。
 final class NeedleBrainTests: XCTestCase {
 
+    func testPreemptionInvalidatesInFlightNeedleGeneration() {
+        let brain = NeedleBrain()
+        let old = brain.requestGeneration
+        brain.invalidatePendingDecision()
+        XCTAssertFalse(brain.isCurrentGeneration(old))
+        let current = brain.requestGeneration
+        brain.expedite()
+        XCTAssertFalse(brain.isCurrentGeneration(current))
+    }
+
     private var facts: NeedleBrain.WorldFacts {
         var facts = NeedleBrain.WorldFacts(
             actor: "lin_daiyu",

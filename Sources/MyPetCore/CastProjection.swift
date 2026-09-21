@@ -213,7 +213,8 @@ public enum CastVisualProjection {
         let baseCandidates = baseMemberCandidates + baseMechCandidates
         let baseFrames = Dictionary(uniqueKeysWithValues: baseCandidates.map { ($0.id, $0) })
         let memberIDs = Set(members.map { EntityID($0.id) })
-        let memberAttachments = runtime.kernel.world.spatialAttachments.values
+        let world = runtime.world
+        let memberAttachments = world.spatialAttachments.values
             .filter { memberIDs.contains($0.childID) && baseFrames[$0.parentID] != nil }
             .reduce(into: [EntityID: SpatialAttachment]()) { result, attachment in
                 result[attachment.childID] = attachment
@@ -265,7 +266,7 @@ public enum CastVisualProjection {
         // and AppKit. Slot occupancy remains the capacity authority; the
         // attachment itself is no longer re-derived independently in each
         // presentation layer.
-        let attachments = runtime.kernel.world.spatialAttachments.values.compactMap {
+        let attachments = world.spatialAttachments.values.compactMap {
             attachment -> (String, EntityID)? in
             guard propIDs.contains(attachment.childID.raw),
                   memberFrames[attachment.parentID] != nil else { return nil }
@@ -312,7 +313,7 @@ public enum CastVisualProjection {
                     (member.visualPackID != nil || (member.kind == .mech && member.visualPackID == nil)),
                 frame: frame,
                 zIndex: frames[EntityID(member.id)]?.zIndex ?? 100,
-                attachedToID: runtime.kernel.world.spatialAttachments[member.id]?.parentID)
+                attachedToID: world.spatialAttachments[member.id]?.parentID)
         }
         let propEntities = props.map { prop in
             let frame = frames[EntityID(prop.id)]?.frame

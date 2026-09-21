@@ -146,7 +146,7 @@ public final class CastDirector {
 
     /// 安装关系初值并安排第一批角色入场。
     @discardableResult
-    public func install(in kernel: GameKernel, atTick: Int64? = nil) -> [String] {
+    func install(in kernel: GameKernel, atTick: Int64? = nil) -> [String] {
         let activePacks = selection.activePacks(from: packs)
         kernel.seedRelations(activePacks.reduce(into: [:]) { result, pack in
             for (key, value) in pack.initialRelationValues() { result[key] = value }
@@ -176,7 +176,7 @@ public final class CastDirector {
     /// Advances opt-in cast rotation after a kernel tick. The director only
     /// schedules lifecycle events; the kernel remains the sole authority that
     /// confirms an actor alive or departed.
-    public func tick(in kernel: GameKernel) {
+    func tick(in kernel: GameKernel) {
         pendingArrivals = Set(pendingArrivals.filter { kernel.world.isAlive(EntityID($0)) == false })
         pendingDepartures = Set(pendingDepartures.filter { kernel.world.isAlive(EntityID($0)) })
         guard rotationIsEnabled,
@@ -218,7 +218,7 @@ public final class CastDirector {
 
     /// 邀请一个已在候选名单中的角色。返回 false 表示被设置或状态拒绝。
     @discardableResult
-    public func invite(
+    func invite(
         memberID: String,
         from sourceActorID: EntityID? = nil,
         in kernel: GameKernel,
@@ -247,7 +247,7 @@ public final class CastDirector {
     /// summon any declared member even when automatic/story invitations are
     /// disabled or the member is outside the configured candidate subset.
     @discardableResult
-    public func inviteManually(
+    func inviteManually(
         memberID: String,
         in kernel: GameKernel,
         atTick: Int64? = nil
@@ -267,7 +267,7 @@ public final class CastDirector {
     }
 
     @discardableResult
-    public func depart(memberID: String, in kernel: GameKernel, atTick: Int64? = nil) -> Bool {
+    func depart(memberID: String, in kernel: GameKernel, atTick: Int64? = nil) -> Bool {
         guard members[memberID] != nil, kernel.world.isAlive(EntityID(memberID)) else { return false }
         let tick = atTick ?? kernel.clock.tick
         kernel.enqueue(GameEvent(

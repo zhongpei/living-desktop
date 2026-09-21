@@ -116,6 +116,10 @@ public struct StoryBehaviorPlan: Sendable {
 /// Seam between narrative scheduling and action selection. StoryDirector owns
 /// episode/beat lifecycle; the provider owns Goal/Needle/Action translation.
 public protocol StoryExecutionProvider: AnyObject {
+    var runtimeSafe: Bool { get }
+    var waitingForPrefetch: Bool { get }
+    func setStoryScope(_ scope: String?)
+
     func plan(
         requestID: String,
         beat: StoryBeat,
@@ -127,27 +131,49 @@ public protocol StoryExecutionProvider: AnyObject {
     ) -> StoryBehaviorPlan?
 }
 
+public extension StoryExecutionProvider {
+    var runtimeSafe: Bool { false }
+    var waitingForPrefetch: Bool { false }
+    func setStoryScope(_ scope: String?) {}
+}
+
 /// Pure-data story implementation. A real Harness provider can replace the
 /// Needle provider while keeping this same StoryDirector interface.
 public final class SemanticStoryExecutionProvider: StoryExecutionProvider {
     private let goalProvider: any SimulationGoalProvider
     private let needleProvider: any SimulationNeedleProvider
-    private let actionRuntime: ActionRuntime
+    private let engine: SemanticEngine
     private let context: RuntimeContext
     private var cachedGoalKey: String?
     private var cachedGoal: SimulationGoalDecision?
+    private var storyScope: String?
     public private(set) var trace: [PipelineTraceEntry] = []
+    public private(set) var waitingForPrefetch = false
+    public var runtimeSafe: Bool {
+        goalProvider.execution == .runtimeImmediate &&
+            needleProvider.execution == .runtimeImmediate
+    }
 
     public init(
         goalProvider: (any SimulationGoalProvider)? = nil,
         needleProvider: (any SimulationNeedleProvider)? = nil,
-        actionRuntime: ActionRuntime = ActionRuntime(),
+        engine: SemanticEngine = SemanticEngine(),
         context: RuntimeContext = RuntimeContext()
     ) {
         self.goalProvider = goalProvider ?? GoalBrain()
         self.needleProvider = needleProvider ?? NeedleBrain()
-        self.actionRuntime = actionRuntime
+        self.engine = engine
         self.context = context
+    }
+
+    public func setStoryScope(_ scope: String?) {
+        guard storyScope != scope else { return }
+        storyScope = scope
+        cachedGoalKey = nil
+        cachedGoal = nil
+        waitingForPrefetch = false
+        goalProvider.setStoryScope(scope)
+        needleProvider.setStoryScope(scope)
     }
 
     public func plan(
@@ -159,11 +185,12 @@ public final class SemanticStoryExecutionProvider: StoryExecutionProvider {
         world: WorldState,
         tick: Int64
     ) -> StoryBehaviorPlan? {
+        waitingForPrefetch = false
         // StoryDirector chooses the authored beat, but it still enters the
         // same semantic chain as free play: GoalBrain supplies motivation,
         // SceneRunner materializes the beat as a scene recipe, then Needle
         // selects the semantic action and ActionRuntime creates the request.
-        let goalKey = beat.id + ":" + String(tick)
+        let goalKey = (storyScope ?? "-") + ":" + beat.id + ":" + actorID.raw + ":" + String(tick)
         let goal: SimulationGoalDecision?
         if cachedGoalKey == goalKey, let cachedGoal {
             goal = cachedGoal
@@ -174,6 +201,7 @@ public final class SemanticStoryExecutionProvider: StoryExecutionProvider {
             cachedGoal = goal
         }
         guard let goal else {
+            waitingForPrefetch = goalProvider.missPolicy == .waitForPrefetch
             trace.append(PipelineTraceEntry(
                 tick: tick, stage: "story.goal",
                 detail: goalProvider.providerID + ":missing:" + beat.id))
@@ -183,27 +211,18 @@ public final class SemanticStoryExecutionProvider: StoryExecutionProvider {
             tick: tick, stage: "story.goal",
             detail: goalProvider.providerID + ":" + goal.goal.rawValue + ":" + beat.id))
 
-        // A cast beat is an authored scene intent rather than one of the
-        // free-play recipes. The temporary recipe keeps the SceneRunner
-        // contract explicit without letting a model manufacture narrative
-        // effects, targets, claims, or ownership changes.
-        let scene = SceneRunner(recipes: [SimulationSceneRecipe(
-            id: "story/" + beat.id,
-            goals: SimulationGoalKind.allCases,
-            steps: [SimulationSceneStep(.perform(beat.intent))])])
-        guard scene.start(goal), let step = scene.currentStep else {
-            trace.append(PipelineTraceEntry(
-                tick: tick, stage: "story.scene", detail: "missing:" + beat.id))
-            return nil
-        }
+        // A cast beat is already an authored scene intent; the shared engine
+        // translates it without creating another mutable SceneRunner.
+        let step = engine.storyStep(for: beat)
         trace.append(PipelineTraceEntry(
-            tick: tick, stage: "story.scene", detail: scene.recipeID ?? "-"))
+            tick: tick, stage: "story.scene", detail: "story/" + beat.id))
         guard let action = needleProvider.decide(
             step: step,
             tick: tick,
             context: context,
-            world: world,
-            actorID: actorID) else {
+                world: world,
+                actorID: actorID) else {
+            waitingForPrefetch = needleProvider.missPolicy == .waitForPrefetch
             trace.append(PipelineTraceEntry(
                 tick: tick, stage: "story.needle",
                 detail: needleProvider.providerID + ":missing:" + beat.id))
@@ -212,7 +231,7 @@ public final class SemanticStoryExecutionProvider: StoryExecutionProvider {
         trace.append(PipelineTraceEntry(
             tick: tick, stage: "story.needle",
             detail: needleProvider.providerID + ":" + Self.describe(action) + ":" + beat.id))
-        let execution = actionRuntime.executeStory(
+        let execution = engine.actionRuntime.executeStory(
             action,
             tick: tick,
             actorID: actorID,
@@ -430,8 +449,9 @@ public final class StoryDirector {
     }
 
     @discardableResult
-    public func startNext(in kernel: GameKernel) -> String? {
+    func startNext(in kernel: GameKernel) -> String? {
         guard currentEpisode == nil else { return nil }
+        guard executionProvider.runtimeSafe else { return nil }
         guard configuration.enabled, kernel.clock.tick >= nextEpisodeTick else { return nil }
         guard !kernel.runningBehaviorStates.contains(where: {
             $0.status == .running && $0.request.priority == .story
@@ -467,15 +487,19 @@ public final class StoryDirector {
         return episode.id
     }
 
-    /// 在 GameKernel tick 之后调用，观察已确认的行为终态。
-    public func tick(in kernel: GameKernel) {
+    /// 在 Runtime 的语义阶段调用，观察上一轮已经确认的行为终态。
+    func tick(in kernel: GameKernel) {
         guard let episode = currentEpisode else { return }
-        if let startedAt = currentStartedAtTick,
-           kernel.clock.tick - startedAt >= configuration.maxDurationTicks {
-            abort(episode: episode, in: kernel)
-            return
-        }
         guard !requestIDs.isEmpty else {
+            if executionProvider.waitingForPrefetch {
+                if let startedAt = currentStartedAtTick,
+                   kernel.clock.tick - startedAt >= configuration.maxDurationTicks {
+                    abort(episode: episode, in: kernel)
+                    return
+                }
+                scheduleCurrentBeat(in: kernel)
+                return
+            }
             abort(episode: episode, in: kernel)
             return
         }
@@ -488,7 +512,13 @@ public final class StoryDirector {
             abort(episode: episode, in: kernel)
             return
         }
-        if states.contains(where: { $0.status == .running }) { return }
+        if states.contains(where: { $0.status == .running }) {
+            if let startedAt = currentStartedAtTick,
+               kernel.clock.tick - startedAt >= configuration.maxDurationTicks {
+                abort(episode: episode, in: kernel)
+            }
+            return
+        }
         guard states.allSatisfy({ $0.status == .completed }) else {
             abort(episode: episode, in: kernel)
             return
@@ -518,6 +548,7 @@ public final class StoryDirector {
             currentBranchID = nil
             requestIDs.removeAll()
             currentStartedAtTick = nil
+            executionProvider.setStoryScope(nil)
             return
         }
         scheduleCurrentBeat(in: kernel)
@@ -568,19 +599,28 @@ public final class StoryDirector {
         nextEpisodeTick = snapshot.nextEpisodeTick
         currentStartedAtTick = snapshot.currentStartedAtTick
         completedEpisodeCount = snapshot.completedEpisodeCount
+        if let episode = currentEpisode, let beat = episode.beats[safe: beatIndex] {
+            executionProvider.setStoryScope(
+                "\(episode.id)/\(runCounter)/\(beat.id)/\(beatIndex)")
+        } else {
+            executionProvider.setStoryScope(nil)
+        }
     }
 
-    public func abortCurrent(in kernel: GameKernel) {
+    func abortCurrent(in kernel: GameKernel) {
         guard let episode = currentEpisode else { return }
         abort(episode: episode, in: kernel)
     }
 
     private func scheduleCurrentBeat(in kernel: GameKernel) {
         guard let episode = currentEpisode, let beat = episode.beats[safe: beatIndex] else { return }
+        executionProvider.setStoryScope(
+            "\(episode.id)/\(runCounter)/\(beat.id)/\(beatIndex)")
         currentBeatID = beat.id
         requestIDs.removeAll()
         queuedActions.removeAll()
         let run = runCounter
+        var planned: [(requestID: String, plan: StoryBehaviorPlan, action: StoryAction)] = []
         for (index, actorID) in beat.actorIDs.enumerated() {
             let entityID = EntityID(actorID)
             guard kernel.world.isAlive(entityID) else {
@@ -600,7 +640,6 @@ public final class StoryDirector {
             // to claim the already occupied slot before releasing it.
             let slot = beat.releaseSlotOnSuccess && !beat.occupySlotOnSuccess
                 ? nil : resolvedSlot
-            requestIDs.append(requestID)
             guard let plan = executionProvider.plan(
                 requestID: requestID,
                 beat: beat,
@@ -609,11 +648,15 @@ public final class StoryDirector {
                 slot: slot,
                 world: kernel.world,
                 tick: kernel.clock.tick) else {
+                if executionProvider.waitingForPrefetch {
+                    requestIDs.removeAll()
+                    queuedActions.removeAll()
+                    return
+                }
                 abort(episode: episode, in: kernel)
                 return
             }
-            kernel.enqueue(GameEvent(kind: .behaviorRequest, request: plan.request), atTick: kernel.clock.tick)
-            queuedActions.append(StoryAction(
+            var action = StoryAction(
                 behaviorID: requestID,
                 episodeID: episode.id,
                 beatID: beat.id,
@@ -622,9 +665,9 @@ public final class StoryDirector {
                 durationTicks: beat.durationTicks,
                 targetID: inferredTargetID,
                 slotID: beat.slotID,
-                branchID: currentBranchID))
+                branchID: currentBranchID)
             if index == 0, let inviteMemberIDs = beat.inviteMemberIDs, !inviteMemberIDs.isEmpty {
-                queuedActions[queuedActions.count - 1] = StoryAction(
+                action = StoryAction(
                     behaviorID: requestID,
                     episodeID: episode.id,
                     beatID: beat.id,
@@ -636,14 +679,23 @@ public final class StoryDirector {
                     slotID: beat.slotID,
                     branchID: currentBranchID)
             }
+            planned.append((requestID, plan, action))
+        }
+        for item in planned {
+            requestIDs.append(item.requestID)
+            kernel.enqueue(
+                GameEvent(kind: .behaviorRequest, request: item.plan.request),
+                atTick: kernel.clock.tick)
+            queuedActions.append(item.action)
         }
     }
 
     private func abort(episode: StoryEpisode, in kernel: GameKernel) {
         for id in requestIDs {
-            if kernel.world.behaviors[id]?.status == .running {
-                kernel.enqueue(GameEvent(kind: .cancelBehavior, behaviorID: id), atTick: kernel.clock.tick)
-            }
+            // A request may still be in the inbox, not yet visible in World.
+            // The cancellation is sequenced after that request at this tick;
+            // already-terminal or absent requests are harmless no-ops.
+            kernel.enqueue(GameEvent(kind: .cancelBehavior, behaviorID: id), atTick: kernel.clock.tick)
         }
         commitEffects([.setFact(
             "episode/\(episode.id)/interrupted", ttl: max(1, episode.cooldownTicks))], in: kernel)
@@ -659,6 +711,7 @@ public final class StoryDirector {
         // receiver beat, but it must not erase an already-observable event
         // that a delayed recorder still needs to consume.
         currentStartedAtTick = nil
+        executionProvider.setStoryScope(nil)
         nextEpisodeTick = kernel.clock.tick + configuration.intervalTicks
         cooldownUntil[episode.id] = kernel.clock.tick + max(1, episode.cooldownTicks)
     }
