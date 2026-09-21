@@ -66,12 +66,13 @@ final class GameRuntimeTests: XCTestCase {
         let actor = EntityState(id: EntityID("pet"), kind: .actor)
         let runtime = GameRuntime()
         _ = runtime.step(events: [GameEvent(kind: .registerEntity, entity: actor)])
-        let resolver = ActionRuntime()
-        let execution = resolver.executeIntent(
-            "perform:wave",
+        let resolver = ActionRuntime(assetCatalog: AssetCatalog(exactActions: ["wave"]))
+        let execution = resolver.execute(
+            .perform("wave"),
             tick: runtime.clock.tick,
             actorID: actor.id,
-            world: runtime.world)
+            world: runtime.world,
+            context: RuntimeContext())
         let request = try! XCTUnwrap(execution.request)
 
         runtime.submit(GameEvent(
@@ -117,5 +118,22 @@ final class GameRuntimeTests: XCTestCase {
 
         XCTAssertEqual(runtime.world.stableDigest(), virtual.runtime.world.stableDigest())
         XCTAssertEqual(pipeline.trace, virtual.pipeline?.trace)
+    }
+
+    func testSemanticSceneRunnerLoopsFromDeclaredStepInsteadOfCompleting() {
+        let recipe = SimulationSceneRecipe(
+            id: "looping", label: "Looping", goals: [.teaseUser], needsUser: true,
+            steps: [
+                SimulationSceneStep(.performCandidates(["tease", "happy"])),
+                SimulationSceneStep(.wait(1), decisionPoint: true),
+            ],
+            loopFrom: 1)
+        let runner = SceneRunner(recipes: [recipe])
+        XCTAssertTrue(runner.start(SimulationGoalDecision(goal: .teaseUser)))
+        XCTAssertFalse(runner.completeStep())
+        XCTAssertEqual(runner.stepIndex, 1)
+        XCTAssertFalse(runner.completeStep())
+        XCTAssertEqual(runner.status, .running)
+        XCTAssertEqual(runner.stepIndex, 1)
     }
 }

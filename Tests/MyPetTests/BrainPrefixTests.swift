@@ -7,8 +7,8 @@ import struct MyPetCore.LocalizedLabel
 ///（brain-local.md §4；全部离线纯函数）。
 final class BrainPrefixTests: XCTestCase {
 
-    private func makeWorld() -> WorldState {
-        WorldState(
+    private func makeWorld() -> BrainContextSnapshot {
+        BrainContextSnapshot(
             capturedAt: 1_860,   // 31 分钟
             activeApp: "Codex",
             windowTitle: "main.swift",

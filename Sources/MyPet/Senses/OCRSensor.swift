@@ -15,7 +15,7 @@ import Vision
 // - 屏幕录制权限：preflight 查询 + request 弹授权（「新鲜生效」：勾选后
 //   新进程立即生效，无需重启宿主）；
 // - **本地原始记录**：OCR observation/input trace 保留识别到的原文；
-//   WorldState.visibleContext 的 ≤6 行×60 字符只是模型输入预算，不是脱敏规则。
+//   BrainContextSnapshot.visibleContext 的 ≤6 行×60 字符只是模型输入预算，不是脱敏规则。
 
 struct OCRProfile: Equatable {
     /// Vision 识别档位。中文一律 accurate（实测 fast 全乱码）。

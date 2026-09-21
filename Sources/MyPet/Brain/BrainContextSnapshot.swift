@@ -2,7 +2,7 @@ import CoreGraphics
 import Foundation
 import MyPetCore
 
-// WorldState v1 —— 大脑的唯一世界边界（下一阶段核心接口）。
+// BrainContextSnapshot v1 —— 大脑的唯一世界边界（下一阶段核心接口）。
 //
 // 原则：AX / OCR / 未来 VLM / 系统事件先投影为有界结构化快照供大脑消费；
 // 原始 observation/input 记录在本机单独保留，供训练和回放，不做脱敏。传感器换实现
@@ -11,7 +11,7 @@ import MyPetCore
 // 预算：整个结构序列化后 ~600 字符级别，teacher / needle 快照都能背得动。
 
 /// 外部世界快照（纯外部视角；宠物内部状态在 BrainState）。
-struct WorldState: Codable, Equatable {
+struct BrainContextSnapshot: Codable, Equatable {
     var capturedAt: Double
     var activeApp: String
     var windowTitle: String
@@ -32,7 +32,7 @@ struct WorldState: Codable, Equatable {
 }
 
 /// 纯函数装配（离线可测）。
-enum WorldStateBuilder {
+enum BrainContextSnapshotBuilder {
 
     static let contextLineLimit = 6
     static let contextCharLimit = 60
@@ -48,8 +48,8 @@ enum WorldStateBuilder {
         senses: SensorObservation?,
         inputObservations: [InputObservation] = [],
         recentEvents: [String]
-    ) -> WorldState {
-        var ws = WorldState(
+    ) -> BrainContextSnapshot {
+        var ws = BrainContextSnapshot(
             capturedAt: clock,
             activeApp: foreground?.owner ?? "",
             // CGWindowList 的 window name 是窗口标题快速线索；它不依赖

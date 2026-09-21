@@ -143,7 +143,7 @@ actor LocalBrain: GoalBrain {
 
     /// 本地决策脑生成短聊天 JSON；模型未就绪、生成失败或格式非法时，调用方走 Quips。
     @discardableResult
-    nonisolated func requestSpeech(intent: SpeechIntent, world: WorldState, brain: BrainState,
+    nonisolated func requestSpeech(intent: SpeechIntent, world: BrainContextSnapshot, brain: BrainState,
                                    personality: Personality, characterID: String,
                                    dialogue: DialogueProfile?, traceID: String?,
                                    completion: @escaping (SpeechReply?) -> Void) -> Bool {
@@ -156,7 +156,7 @@ actor LocalBrain: GoalBrain {
     /// 带用户原文的短聊天通道。它仍然只生成一条气泡文本，不获得动作、
     /// 目标或坐标权限；用户输入只在本次请求内存在，不写入日志。
     @discardableResult
-    nonisolated func requestSpeech(intent: SpeechIntent, world: WorldState, brain: BrainState,
+    nonisolated func requestSpeech(intent: SpeechIntent, world: BrainContextSnapshot, brain: BrainState,
                                    personality: Personality, characterID: String,
                                    dialogue: DialogueProfile?, traceID: String?, userText: String?,
                                    completion: @escaping (SpeechReply?) -> Void) -> Bool {
@@ -189,7 +189,7 @@ actor LocalBrain: GoalBrain {
                                   latency: Date().timeIntervalSince(t0),
                                   error: "本地决策脑正在处理另一项请求")
         }
-        let world = WorldState(
+        let world = BrainContextSnapshot(
             capturedAt: Date().timeIntervalSince1970,
             activeApp: "MyPet",
             windowTitle: "",
@@ -219,7 +219,7 @@ actor LocalBrain: GoalBrain {
 
     private struct SpeechInput {
         var intent: SpeechIntent
-        var world: WorldState
+        var world: BrainContextSnapshot
         var brain: BrainState
         var personality: Personality
         var characterID: String

@@ -2,6 +2,41 @@ import XCTest
 @testable import MyPetCore
 
 final class CastModelTests: XCTestCase {
+    func testCastRuntimeStartsFirstStoryBeatInsideTheSameTick() throws {
+        let actorID = "actor"
+        let requestID = "story/episode/run-1/beat-greet/\(actorID)"
+        let pack = CastPack(
+            id: "same-tick", groupID: "test", displayName: "Same tick", summary: "",
+            members: [
+                CastMember(
+                    id: actorID, kind: .character, displayName: "Actor",
+                    visualPackID: "actor", role: "lead")
+            ],
+            episodes: [
+                StoryEpisode(
+                    id: "episode", title: "Episode", participants: [actorID],
+                    beats: [
+                        StoryBeat(
+                            id: "greet", actorIDs: [actorID], intent: "wave",
+                            durationTicks: 1)
+                    ])
+            ])
+        let runtime = CastRuntime(
+            packs: [pack],
+            selection: CastSelection(
+                allGroupsEnabled: false, enabledGroupIDs: ["test"],
+                allMembersEnabled: true, maxActiveMembers: 1,
+                automaticArrivalsEnabled: true),
+            arrivalDelayTicks: 0,
+            storyConfiguration: StoryDirectorConfiguration(repeatEpisodes: false))
+
+        let report = runtime.tick()
+
+        XCTAssertEqual(report.tick, 0)
+        XCTAssertEqual(runtime.kernel.world.behaviors[requestID]?.status, .completed)
+        XCTAssertEqual(runtime.consumeStoryActions().map(\.beatID), ["greet"])
+    }
+
     func testLocalizedCastPackSchemaDecodesWithChineseDefaultsAndEnglishDetails() throws {
         let json = #"""
         {

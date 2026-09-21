@@ -3,7 +3,7 @@ import MyPetCore
 
 @testable import MyPet
 
-/// 大脑层纯函数测试：WorldState 装配、BrainState 动力学、GoalDecision 解析校验、
+/// 大脑层纯函数测试：BrainContextSnapshot 装配、BrainState 动力学、GoalDecision 解析校验、
 /// GoalBrain 传输链路（URLProtocol mock，离线）。
 final class BrainTests: XCTestCase {
 
@@ -42,10 +42,10 @@ final class BrainTests: XCTestCase {
         return o
     }
 
-    // MARK: WorldState
+    // MARK: BrainContextSnapshot
 
     func testWorldStateBuildTrimsAndDerivesActivity() {
-        let ws = WorldStateBuilder.build(
+        let ws = BrainContextSnapshotBuilder.build(
             clock: 100, foreground: window(7), idleSeconds: 5,
             windows: (0..<9).map { window(UInt32(10 + $0), x: CGFloat($0) * 100) },
             senses: senses(),
@@ -61,7 +61,7 @@ final class BrainTests: XCTestCase {
 
     func testAppActivitySemanticAndNearbyLabels() {
         // app 级语义（零权限归类）与 nearby 标签里的 activity。
-        let ws = WorldStateBuilder.build(
+        let ws = BrainContextSnapshotBuilder.build(
             clock: 0, foreground: window(7, owner: "Code", activity: .coding), idleSeconds: 3,
             windows: [window(7, owner: "Code", activity: .coding),
                       window(8, owner: "微信", activity: .chatting)],
@@ -90,7 +90,7 @@ final class BrainTests: XCTestCase {
     }
 
     func testIdleOveridesAppActivity() {
-        let ws = WorldStateBuilder.build(
+        let ws = BrainContextSnapshotBuilder.build(
             clock: 0, foreground: window(7, owner: "Code", activity: .coding), idleSeconds: 300,
             windows: [], senses: nil, recentEvents: [])
         XCTAssertEqual(ws.userActivity, "idle")
@@ -98,30 +98,30 @@ final class BrainTests: XCTestCase {
     }
 
     func testActivityDerivation() {
-        XCTAssertEqual(WorldStateBuilder.deriveActivity(idleSeconds: 300, focusRole: "textarea"), "idle")
-        XCTAssertEqual(WorldStateBuilder.deriveActivity(idleSeconds: 3, focusRole: ""), "unknown")
-        XCTAssertEqual(WorldStateBuilder.deriveActivity(idleSeconds: 3, focusRole: "button"), "browsing")
+        XCTAssertEqual(BrainContextSnapshotBuilder.deriveActivity(idleSeconds: 300, focusRole: "textarea"), "idle")
+        XCTAssertEqual(BrainContextSnapshotBuilder.deriveActivity(idleSeconds: 3, focusRole: ""), "unknown")
+        XCTAssertEqual(BrainContextSnapshotBuilder.deriveActivity(idleSeconds: 3, focusRole: "button"), "browsing")
     }
 
     func testContextLinesPutSelectedTextFirst() {
         var s = senses()
         s.selectedText = "高亮段落"
-        let lines = WorldStateBuilder.contextLines(from: s)
+        let lines = BrainContextSnapshotBuilder.contextLines(from: s)
         XCTAssertEqual(lines.first, "选中: 高亮段落")
-        XCTAssertLessThanOrEqual(lines.count, WorldStateBuilder.contextLineLimit)
+        XCTAssertLessThanOrEqual(lines.count, BrainContextSnapshotBuilder.contextLineLimit)
     }
 
     func testContextLinesIncludeOCRLinesWithinBudget() {
         var s = senses()
         s.ocrLines = (0..<10).map { "聊天行 \($0)" }
-        let lines = WorldStateBuilder.contextLines(from: s)
-        XCTAssertEqual(lines.count, WorldStateBuilder.contextLineLimit)  // AX 值 + OCR 共用 6 行预算
+        let lines = BrainContextSnapshotBuilder.contextLines(from: s)
+        XCTAssertEqual(lines.count, BrainContextSnapshotBuilder.contextLineLimit)  // AX 值 + OCR 共用 6 行预算
         XCTAssertTrue(lines.contains("用户在写方案"))
         XCTAssertTrue(lines.contains("聊天行 0"))
     }
 
     func testNoSensesGivesUnknownActivityAndEmptyContext() {
-        let ws = WorldStateBuilder.build(clock: 0, foreground: window(1), idleSeconds: 0,
+        let ws = BrainContextSnapshotBuilder.build(clock: 0, foreground: window(1), idleSeconds: 0,
                                          windows: [], senses: nil, recentEvents: [])
         XCTAssertEqual(ws.userActivity, "unknown")
         XCTAssertTrue(ws.visibleContext.isEmpty)
@@ -133,18 +133,18 @@ final class BrainTests: XCTestCase {
             id: "chat-1", pluginID: "chat-content", channel: .chat,
             appName: "WeChat", windowTitle: "Alice", text: "请过来看看这个窗口",
             capturedAtTick: 4, expiresAtTick: 10)
-        let ws = WorldStateBuilder.build(
+        let ws = BrainContextSnapshotBuilder.build(
             clock: 4, foreground: window(1, owner: "WeChat", activity: .chatting),
             idleSeconds: 0, windows: [], senses: nil,
             inputObservations: [observation], recentEvents: [])
         XCTAssertTrue(ws.visibleContext.contains("[chat] 请过来看看这个窗口"))
-        XCTAssertLessThanOrEqual(ws.visibleContext.count, WorldStateBuilder.contextLineLimit)
+        XCTAssertLessThanOrEqual(ws.visibleContext.count, BrainContextSnapshotBuilder.contextLineLimit)
     }
 
     func testWindowServerTitleFeedsWorldStateWithoutContentPermission() {
         var foreground = window(2, owner: "Code")
         foreground.windowTitle = "main.swift"
-        let ws = WorldStateBuilder.build(clock: 0, foreground: foreground, idleSeconds: 0,
+        let ws = BrainContextSnapshotBuilder.build(clock: 0, foreground: foreground, idleSeconds: 0,
                                          windows: [], senses: nil, recentEvents: [])
         XCTAssertEqual(ws.windowTitle, "main.swift")
         XCTAssertTrue(ws.visibleContext.isEmpty)
@@ -156,7 +156,7 @@ final class BrainTests: XCTestCase {
         let emptyTitle = SensorObservation(
             requestID: 2, timestamp: 1, app: "Safari", pid: 100,
             windowTitle: "", focused: nil, selectedText: "")
-        let ws = WorldStateBuilder.build(
+        let ws = BrainContextSnapshotBuilder.build(
             clock: 1, foreground: foreground, idleSeconds: 0,
             windows: [], senses: emptyTitle, recentEvents: [])
         XCTAssertEqual(ws.windowTitle, "Qwen docs")
@@ -242,7 +242,7 @@ final class BrainTests: XCTestCase {
     }
 
     func testGoalValidate() {
-        let ws = WorldStateBuilder.build(clock: 0, foreground: window(7), idleSeconds: 0,
+        let ws = BrainContextSnapshotBuilder.build(clock: 0, foreground: window(7), idleSeconds: 0,
                                          windows: [window(7)], senses: nil, recentEvents: [])
         XCTAssertTrue(GoalDecision.validate(
             GoalDecision(goal: .joinUserActivity, target: "user", activity: "coding",
@@ -268,7 +268,7 @@ final class BrainTests: XCTestCase {
     // MARK: GoalBrain 传输链路（URLProtocol mock，离线）
 
     func testTeacherBrainRequestBuildsValidJSON() {
-        let ws = WorldStateBuilder.build(clock: 0, foreground: window(7), idleSeconds: 0,
+        let ws = BrainContextSnapshotBuilder.build(clock: 0, foreground: window(7), idleSeconds: 0,
                                          windows: [], senses: senses(), recentEvents: [])
         let req = TeacherBrain.buildPlanRequest(
             model: "qwen-test", world: ws, brain: BrainState(),
@@ -305,7 +305,7 @@ final class BrainTests: XCTestCase {
     }
 
     func testSpeechRequestBuildsValidJSON() {
-        let ws = WorldStateBuilder.build(clock: 0, foreground: window(7), idleSeconds: 0,
+        let ws = BrainContextSnapshotBuilder.build(clock: 0, foreground: window(7), idleSeconds: 0,
                                          windows: [], senses: nil, recentEvents: [])
         let req = TeacherBrain.buildSpeechRequest(model: "m", intent: .tease, world: ws,
                                                brain: BrainState(), personality: .default)
@@ -354,7 +354,7 @@ final class BrainTests: XCTestCase {
     }
 
     func testTeacherBrainPlanEndToEndRejectsUnsupportedTarget() {
-        let ws = WorldStateBuilder.build(clock: 0, foreground: window(7), idleSeconds: 0,
+        let ws = BrainContextSnapshotBuilder.build(clock: 0, foreground: window(7), idleSeconds: 0,
                                          windows: [window(7)], senses: nil, recentEvents: [])
         let config = TeacherBrain.Config(baseURL: "https://api.test/v1", model: "m", apiKey: "")
         let session = Self.mockSession()
@@ -396,7 +396,7 @@ final class BrainTests: XCTestCase {
     }
 
     func testTeacherBrainPlanSkipsWhileRequestIsInFlight() {
-        let ws = WorldStateBuilder.build(clock: 0, foreground: window(7), idleSeconds: 0,
+        let ws = BrainContextSnapshotBuilder.build(clock: 0, foreground: window(7), idleSeconds: 0,
                                          windows: [], senses: nil, recentEvents: [])
         let config = TeacherBrain.Config(baseURL: "https://api.test/v1", model: "m", apiKey: "")
         let brain = TeacherBrain()
@@ -438,7 +438,7 @@ final class BrainTests: XCTestCase {
         brain.session = session
         let input = GoalBrainInput(
             petID: "lin_daiyu",
-            world: WorldStateBuilder.build(clock: 0, foreground: window(7), idleSeconds: 0,
+            world: BrainContextSnapshotBuilder.build(clock: 0, foreground: window(7), idleSeconds: 0,
                                            windows: [], senses: nil, recentEvents: []),
             brain: BrainState(), personality: .default, memory: [], traceID: "cancelled")
 

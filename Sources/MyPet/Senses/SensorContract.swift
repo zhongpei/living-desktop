@@ -6,7 +6,7 @@ import Foundation
 // - 进程边界是实验结果而非架构前提（E0.5 矩阵 + 延迟数据决定 in-process / subprocess），
 //   因此契约只定义数据形状，不绑定传输方式；将来换成子进程只换 transport 层。
 // - pull / request-response 为主（sense→result），push 事件只做「感知失效通知」
-//   （markDirty → 重新 sense → WorldState 变化 → 由大脑决定行为），事件不直接触发宠物动作。
+//   （markDirty → 重新 sense → BrainContextSnapshot 变化 → 由大脑决定行为），事件不直接触发宠物动作。
 // - 元素 id 是 sensor 内部 opaque handle（"ax:<pid>:<path>"），宿主与大脑不解释其结构，
 //   为将来 provider 兼具 act 能力（AXPress）预留 target 生命周期。
 
@@ -37,7 +37,7 @@ struct SensorObservation: Codable, Equatable {
     var selectedText: String = ""
     /// 窗口内少量 salient 交互元素（按钮/链接，阅读序 ≤12）。
     var salient: [AXElementDTO] = []
-    /// OCR 文本行（第二传感器；≤6 行×60 字符，与 AX 上下文共用 WorldState 预算）。
+    /// OCR 文本行（第二传感器；≤6 行×60 字符，与 AX 上下文共用 BrainContextSnapshot 预算）。
     var ocrLines: [String] = []
     /// 命中预算被截断时置位（诚实标注不完整）。
     var truncated: Bool = false

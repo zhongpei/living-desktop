@@ -1,6 +1,7 @@
 import CNeedle
 import CoreGraphics
 import Foundation
+import MyPetCore
 
 /// Needle 3 行动脑：Goal + 世界快照 → 一次 tool call。
 ///
@@ -20,18 +21,7 @@ final class NeedleBrain {
 
     // MARK: 语义动作（世界无关，控制器负责翻译成 ActionRuntime verb）
 
-    enum SemanticAction: Equatable {
-        case chooseScene(String)
-        case moveToAnchor(String)
-        case spawnProp(String)
-        case pickUp
-        case putDown
-        case perform(String)
-        case say(SpeechIntent)
-        case leaveScene
-        case sleep
-        case wait
-    }
+    typealias SemanticAction = SimulationNeedleAction
 
     /// 决策输入的世界事实（由控制器从真实世界提炼）。
     struct WorldFacts {
@@ -207,13 +197,13 @@ final class NeedleBrain {
             let args = call["arguments"] as? [String: String] ?? [:]
             switch name {
             case "choose_scene": return args["scene"].map { .chooseScene($0) }
-            case "move_to": return args["target"].map { .moveToAnchor($0) }
+            case "move_to": return args["target"].map { .moveTo($0) }
             case "spawn_prop": return args["prop"].map { .spawnProp($0) }
             case "pick_up": return .pickUp
             case "put_down": return .putDown
             case "perform": return args["action"].map { .perform($0) }
             case "say":
-                return args["intent"].flatMap(SpeechIntent.init(rawValue:)).map { .say($0) }
+                return args["intent"].flatMap(SpeechIntent.init(rawValue:)).map { .say($0.rawValue) }
             case "leave_scene": return .leaveScene
             case "sleep": return .sleep
             case "wait": return .wait
@@ -227,7 +217,7 @@ final class NeedleBrain {
         switch action {
         case .chooseScene(let scene):
             return facts.scenes.contains(scene)
-        case .moveToAnchor(let id):
+        case .moveTo(let id):
             return facts.anchors.contains { $0.id == id }
         case .spawnProp(let prop):
             return facts.heldProp == nil && facts.props.contains(prop)
@@ -238,26 +228,35 @@ final class NeedleBrain {
         case .perform(let name):
             return facts.performances.contains(name)
         case .say(let intent):
-            return facts.speechIntents.contains(intent.rawValue)
+            return facts.speechIntents.contains(intent)
+        case .performCandidates(let candidates):
+            return !candidates.isEmpty && candidates.allSatisfy(facts.performances.contains)
+        case .clearProps:
+            return true
         case .leaveScene:
             return facts.mode == .inScene
         case .sleep, .wait:
             return true
+        case .body:
+            return false
         }
     }
 
     static func describe(_ action: SemanticAction) -> String {
         switch action {
         case .chooseScene(let s): return "choose_scene(\(s))"
-        case .moveToAnchor(let id): return "move_to(\(id))"
+        case .moveTo(let id): return "move_to(\(id))"
         case .spawnProp(let p): return "spawn_prop(\(p))"
         case .putDown: return "put_down()"
         case .pickUp: return "pick_up()"
         case .perform(let name): return "perform(\(name))"
-        case .say(let i): return "say(\(i.rawValue))"
+        case .say(let i): return "say(\(i))"
+        case .performCandidates(let values): return "perform_candidates(\(values.joined(separator: ",")))"
+        case .clearProps: return "clear_props()"
         case .leaveScene: return "leave_scene()"
         case .sleep: return "sleep()"
         case .wait: return "wait()"
+        case .body(let value): return "body(\(String(describing: value)))"
         }
     }
 

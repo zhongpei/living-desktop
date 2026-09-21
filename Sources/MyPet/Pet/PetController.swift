@@ -45,7 +45,7 @@ final class SystemWorld: WorldReading {
 /// - **目标层**（45~90s / 到期 / 世界大变化）：决策脑出 Goal；没配 LLM
 ///   时 GoalPolicy 内置策略兜底 —— 零 LLM 也完整可玩；
 /// - **场景层**（行动边界）：行动脑 Needle 在合法场景集里 choose_scene，
-///   SceneRunner 按配方步进执行（找锚点→走→跳→道具→表演→决策点）；
+///   SceneBodyDriver 按配方步进执行（找锚点→走→跳→道具→表演→决策点）；
 ///   Needle 缺模型时 Autopilot 按人格加权随机选场景；
 /// - **反射层**（<50ms，不进大脑）：摸头开心跳、连戳三下应激躲开；
 ///   事件进 recentEvents 供决策脑下一轮社会理解。
@@ -53,6 +53,7 @@ final class PetController {
     private enum PendingRuntimeAction {
         case semantic(NeedleBrain.SemanticAction)
         case random(PetIntent)
+        case scene(SimulationNeedleAction, (Bool) -> Void)
     }
 
     let world: WindowWorld
@@ -76,14 +77,14 @@ final class PetController {
     let localBrain: LocalBrain
     /// 统一快照/并行调度器；本地脑负责运行时，教师脑负责训练标签。
     private(set) var goalBrainCoordinator: GoalBrainCoordinator!
-    /// 内部状态（energy/boredom/stress…），与 WorldState 相对。
+    /// 内部状态（energy/boredom/stress…），与 BrainContextSnapshot 相对。
     private(set) var brainState = BrainState()
     /// 大脑的唯一世界边界快照来源。
-    private(set) var lastWorldState: WorldState?
+    private(set) var lastWorldState: BrainContextSnapshot?
     /// 当前目标（决策脑/内置策略下达）。
     private(set) var currentGoal: Goal?
     /// 运行中的场景。
-    private(set) var sceneRunner: SceneRunner?
+    private(set) var sceneRunner: SceneBodyDriver?
     /// 当前场景的空间根和角色根。道具通过它们挂接，不再自建一套坐标树。
     let sceneGraph: SceneGraph
     let actorNode: SceneNode
@@ -95,7 +96,7 @@ final class PetController {
     /// AppKit/LLM 只投递事件，状态由 tick 内核消费。
     let gameplayRuntime: GameRuntime
     var gameplayKernel: GameKernel { gameplayRuntime.kernel }
-    private let semanticActionRuntime: MyPetCore.ActionRuntime
+    private let semanticPipeline: SemanticPipeline
     /// 角色组使用 CastRuntime 的共享 kernel，由 CastRuntime 统一推进时钟。
     private let usesSharedGameplayKernel: Bool
     /// 行动脑只提交语义请求。只有 Kernel 接受且计划世代仍有效时，
@@ -116,7 +117,7 @@ final class PetController {
     private let puller = WindowPuller()
     /// 气泡（角色说话）。
     private let bubble = SpeechBubble()
-    /// 世界事件环（进 WorldState.recentEvents）。
+    /// 世界事件环（进 BrainContextSnapshot.recentEvents）。
     private var recentEvents: [(t: Double, text: String)] = []
     private var lastWorldFingerprint = ""
 
@@ -181,8 +182,10 @@ final class PetController {
         self.perceptionEventCursor = self.perception.latestInputSequence
         let runtime = injectedRuntime ?? GameRuntime()
         self.gameplayRuntime = runtime
-        self.semanticActionRuntime = MyPetCore.ActionRuntime(
-            assetCatalog: AssetCatalog(exactActions: Set(library.actionNames)))
+        self.semanticPipeline = SemanticPipeline(configuration: SemanticPipelineConfiguration(
+            actorID: actorID ?? EntityID(library.characterID),
+            enabled: false,
+            assetCatalog: AssetCatalog(exactActions: Set(library.actionNames))))
         self.usesSharedGameplayKernel = injectedRuntime != nil
         self.characterDefinition = characterDefinition
         self.declaredCapabilities = capabilities.map(Set.init)
@@ -767,7 +770,13 @@ final class PetController {
             NeedleBrain.logFallback(facts: facts, chosen: "wait()",
                                     mode: "random", reason: reason)
         }
-        submitRuntimeAction(.random(decision), intent: runtimeIntent(for: decision))
+        let execution = semanticPipeline.actionRuntime.execute(
+            semanticBodyAction(for: decision),
+            tick: gameplayRuntime.clock.tick,
+            actorID: runtimeActorID,
+            world: gameplayRuntime.world,
+            context: runtimeContext())
+        submitRuntimeAction(.random(decision), execution: execution)
     }
 
     // ---- 目标层 ----
@@ -957,7 +966,14 @@ final class PetController {
     }
 
     private func beginScene(_ recipe: SceneRecipe) {
-        let runner = SceneRunner(recipe: recipe)
+        let runner = SceneBodyDriver(
+            recipe: recipe,
+            goal: currentGoal?.semanticDecision(atTick: gameplayRuntime.clock.tick),
+            semanticRunner: semanticPipeline.sceneRunner,
+            authorize: { [weak self] action, completion in
+                guard let self else { completion(false); return }
+                self.authorizeSceneAction(action, completion: completion)
+            })
         // "@activity" 锚点绑定：优先前台窗口，其次最近的活动匹配窗口。
         let activity = currentGoal?.activity ?? world.foreground?.appActivity
         let activityWindow: WindowEntity? = {
@@ -1018,7 +1034,7 @@ final class PetController {
 
     /// game.md §16：goal/场景的轨迹 + 结局是训练数据的关键 label，
     /// 与规划决策同文件（brain_trace.jsonl，kind=outcome，完整保留本地业务上下文）。
-    private func logSceneOutcome(runner: SceneRunner, stayed: Double, completed: Bool, reason: String) {
+    private func logSceneOutcome(runner: SceneBodyDriver, stayed: Double, completed: Bool, reason: String) {
         logGoalOutcome(goal: currentGoal, scene: runner.recipe.id, stayed: stayed,
                        completed: completed, reason: reason)
     }
@@ -1051,29 +1067,51 @@ final class PetController {
 
     /// 语义动作先进入共享 Kernel；表现层不再直接接受模型结果。
     private func apply(_ semantic: NeedleBrain.SemanticAction) {
-        submitRuntimeAction(
-            .semantic(semantic),
-            intent: runtimeIntent(for: semantic),
-            priority: semantic == .sleep ? .ambient : .brainReactive,
-            durationTicks: semantic == .sleep ? 2 : 1)
+        let execution = semanticPipeline.actionRuntime.execute(
+            semantic,
+            tick: gameplayRuntime.clock.tick,
+            actorID: runtimeActorID,
+            world: gameplayRuntime.world,
+            context: runtimeContext())
+        submitRuntimeAction(.semantic(semantic), execution: execution)
+    }
+
+    private func runtimeContext() -> RuntimeContext {
+        RuntimeContext(focus: world.foreground.map {
+            RuntimeContext.Focus(
+                id: EntityID(String($0.id)), app: $0.owner,
+                title: $0.windowTitle, activity: $0.appActivity.rawValue)
+        })
     }
 
     private func submitRuntimeAction(
         _ action: PendingRuntimeAction,
-        intent: String,
-        priority: PriorityBand = .brainReactive,
-        durationTicks: Int64 = 1
+        execution: ActionExecution
     ) {
-        let execution = semanticActionRuntime.executeIntent(
-            intent,
-            tick: gameplayRuntime.clock.tick,
-            actorID: runtimeActorID,
-            world: gameplayRuntime.world,
-            priority: priority,
-            durationTicks: durationTicks)
         guard execution.accepted, let request = execution.request else { return }
         let id = request.id
         pendingRuntimeActions[id] = action
+        gameplayRuntime.submit(GameEvent(kind: .behaviorRequest, request: request))
+    }
+
+    private func authorizeSceneAction(
+        _ action: SimulationNeedleAction,
+        completion: @escaping (Bool) -> Void
+    ) {
+        let execution = semanticPipeline.actionRuntime.execute(
+            action,
+            tick: gameplayRuntime.clock.tick,
+            actorID: runtimeActorID,
+            world: gameplayRuntime.world,
+            context: runtimeContext())
+        guard execution.accepted else { completion(false); return }
+        guard let request = execution.request else {
+            // Missing optional content is a valid degradation, not a logic
+            // failure; the body driver will skip the unavailable clip.
+            completion(true)
+            return
+        }
+        pendingRuntimeActions[request.id] = .scene(action, completion)
         gameplayRuntime.submit(GameEvent(kind: .behaviorRequest, request: request))
     }
 
@@ -1091,34 +1129,20 @@ final class PetController {
                 executeCommitted(action)
             case .cancelled, .rejected:
                 pendingRuntimeActions[id] = nil
+                if case .scene(_, let completion) = action { completion(false) }
             }
         }
     }
 
-    private func runtimeIntent(for semantic: NeedleBrain.SemanticAction) -> String {
-        switch semantic {
-        case .chooseScene(let id): return "choose_scene:\(id)"
-        case .moveToAnchor(let anchor): return "move_to:\(anchor)"
-        case .spawnProp(let id): return "spawn_prop:\(id)"
-        case .putDown: return "put_down"
-        case .pickUp: return "pick_up"
-        case .perform(let name): return "perform:\(name)"
-        case .say(let intent): return "say:\(String(describing: intent))"
-        case .leaveScene: return "leave_scene"
-        case .sleep: return "sleep"
-        case .wait: return "wait"
-        }
-    }
-
-    private func runtimeIntent(for intent: PetIntent) -> String {
+    private func semanticBodyAction(for intent: PetIntent) -> SimulationNeedleAction {
         switch intent {
-        case .stroll(let target): return "move_to_point:\(Int(target))"
-        case .walkAlong: return "walk_along"
-        case .gesture(let clip): return "perform:\(clip)"
-        case .leap(let window): return "perch:\(window.id)"
-        case .hop: return "hop"
-        case .dropOff: return "drop_off"
-        case .nothing: return "wait"
+        case .stroll(let target): return .body(.moveToPoint(Double(target)))
+        case .walkAlong: return .body(.walkAlong)
+        case .gesture(let clip): return .perform(clip)
+        case .leap(let window): return .body(.perch(String(window.id)))
+        case .hop: return .body(.hop)
+        case .dropOff: return .body(.dropOff)
+        case .nothing: return .wait
         }
     }
 
@@ -1126,6 +1150,7 @@ final class PetController {
         switch action {
         case .semantic(let semantic): executeCommitted(semantic)
         case .random(let intent): executeCommitted(intent)
+        case .scene(_, let completion): completion(true)
         }
     }
 
@@ -1147,7 +1172,7 @@ final class PetController {
         case .chooseScene(let id):
             guard let recipe = SceneCatalog.recipe(id: id) else { return }
             beginScene(recipe)
-        case .moveToAnchor(let text):
+        case .moveTo(let text):
             // 与场景移动同一套机制（走到/跳上），只是没有 onDone。
             if let resolved = resolveAnchor(text) {
                 sceneMove(toX: resolved.x, top: resolved.top, window: resolved.window) {}
@@ -1167,13 +1192,23 @@ final class PetController {
                 model.stopWalk()
                 actions.inject(.perform(key))
             }
+        case .performCandidates(let names):
+            if let key = names.lazy.compactMap({ self.library.action(named: $0) }).first {
+                model.wake()
+                model.stopWalk()
+                actions.inject(.perform(key))
+            }
+        case .clearProps:
+            props.clear()
         case .say(let intent):
-            speak(intent: intent)
+            if let intent = SpeechIntent(rawValue: intent) { speak(intent: intent) }
         case .leaveScene:
             cancelGoalAndScene(reason: "action brain left scene")
         case .sleep:
             actions.inject(.sleep)
         case .wait:
+            break
+        case .body:
             break
         }
     }
@@ -1282,7 +1317,7 @@ final class PetController {
     private var sceneMoveDeadline: Double = 0
     private var scenePerformDone: (() -> Void)?
     /// 完成令牌：sceneMove/scenePerform 每次调用 +1，过期回调（场景已步进、
-    /// 看门狗已先行）自动作废 —— 与 SceneRunner 的 stepGeneration 双向幂等。
+    /// 看门狗已先行）自动作废 —— 与 SceneBodyDriver 的 stepGeneration 双向幂等。
     private var sceneMoveToken = 0
     private var scenePerformToken = 0
 
@@ -1416,8 +1451,11 @@ final class PetController {
         }
         if roll < 0.8 {
             let gestures = scene.steps.compactMap { step -> [String]? in
-                if case .perform(let names) = step.op { return names }
-                return nil
+                switch step.operation {
+                case .perform(let name): return [name]
+                case .performCandidates(let names): return names
+                default: return nil
+                }
             }.flatMap { $0 }
             if !gestures.isEmpty { return .perform(gestures) }
         }
@@ -1429,8 +1467,10 @@ final class PetController {
         switch semantic {
         case .wait: return .continueScene
         case .leaveScene: return .leaveScene
-        case .say(let intent): return .say(intent)
+        case .say(let intent):
+            return SpeechIntent(rawValue: intent).map(SceneDecision.say) ?? .continueScene
         case .perform(let name): return .perform([name])
+        case .performCandidates(let names): return .perform(names)
         default: return .continueScene
         }
     }
@@ -1578,7 +1618,7 @@ final class PetController {
         }
         if !input.events.isEmpty {
             // 内容只推动快速反应，不直接执行动作；本地脑在下一次 tick
-            // 看到更新后的 WorldState 后决定是否升级当前反应。
+            // 看到更新后的 BrainContextSnapshot 后决定是否升级当前反应。
             goalBrainCoordinator.expedite()
             needle.expedite()
         }
@@ -1591,7 +1631,7 @@ final class PetController {
     }
 
     /// AX 感知：随 0.3s 世界轮询跑；OCR 感知：profile 命中的前台窗口按 TTL 拉取。
-    /// 事件只当「感知失效通知」，重感之后 WorldState 才变化，反应与否由大脑决定。
+    /// 事件只当「感知失效通知」，重感之后 BrainContextSnapshot 才变化，反应与否由大脑决定。
     private func refreshSenses() {
         guard isPerceptionOwner else { return }
         guard let fg = world.foreground else { return }
@@ -1620,7 +1660,7 @@ final class PetController {
                     self.perception.sensesPending = false
                     guard !self.isStopped, self.isPerceptionOwner else { return }
                     if var merged = observation {
-                        // OCR 行合并进同一次观察（两个传感器共用 WorldState 预算）。
+                        // OCR 行合并进同一次观察（两个传感器共用 BrainContextSnapshot 预算）。
                         merged.ocrLines = self.perception.ocrLines
                         self.publishInputPlugins(merged, foreground: fg)
                         if self.settings.anyInputPluginEnabled {
@@ -1653,7 +1693,7 @@ final class PetController {
                     o.ocrLines = self.perception.ocrLines
                     self.publishInputPlugins(o, foreground: fg)
                     if !self.settings.accessibilityInputEnabled {
-                        // OCR-only 模式：合成最小观察，让 OCR 行进 WorldState/快照
+                        // OCR-only 模式：合成最小观察，让 OCR 行进 BrainContextSnapshot/快照
                         //（不申请辅助功能、不跑 AX）。
                         self.perception.senses.update(o)
                     } else {
@@ -1746,7 +1786,7 @@ final class PetController {
         perception.appendInputEvent(event)
     }
 
-    // ---- WorldState（大脑唯一世界边界） ----
+    // ---- BrainContextSnapshot（大脑唯一世界边界） ----
 
     private func refreshWorldState() {
         let ws = makeWorldState()
@@ -1755,7 +1795,7 @@ final class PetController {
         lastWorldState = ws
     }
 
-    private func makeWorldState() -> WorldState {
+    private func makeWorldState() -> BrainContextSnapshot {
         let events = recentEvents.map { event -> String in
             let ago = max(0, Int(clock - event.t))
             return "\(ago)s ago \(event.text)"
@@ -1763,7 +1803,7 @@ final class PetController {
         let tick = gameplayKernel.clock.tick
         let inputObservations = gameplayKernel.world.inputObservations.values
             .filter { $0.isValid(at: tick) && settings.isInputPluginEnabled($0.pluginID) }
-        return WorldStateBuilder.build(
+        return BrainContextSnapshotBuilder.build(
             clock: clock,
             foreground: world.foreground,
             idleSeconds: systemWorld.idleSeconds(),
@@ -1784,7 +1824,7 @@ final class PetController {
         library.action(named: name) != nil
     }
 
-    /// 锚点文本 → 世界落点（SceneRunner 与 Needle 语义共用）。
+    /// 锚点文本 → 世界落点（SceneBodyDriver 与 Needle 语义共用）。
     func resolveAnchor(_ text: String) -> (x: CGFloat, top: Bool, window: WindowEntity?)? {
         guard let spec = AnchorSpec.parse(text),
               let resolved = AnchorResolver.resolve(spec, windows: world.windows) else { return nil }

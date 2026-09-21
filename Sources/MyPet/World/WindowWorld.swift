@@ -46,7 +46,7 @@ final class WindowWorld {
 
     /// 零权限语义注入：bundleID 来自运行中进程（免授权），owner 来自 CGWindowList。
     /// 窗口标题只有屏幕录制权限才拿得到，归类退化到 app 级；
-    /// 标题级细分（浏览器里看视频 vs 看文档）由 OCR/AX 感知层喂给 WorldState。
+    /// 标题级细分（浏览器里看视频 vs 看文档）由 OCR/AX 感知层喂给 BrainContextSnapshot。
     private func enrichActivities() {
         for i in windows.indices {
             let bundleID = NSRunningApplication(processIdentifier: windows[i].pid)?.bundleIdentifier

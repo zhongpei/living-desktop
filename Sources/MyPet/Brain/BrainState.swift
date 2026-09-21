@@ -2,7 +2,7 @@ import Foundation
 
 // BrainState v2 —— 宠物的内部状态（game-v2 扩充）。
 //
-// WorldState = 外面的世界；BrainState = 我自己现在怎么样。
+// BrainContextSnapshot = 外面的世界；BrainState = 我自己现在怎么样。
 // v1 只有 energy/curiosity/socialNeed；v2 按 game.md 补齐需求环：
 //   boredom   无聊 —— 闲置与重复行为推高，场景/探索后回落（「角色无聊了」的来源）
 //   affection 亲密 —— 被摸头/陪伴缓慢上涨，冷落缓慢消退（关系温度）
@@ -22,7 +22,7 @@ struct BrainState: Codable, Equatable {
     var affection = 0.3
     /// 0~1：被骚扰/抛掷上涨，安静消退。
     var stress = 0.0
-    /// 当前注意力（WorldState 里的目标描述，如 "window_123" / "user"）。
+    /// 当前注意力（BrainContextSnapshot 里的目标描述，如 "window_123" / "user"）。
     var attentionTarget: String?
     /// 当前自主目标（Goal.kind，如 join_user_activity / rest），供大脑保持连贯。
     var currentGoal: String?

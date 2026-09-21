@@ -169,7 +169,7 @@ final class BrainProfileTests: XCTestCase {
         coordinator.configure(localEnabled: true, teacherEnabled: true, interval: 0...0)
         let input = GoalBrainInput(
             petID: "rei_chibi",
-            world: WorldState(capturedAt: 1, activeApp: "Code", windowTitle: "", appActivity: "coding",
+            world: BrainContextSnapshot(capturedAt: 1, activeApp: "Code", windowTitle: "", appActivity: "coding",
                               userActivity: "editing_text", focusRole: "textarea", visibleContext: [],
                               salientUI: [], nearbyWindows: [], recentEvents: []),
             brain: BrainState(), personality: .default, memory: [], traceID: "trace-parallel")
@@ -202,7 +202,7 @@ final class BrainProfileTests: XCTestCase {
         coordinator.configure(localEnabled: false, teacherEnabled: true, interval: 0...0)
         let input = GoalBrainInput(
             petID: "rei_chibi",
-            world: WorldState(capturedAt: 1, activeApp: "Code", windowTitle: "", appActivity: "coding",
+            world: BrainContextSnapshot(capturedAt: 1, activeApp: "Code", windowTitle: "", appActivity: "coding",
                               userActivity: "editing_text", focusRole: "textarea", visibleContext: [],
                               salientUI: [], nearbyWindows: [], recentEvents: []),
             brain: BrainState(), personality: .default, memory: [], traceID: "trace-teacher-only")
@@ -226,7 +226,7 @@ final class BrainProfileTests: XCTestCase {
         coordinator.configure(localEnabled: true, teacherEnabled: true, interval: 0...0)
         let input = GoalBrainInput(
             petID: "rei_chibi",
-            world: WorldState(capturedAt: 1, activeApp: "Code", windowTitle: "",
+            world: BrainContextSnapshot(capturedAt: 1, activeApp: "Code", windowTitle: "",
                               appActivity: "coding", userActivity: "editing_text",
                               focusRole: "textarea", visibleContext: [], salientUI: [],
                               nearbyWindows: [], recentEvents: []),
@@ -279,7 +279,7 @@ private final class StubGoalBrain: GoalBrain {
     }
 
     @discardableResult
-    func requestSpeech(intent: SpeechIntent, world: WorldState, brain: BrainState,
+    func requestSpeech(intent: SpeechIntent, world: BrainContextSnapshot, brain: BrainState,
                        personality: Personality, characterID: String,
                        dialogue: DialogueProfile?, traceID: String?,
                        completion: @escaping (SpeechReply?) -> Void) -> Bool {

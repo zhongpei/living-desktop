@@ -4,7 +4,7 @@ import Foundation
 //
 // 语义（最终决策）：
 // - 传感器事件 = 感知失效通知，不是宠物行为事件。脏了 → 防抖 → 重新 sense →
-//   WorldState 变化 → 由大脑决定是否值得反应。v1 没有 AXObserver，脏标记只来自
+//   BrainContextSnapshot 变化 → 由大脑决定是否值得反应。v1 没有 AXObserver，脏标记只来自
 //   前台应用变化这类确定性事件；TTL 兜底刷新。
 // - 感知只在内存中更新，统一脑路日志在决策发生时保存当次快照。
 

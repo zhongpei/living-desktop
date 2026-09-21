@@ -1,4 +1,5 @@
 import Foundation
+import MyPetCore
 
 // Goal —— 决策脑（LLM）或内置策略产出的高层意图。
 //
@@ -6,17 +7,9 @@ import Foundation
 //   {"goal":"join_user_activity","target":"user","activity":"coding","style":"quiet_companion"}
 // 「下一步具体干什么」是行动脑（Needle）+ 场景配方的事。
 
-/// 目标词表（大脑与内置策略共用；新增玩法先扩这里 + SceneCatalog）。
-enum GoalKind: String, Equatable, CaseIterable {
-    case joinUserActivity = "join_user_activity"   // 陪用户干活（coding/writing…）
-    case watchWithUser = "watch_with_user"         // 一起看（视频/网页）
-    case seekAttention = "seek_attention"          // 求关注（凑过去打招呼）
-    case teaseUser = "tease_user"                  // 嘲讽用户（毒舌属性驱动）
-    case complainToUser = "complain_to_user"       // 抗议（被反复打扰/应激）
-    case explore = "explore"                       // 逛逛（好奇心驱动）
-    case rest = "rest"                             // 休息（能量低/夜深）
-    case wander = "wander"                         // 随便走走（无明确动机的填充）
+typealias GoalKind = SimulationGoalKind
 
+extension SimulationGoalKind {
     /// 目标是否需要用户在场作为参照。
     var targetsUser: Bool {
         switch self {
@@ -54,6 +47,12 @@ struct Goal: Equatable {
 
     func expired(at now: Double) -> Bool {
         now - issuedAt > defaultTTL
+    }
+
+    func semanticDecision(atTick tick: Int64) -> SimulationGoalDecision {
+        SimulationGoalDecision(
+            goal: kind, target: target, activity: activity?.rawValue, style: style,
+            issuedAtTick: tick, source: source)
     }
 }
 
@@ -93,9 +92,9 @@ struct GoalDecision: Equatable {
             why: obj["why"] as? String)
     }
 
-    /// 语义校验：目标必须被当前 WorldState 支撑（与 Needle validate 同哲学：
+    /// 语义校验：目标必须被当前 BrainContextSnapshot 支撑（与 Needle validate 同哲学：
     /// 拒绝即丢弃，本轮保持旧目标/发呆）。
-    static func validate(_ d: GoalDecision, world: WorldState) -> Bool {
+    static func validate(_ d: GoalDecision, world: BrainContextSnapshot) -> Bool {
         if let target = d.target, target != "user" {
             guard world.nearbyWindows.contains(where: { $0.hasPrefix(target + " ") || $0.hasPrefix(target + "(") }) else {
                 return false

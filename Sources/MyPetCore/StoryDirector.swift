@@ -231,11 +231,19 @@ public final class SemanticStoryExecutionProvider: StoryExecutionProvider {
 
     private static func describe(_ action: SimulationNeedleAction) -> String {
         switch action {
+        case .chooseScene(let value): return "choose_scene:" + value
         case .moveTo(let value): return "move_to:" + value
         case .perform(let value): return "perform:" + value
+        case .performCandidates(let values): return "perform_candidates:" + values.joined(separator: ",")
+        case .spawnProp(let value): return "spawn_prop:" + value
+        case .clearProps: return "clear_props"
+        case .putDown: return "put_down"
+        case .pickUp: return "pick_up"
+        case .leaveScene: return "leave_scene"
         case .wait: return "wait"
         case .say(let value): return "say:" + value
         case .sleep: return "sleep"
+        case .body(let value): return "body:" + String(describing: value)
         }
     }
 }

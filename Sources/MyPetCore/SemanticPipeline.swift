@@ -12,6 +12,8 @@ public enum SimulationGoalKind: String, Codable, CaseIterable, Sendable {
     case explore
     case rest
     case wander
+    case teaseUser = "tease_user"
+    case complainToUser = "complain_to_user"
 }
 
 public struct SimulationGoalDecision: Codable, Equatable, Sendable {
@@ -152,6 +154,11 @@ extension GoalBrain: SimulationGoalProvider {
 public enum SimulationSceneOperation: Equatable, Sendable {
     case moveTo(String)
     case perform(String)
+    case performCandidates([String])
+    case spawnProp(String)
+    case clearProps
+    case putDown
+    case pickUp
     case wait(Int64)
     case say(String)
     case sleep
@@ -159,7 +166,9 @@ public enum SimulationSceneOperation: Equatable, Sendable {
 
 extension SimulationSceneOperation: Codable {
     private enum CodingKeys: String, CodingKey { case kind, value, ticks }
-    private enum Kind: String, Codable { case moveTo, perform, wait, say, sleep }
+    private enum Kind: String, Codable {
+        case moveTo, perform, performCandidates, spawnProp, clearProps, putDown, pickUp, wait, say, sleep
+    }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
@@ -170,6 +179,18 @@ extension SimulationSceneOperation: Codable {
         case .perform(let value):
             try container.encode(Kind.perform, forKey: .kind)
             try container.encode(value, forKey: .value)
+        case .performCandidates(let values):
+            try container.encode(Kind.performCandidates, forKey: .kind)
+            try container.encode(values, forKey: .value)
+        case .spawnProp(let value):
+            try container.encode(Kind.spawnProp, forKey: .kind)
+            try container.encode(value, forKey: .value)
+        case .clearProps:
+            try container.encode(Kind.clearProps, forKey: .kind)
+        case .putDown:
+            try container.encode(Kind.putDown, forKey: .kind)
+        case .pickUp:
+            try container.encode(Kind.pickUp, forKey: .kind)
         case .wait(let ticks):
             try container.encode(Kind.wait, forKey: .kind)
             try container.encode(ticks, forKey: .ticks)
@@ -186,6 +207,11 @@ extension SimulationSceneOperation: Codable {
         switch try container.decode(Kind.self, forKey: .kind) {
         case .moveTo: self = .moveTo(try container.decode(String.self, forKey: .value))
         case .perform: self = .perform(try container.decode(String.self, forKey: .value))
+        case .performCandidates: self = .performCandidates(try container.decode([String].self, forKey: .value))
+        case .spawnProp: self = .spawnProp(try container.decode(String.self, forKey: .value))
+        case .clearProps: self = .clearProps
+        case .putDown: self = .putDown
+        case .pickUp: self = .pickUp
         case .wait: self = .wait(try container.decode(Int64.self, forKey: .ticks))
         case .say: self = .say(try container.decode(String.self, forKey: .value))
         case .sleep: self = .sleep
@@ -205,15 +231,44 @@ public struct SimulationSceneStep: Codable, Equatable, Sendable {
 
 public struct SimulationSceneRecipe: Codable, Equatable, Sendable {
     public var id: String
+    public var label: String
     public var goals: [SimulationGoalKind]
     public var activities: [String]
+    public var needsUser: Bool
     public var steps: [SimulationSceneStep]
+    public var loopFrom: Int?
 
-    public init(id: String, goals: [SimulationGoalKind], activities: [String] = [], steps: [SimulationSceneStep]) {
+    public init(
+        id: String,
+        label: String? = nil,
+        goals: [SimulationGoalKind],
+        activities: [String] = [],
+        needsUser: Bool = false,
+        steps: [SimulationSceneStep],
+        loopFrom: Int? = nil
+    ) {
         self.id = id
+        self.label = label ?? id
         self.goals = goals
         self.activities = activities
+        self.needsUser = needsUser
         self.steps = steps
+        self.loopFrom = loopFrom
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, label, goals, activities, needsUser, steps, loopFrom
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        label = try values.decodeIfPresent(String.self, forKey: .label) ?? id
+        goals = try values.decode([SimulationGoalKind].self, forKey: .goals)
+        activities = try values.decodeIfPresent([String].self, forKey: .activities) ?? []
+        needsUser = try values.decodeIfPresent(Bool.self, forKey: .needsUser) ?? false
+        steps = try values.decode([SimulationSceneStep].self, forKey: .steps)
+        loopFrom = try values.decodeIfPresent(Int.self, forKey: .loopFrom)
     }
 }
 
@@ -259,30 +314,107 @@ public final class SceneRunner {
     public static let defaultRecipes: [SimulationSceneRecipe] = [
         SimulationSceneRecipe(
             id: "coding_companion",
+            label: "陪用户编码",
+            goals: [.joinUserActivity],
+            activities: ["coding", "writing", "designing"],
+            steps: [
+                SimulationSceneStep(.moveTo("@activity.topRight")),
+                SimulationSceneStep(.spawnProp("laptop")),
+                SimulationSceneStep(.performCandidates(["think", "read", "sit_idle", "nod", "look"])),
+                SimulationSceneStep(.wait(120), decisionPoint: true),
+            ], loopFrom: 2),
+        SimulationSceneRecipe(
+            id: "quiet_observer", label: "安静旁观",
             goals: [.joinUserActivity, .watchWithUser],
-            activities: ["coding", "writing", "reading", "browsing", "unknown"],
             steps: [
-                SimulationSceneStep(.moveTo("@activity.top.right")),
-                SimulationSceneStep(.perform("think")),
-                SimulationSceneStep(.wait(1), decisionPoint: true),
+                SimulationSceneStep(.moveTo("@activity.topLeft")),
+                SimulationSceneStep(.performCandidates(["think", "read", "sit_idle", "nod", "look"])),
+                SimulationSceneStep(.wait(160), decisionPoint: true),
+            ], loopFrom: 2),
+        SimulationSceneRecipe(
+            id: "watch_with_user", label: "一起看",
+            goals: [.watchWithUser], activities: ["watching", "browsing", "chatting"],
+            steps: [
+                SimulationSceneStep(.moveTo("@activity.topCenter")),
+                SimulationSceneStep(.performCandidates(["happy", "celebrate", "jump", "tail_wag", "wave", "nod"])),
+                SimulationSceneStep(.spawnProp("popcorn")),
+                SimulationSceneStep(.wait(200), decisionPoint: true),
+            ], loopFrom: 3),
+        SimulationSceneRecipe(
+            id: "read_near_user", label: "在旁边看书",
+            goals: [.joinUserActivity, .wander],
+            steps: [
+                SimulationSceneStep(.moveTo("floor_near")),
+                SimulationSceneStep(.spawnProp("book")),
+                SimulationSceneStep(.performCandidates(["think", "read", "sit_idle", "nod", "look"])),
+                SimulationSceneStep(.wait(180), decisionPoint: true),
+                SimulationSceneStep(.putDown),
+            ], loopFrom: 3),
+        SimulationSceneRecipe(
+            id: "tea_break", label: "喝口茶休息",
+            goals: [.rest, .wander],
+            steps: [
+                SimulationSceneStep(.moveTo("floor_near")),
+                SimulationSceneStep(.spawnProp("tea")),
+                SimulationSceneStep(.performCandidates(["sleep_loop", "sleep", "doze", "yawn", "sit_idle"])),
+                SimulationSceneStep(.wait(160)),
+                SimulationSceneStep(.putDown),
             ]),
         SimulationSceneRecipe(
-            id: "wander",
-            goals: [.wander, .explore, .rest],
-            steps: [
-                SimulationSceneStep(.moveTo("floor")),
-                SimulationSceneStep(.perform("think")),
-                SimulationSceneStep(.wait(1), decisionPoint: true),
-            ]),
+            id: "window_sleep", label: "趴窗台上睡",
+            goals: [.rest],
+            steps: [SimulationSceneStep(.moveTo("@activity.topCenter")), SimulationSceneStep(.sleep)]),
         SimulationSceneRecipe(
-            id: "seek_attention",
-            goals: [.seekAttention],
+            id: "seek_attention", label: "求关注",
+            goals: [.seekAttention], needsUser: true,
             steps: [
-                SimulationSceneStep(.moveTo("floor")),
-                SimulationSceneStep(.perform("greet")),
+                SimulationSceneStep(.moveTo("floor_near")),
+                SimulationSceneStep(.performCandidates(["greet", "greet_wave", "wave", "happy", "nod"])),
                 SimulationSceneStep(.say("greet")),
-                SimulationSceneStep(.wait(1), decisionPoint: true),
+                SimulationSceneStep(.performCandidates(["tease", "taunt", "mock_turn", "flirt", "tail_wag", "nod", "happy", "wave"]), decisionPoint: true),
+            ], loopFrom: 3),
+        SimulationSceneRecipe(
+            id: "tease_user", label: "毒舌嘲讽",
+            goals: [.teaseUser], needsUser: true,
+            steps: [
+                SimulationSceneStep(.moveTo("floor_near")),
+                SimulationSceneStep(.performCandidates(["tease", "taunt", "mock_turn", "flirt", "tail_wag", "nod", "happy", "wave"])),
+                SimulationSceneStep(.say("tease")),
+                SimulationSceneStep(.wait(80), decisionPoint: true),
             ]),
+        SimulationSceneRecipe(
+            id: "complain", label: "表达不满",
+            goals: [.complainToUser], needsUser: true,
+            steps: [
+                SimulationSceneStep(.moveTo("floor_near")),
+                SimulationSceneStep(.say("complain")),
+                SimulationSceneStep(.performCandidates(["complain", "annoyed", "nod", "think", "wave"])),
+                SimulationSceneStep(.wait(80), decisionPoint: true),
+            ]),
+        SimulationSceneRecipe(
+            id: "wander", label: "到处逛逛", goals: [.wander, .explore],
+            steps: [
+                SimulationSceneStep(.moveTo("floor_near")),
+                SimulationSceneStep(.performCandidates(["happy", "celebrate", "jump", "tail_wag", "wave", "nod"])),
+                SimulationSceneStep(.wait(60), decisionPoint: true),
+            ], loopFrom: 0),
+        SimulationSceneRecipe(
+            id: "window_climb_and_peek", label: "爬上窗沿探头",
+            goals: [.explore, .seekAttention], needsUser: true,
+            steps: [
+                SimulationSceneStep(.moveTo("@activity.topCenter")),
+                SimulationSceneStep(.performCandidates(["climb_up", "jump_to_sill", "pull_up", "jump", "happy", "wave"])),
+                SimulationSceneStep(.performCandidates(["peek_over", "peek", "peek_at_user", "look_out", "think", "wave"])),
+                SimulationSceneStep(.wait(120), decisionPoint: true),
+            ], loopFrom: 2),
+        SimulationSceneRecipe(
+            id: "peek_at_user", label: "扒着窗沿看你",
+            goals: [.explore, .seekAttention], needsUser: true,
+            steps: [
+                SimulationSceneStep(.moveTo("@activity.topLeft")),
+                SimulationSceneStep(.performCandidates(["peek_over", "peek", "peek_at_user", "look_out", "think", "wave"])),
+                SimulationSceneStep(.wait(120), decisionPoint: true),
+            ], loopFrom: 2),
     ]
 
     @discardableResult
@@ -296,6 +428,24 @@ public final class SceneRunner {
             status = .cancelled
             return false
         }
+        return activate(recipe: recipe, goal: goal)
+    }
+
+    /// Start an already selected catalog recipe. Production CNeedle and the
+    /// deterministic harness both use this cursor; selection may happen in a
+    /// different adapter, but step/loop semantics stay in one implementation.
+    @discardableResult
+    public func start(recipeID: String, goal: SimulationGoalDecision) -> Bool {
+        guard status != .running,
+              let recipe = recipes.first(where: { $0.id == recipeID }),
+              recipe.goals.contains(goal.goal) else {
+            status = .cancelled
+            return false
+        }
+        return activate(recipe: recipe, goal: goal)
+    }
+
+    private func activate(recipe: SimulationSceneRecipe, goal: SimulationGoalDecision) -> Bool {
         currentGoal = goal
         recipeID = recipe.id
         stepIndex = 0
@@ -320,6 +470,10 @@ public final class SceneRunner {
             return false
         }
         if stepIndex >= recipe.steps.count {
+            if let loopFrom = recipe.loopFrom, recipe.steps.indices.contains(loopFrom) {
+                stepIndex = loopFrom
+                return false
+            }
             status = .completed
             return true
         }
@@ -351,42 +505,86 @@ public final class SceneRunner {
 
 // MARK: - Needle and action runtime
 
+public enum SimulationBodyAction: Codable, Equatable, Sendable {
+    case moveToPoint(Double)
+    case walkAlong
+    case perch(String)
+    case hop
+    case dropOff
+}
+
 public enum SimulationNeedleAction: Equatable, Sendable {
+    case chooseScene(String)
     case moveTo(String)
     case perform(String)
+    case performCandidates([String])
+    case spawnProp(String)
+    case clearProps
+    case putDown
+    case pickUp
+    case leaveScene
     case wait
     case say(String)
     case sleep
+    case body(SimulationBodyAction)
 }
 
 extension SimulationNeedleAction: Codable {
     private enum CodingKeys: String, CodingKey { case kind, value }
-    private enum Kind: String, Codable { case moveTo, perform, wait, say, sleep }
+    private enum Kind: String, Codable {
+        case chooseScene, moveTo, perform, performCandidates, spawnProp, clearProps, putDown, pickUp, leaveScene
+        case wait, say, sleep, body
+    }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
+        case .chooseScene(let value):
+            try container.encode(Kind.chooseScene, forKey: .kind); try container.encode(value, forKey: .value)
         case .moveTo(let value):
             try container.encode(Kind.moveTo, forKey: .kind); try container.encode(value, forKey: .value)
         case .perform(let value):
             try container.encode(Kind.perform, forKey: .kind); try container.encode(value, forKey: .value)
+        case .performCandidates(let values):
+            try container.encode(Kind.performCandidates, forKey: .kind); try container.encode(values, forKey: .value)
+        case .spawnProp(let value):
+            try container.encode(Kind.spawnProp, forKey: .kind); try container.encode(value, forKey: .value)
+        case .clearProps:
+            try container.encode(Kind.clearProps, forKey: .kind)
+        case .putDown:
+            try container.encode(Kind.putDown, forKey: .kind)
+        case .pickUp:
+            try container.encode(Kind.pickUp, forKey: .kind)
+        case .leaveScene:
+            try container.encode(Kind.leaveScene, forKey: .kind)
         case .wait:
             try container.encode(Kind.wait, forKey: .kind)
         case .say(let value):
             try container.encode(Kind.say, forKey: .kind); try container.encode(value, forKey: .value)
         case .sleep:
             try container.encode(Kind.sleep, forKey: .kind)
+        case .body(let value):
+            try container.encode(Kind.body, forKey: .kind)
+            try container.encode(value, forKey: .value)
         }
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         switch try container.decode(Kind.self, forKey: .kind) {
+        case .chooseScene: self = .chooseScene(try container.decode(String.self, forKey: .value))
         case .moveTo: self = .moveTo(try container.decode(String.self, forKey: .value))
         case .perform: self = .perform(try container.decode(String.self, forKey: .value))
+        case .performCandidates: self = .performCandidates(try container.decode([String].self, forKey: .value))
+        case .spawnProp: self = .spawnProp(try container.decode(String.self, forKey: .value))
+        case .clearProps: self = .clearProps
+        case .putDown: self = .putDown
+        case .pickUp: self = .pickUp
+        case .leaveScene: self = .leaveScene
         case .wait: self = .wait
         case .say: self = .say(try container.decode(String.self, forKey: .value))
         case .sleep: self = .sleep
+        case .body: self = .body(try container.decode(SimulationBodyAction.self, forKey: .value))
         }
     }
 }
@@ -456,10 +654,17 @@ public final class NeedleBrain {
         }
         switch step.operation {
         case .moveTo(let anchor):
-            if anchor == "floor" { return .moveTo(anchor) }
-            guard context.focus != nil else { return nil }
+            // Only activity-relative anchors need a live focused window.
+            // Stable world anchors such as `floor_near` remain legal in a
+            // headless/no-window scenario, matching the production resolver.
+            if anchor.hasPrefix("@activity."), context.focus == nil { return nil }
             return .moveTo(anchor)
         case .perform(let action): return .perform(action)
+        case .performCandidates(let actions): return .performCandidates(actions)
+        case .spawnProp(let id): return .spawnProp(id)
+        case .clearProps: return .clearProps
+        case .putDown: return .putDown
+        case .pickUp: return .pickUp
         case .wait: return .wait
         case .say(let intent): return .say(intent)
         case .sleep: return .sleep
@@ -596,30 +801,6 @@ public final class ActionRuntime {
         self.assetCatalog = assetCatalog
     }
 
-    /// Production and headless adapters share this final request gate. An
-    /// adapter may choose a semantic intent, but it cannot construct its own
-    /// plan epoch, request identity, claims or duration outside MyPetCore.
-    public func executeIntent(
-        _ intent: String,
-        tick: Int64,
-        actorID: EntityID,
-        world: WorldState,
-        priority: PriorityBand = .brainReactive,
-        claims: [String] = ["body"],
-        durationTicks: Int64 = 1
-    ) -> ActionExecution {
-        let request = BehaviorRequest(
-            id: "semantic-\(actorID.raw)-\(tick)-\(sequence)",
-            actorID: actorID,
-            intent: intent,
-            priority: priority,
-            planEpoch: world.planEpochs[actorID.raw, default: 0],
-            claims: claims,
-            durationTicks: durationTicks)
-        sequence += 1
-        return ActionExecution(accepted: true, request: request)
-    }
-
     public func execute(
         _ action: SimulationNeedleAction,
         tick: Int64,
@@ -631,9 +812,13 @@ public final class ActionRuntime {
         let id = "semantic-\(actorID.raw)-\(tick)-\(sequence)"
         sequence += 1
         switch action {
+        case .chooseScene(let sceneID):
+            return ActionExecution(accepted: true, request: BehaviorRequest(
+                id: id, actorID: actorID, intent: "choose_scene:\(sceneID)", priority: .brainReactive,
+                planEpoch: epoch, durationTicks: 1))
         case .moveTo(let anchor):
             let slot = slot(for: anchor, world: world, context: context)
-            if anchor != "floor" && slot == nil {
+            if anchor.isEmpty || (anchor.hasPrefix("@activity.") && context.focus == nil) {
                 return ActionExecution(accepted: false, reason: "anchor_missing")
             }
             return ActionExecution(accepted: true, request: BehaviorRequest(
@@ -648,6 +833,39 @@ public final class ActionRuntime {
                 id: id, actorID: actorID,
                 intent: "perform:\(resolution.resolvedAction ?? actionName)",
                 priority: .brainReactive, planEpoch: epoch, durationTicks: 1), resolution: resolution)
+        case .performCandidates(let candidates):
+            let resolutions = candidates.map(assetCatalog.resolve)
+            guard let resolution = resolutions.first(where: { $0.kind != .missing }) else {
+                return ActionExecution(
+                    accepted: true,
+                    resolution: candidates.first.map {
+                        SimulationAssetResolution(action: $0, kind: .missing)
+                    })
+            }
+            return ActionExecution(accepted: true, request: BehaviorRequest(
+                id: id, actorID: actorID,
+                intent: "perform:\(resolution.resolvedAction ?? resolution.action)",
+                priority: .brainReactive, planEpoch: epoch, durationTicks: 1), resolution: resolution)
+        case .spawnProp(let propID):
+            return ActionExecution(accepted: true, request: BehaviorRequest(
+                id: id, actorID: actorID, intent: "spawn_prop:\(propID)", priority: .brainReactive,
+                planEpoch: epoch, claims: ["manipulator"], durationTicks: 1))
+        case .clearProps:
+            return ActionExecution(accepted: true, request: BehaviorRequest(
+                id: id, actorID: actorID, intent: "clear_props", priority: .brainReactive,
+                planEpoch: epoch, claims: ["manipulator"], durationTicks: 1))
+        case .putDown:
+            return ActionExecution(accepted: true, request: BehaviorRequest(
+                id: id, actorID: actorID, intent: "put_down", priority: .brainReactive,
+                planEpoch: epoch, claims: ["manipulator"], durationTicks: 1))
+        case .pickUp:
+            return ActionExecution(accepted: true, request: BehaviorRequest(
+                id: id, actorID: actorID, intent: "pick_up", priority: .brainReactive,
+                planEpoch: epoch, claims: ["manipulator"], durationTicks: 1))
+        case .leaveScene:
+            return ActionExecution(accepted: true, request: BehaviorRequest(
+                id: id, actorID: actorID, intent: "leave_scene", priority: .brainReactive,
+                planEpoch: epoch, durationTicks: 1))
         case .wait:
             return ActionExecution(accepted: true, request: BehaviorRequest(
                 id: id, actorID: actorID, intent: "wait", priority: .brainReactive,
@@ -660,6 +878,18 @@ public final class ActionRuntime {
             return ActionExecution(accepted: true, request: BehaviorRequest(
                 id: id, actorID: actorID, intent: "sleep", priority: .ambient,
                 planEpoch: epoch, durationTicks: 2))
+        case .body(let body):
+            let intent: String
+            switch body {
+            case .moveToPoint(let point): intent = "move_to_point:\(point)"
+            case .walkAlong: intent = "walk_along"
+            case .perch(let entityID): intent = "perch:\(entityID)"
+            case .hop: intent = "hop"
+            case .dropOff: intent = "drop_off"
+            }
+            return ActionExecution(accepted: true, request: BehaviorRequest(
+                id: id, actorID: actorID, intent: intent, priority: .brainReactive,
+                planEpoch: epoch, durationTicks: 1))
         }
     }
 
@@ -684,6 +914,8 @@ public final class ActionRuntime {
         switch action {
         case .perform(let actionName):
             resolution = assetCatalog.resolve(actionName)
+        case .performCandidates(let candidates):
+            resolution = candidates.map(assetCatalog.resolve).first(where: { $0.kind != .missing })
         default:
             resolution = nil
         }
@@ -710,8 +942,15 @@ public final class ActionRuntime {
 
     private func slot(for anchor: String, world: WorldState, context: RuntimeContext) -> SlotRef? {
         guard anchor.hasPrefix("@activity."), let window = context.focus else { return nil }
-        let slotID = String(anchor.dropFirst("@activity.".count))
-        return world.slots["\(window.id.raw)/\(slotID)"]?.ref
+        let authored = String(anchor.dropFirst("@activity.".count))
+        let candidates: [String]
+        switch authored {
+        case "topLeft": candidates = ["top.left"]
+        case "topRight": candidates = ["top.right"]
+        case "topCenter": candidates = ["top.center", "top.right", "top.left"]
+        default: candidates = [authored]
+        }
+        return candidates.lazy.compactMap { world.slots["\(window.id.raw)/\($0)"]?.ref }.first
     }
 }
 
@@ -939,11 +1178,19 @@ public final class SemanticPipeline {
 
     private func describe(_ action: SimulationNeedleAction) -> String {
         switch action {
+        case .chooseScene(let value): return "choose_scene:\(value)"
         case .moveTo(let value): return "move_to:\(value)"
         case .perform(let value): return "perform:\(value)"
+        case .performCandidates(let values): return "perform_candidates:\(values.joined(separator: ","))"
+        case .spawnProp(let value): return "spawn_prop:\(value)"
+        case .clearProps: return "clear_props"
+        case .putDown: return "put_down"
+        case .pickUp: return "pick_up"
+        case .leaveScene: return "leave_scene"
         case .wait: return "wait"
         case .say(let value): return "say:\(value)"
         case .sleep: return "sleep"
+        case .body(let value): return "body:\(String(describing: value))"
         }
     }
 }

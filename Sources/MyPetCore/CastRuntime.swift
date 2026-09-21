@@ -106,14 +106,14 @@ public final class CastRuntime {
     @discardableResult
     public func tick() -> TickReport {
         _ = start()
-        let report = runtime.step()!
-        if storyDirector.currentEpisodeID == nil {
-            _ = storyDirector.startNext(in: kernel)
-        } else {
-            storyDirector.tick(in: kernel)
-        }
-        director.tick(in: kernel)
-        return report
+        return runtime.step { runtime in
+            if self.storyDirector.currentEpisodeID == nil {
+                _ = self.storyDirector.startNext(in: runtime.kernel)
+            } else {
+                self.storyDirector.tick(in: runtime.kernel)
+            }
+            self.director.tick(in: runtime.kernel)
+        }!
     }
 
     public var activeMemberIDs: [String] {

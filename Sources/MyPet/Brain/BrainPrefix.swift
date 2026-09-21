@@ -135,7 +135,7 @@ enum BrainPrefixBuilder {
         return messages
     }
 
-    static func chatMessage(intent: SpeechIntent, world: WorldState, brain: BrainState,
+    static func chatMessage(intent: SpeechIntent, world: BrainContextSnapshot, brain: BrainState,
                             personality: Personality, userText: String? = nil,
                             retryHint: String? = nil) -> String {
         var message = """
@@ -266,7 +266,7 @@ enum BrainPrefixBuilder {
 
     /// 每次决策的 user 消息（§4.3）。memoryLines 为 MemoryStore 摘要（≤3 行）。
     static func dynamicMessage(
-        world: WorldState, brain: BrainState, personality: Personality,
+        world: BrainContextSnapshot, brain: BrainState, personality: Personality,
         memoryLines: [String], retryHint: String? = nil
     ) -> String {
         let pct = { (v: Double) -> String in String(format: "%.2f", v) }
@@ -311,7 +311,7 @@ enum BrainPrefixBuilder {
     }
 
     /// 从模型输出提取并校验决策。world 用于 target 落地校验（window_<id> 必须在场）。
-    static func parseDecision(_ output: String, world: WorldState) -> Decision? {
+    static func parseDecision(_ output: String, world: BrainContextSnapshot) -> Decision? {
         guard let start = output.firstIndex(of: "{"), let end = output.lastIndex(of: "}"),
               start < end else { return nil }
         let json = String(output[start...end])

@@ -14,7 +14,7 @@ final class BrainLogTests: XCTestCase {
 
         let traceURL = root.appendingPathComponent("brain_trace.jsonl")
         BrainTraceLog.setLogURLOverrideForTesting(traceURL)
-        let world = WorldState(
+        let world = BrainContextSnapshot(
             capturedAt: 1, activeApp: "WeChat", windowTitle: "Alice: secret",
             appActivity: "chatting", userActivity: "editing_text", focusRole: "textarea",
             visibleContext: ["聊天原文"], salientUI: ["button:发送"],
@@ -44,7 +44,7 @@ final class BrainLogTests: XCTestCase {
         let traceURL = root.appendingPathComponent("brain_trace.jsonl")
         BrainTraceLog.setLogURLOverrideForTesting(traceURL)
         BrainTraceLog.setEnabled(false)
-        let world = WorldState(
+        let world = BrainContextSnapshot(
             capturedAt: 1, activeApp: "Code", windowTitle: "file.swift",
             appActivity: "coding", userActivity: "editing_text", focusRole: "editor",
             visibleContext: [], salientUI: [], nearbyWindows: [], recentEvents: [])

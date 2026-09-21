@@ -15,7 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 桌面级 WindowWorld / AX / OCR 只采集一次，再广播给每个角色内核。
     private let perceptionHub = PerceptionHub()
     /// 大脑是进程级资源：多角色共享模型/串行 C API，各角色只共享适配器，
-    /// 不共享 WorldState、BrainState 或当前目标。
+    /// 不共享 BrainContextSnapshot、BrainState 或当前目标。
     private let sharedNeedle = NeedleBrain()
     private let sharedLocalBrain = LocalBrain()
     private let sharedTeacherBrain = TeacherBrain()

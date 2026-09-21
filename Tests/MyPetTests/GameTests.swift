@@ -192,7 +192,7 @@ final class GameTests: XCTestCase {
         XCTAssertTrue(GoalPolicy.isBusy(policyCtx(brain: BrainState(), activity: .coding)))
     }
 
-    // MARK: SceneCatalog / SceneRunner
+    // MARK: SceneCatalog / SceneBodyDriver
 
     func testSceneCompatibilityFiltersByGoalAndActivity() {
         let goal = Goal(kind: .joinUserActivity, target: "user", activity: .coding,
@@ -219,10 +219,10 @@ final class GameTests: XCTestCase {
         XCTAssertNotNil(recipe)
         XCTAssertEqual(recipe?.goals, [.explore, .seekAttention])
         XCTAssertEqual(recipe?.steps, [
-            SceneStep(.moveTo(anchor: "@activity.topCenter")),
-            SceneStep(.perform(ActionCatalog.candidates(for: .windowClimb))),
-            SceneStep(.perform(ActionCatalog.candidates(for: .windowPeek))),
-            SceneStep(.wait(6), decisionPoint: true),
+            SceneStep(.moveTo("@activity.topCenter")),
+            SceneStep(.performCandidates(ActionCatalog.candidates(for: .windowClimb))),
+            SceneStep(.performCandidates(ActionCatalog.candidates(for: .windowPeek))),
+            SceneStep(.wait(120), decisionPoint: true),
         ])
         XCTAssertEqual(recipe?.loopFrom, 2,
                        "爬上窗沿只做一次，之后反复探头并在决策点重新规划")
@@ -237,17 +237,34 @@ final class GameTests: XCTestCase {
     func testLegacyPeekRecipeUsesWindowPeekCandidates() {
         let recipe = SceneCatalog.recipe(id: "peek_at_user")
         XCTAssertTrue(recipe?.steps.contains {
-            if case .perform(let candidates) = $0.op {
+            if case .performCandidates(let candidates) = $0.operation {
                 return candidates == ActionCatalog.candidates(for: .windowPeek)
             }
             return false
         } == true)
     }
 
+    func testProductionScenesAreTheCoreSemanticRecipes() {
+        let projected = Dictionary(uniqueKeysWithValues: SceneCatalog.semanticRecipes.map { ($0.id, $0) })
+        XCTAssertEqual(Set(projected.keys), Set(SceneCatalog.recipes.map(\.id)))
+
+        for source in SceneCatalog.recipes {
+            let recipe = try! XCTUnwrap(projected[source.id])
+            XCTAssertEqual(recipe.label, source.label)
+            XCTAssertEqual(Set(recipe.goals.map(\.rawValue)), Set(source.goals.map(\.rawValue)))
+            XCTAssertEqual(Set(recipe.activities), Set(source.activities))
+            XCTAssertEqual(recipe.needsUser, source.needsUser)
+            XCTAssertEqual(recipe.loopFrom, source.loopFrom)
+            XCTAssertEqual(recipe.steps.count, source.steps.count)
+            XCTAssertEqual(recipe.steps.map(\.decisionPoint), source.steps.map(\.decisionPoint))
+            XCTAssertEqual(recipe.steps.map(\.operation), source.steps.map(\.operation))
+        }
+    }
+
     func testSceneRunnerExecutesStepsWithDegrade() {
         let recipe = SceneCatalog.recipe(id: "tea_break")!
         let stage = FakeStage()
-        let runner = SceneRunner(recipe: recipe)
+        let runner = SceneBodyDriver(recipe: recipe)
         runner.start(stage: stage, activityWindow: nil, now: 0)
 
         // 推进直到结束：spawnProp → perform(全缺失降级) → wait → clearProps。
@@ -266,7 +283,8 @@ final class GameTests: XCTestCase {
     func testSceneRunnerAbortsWhenAnchorVanishes() {
         let recipe = SceneCatalog.recipe(id: "window_sleep")!  // moveTo @activity → 失败
         let stage = FakeStage(resolveAnchor: false)
-        let runner = SceneRunner(recipe: recipe)
+        let semanticRunner = MyPetCore.SceneRunner(recipes: [recipe])
+        let runner = SceneBodyDriver(recipe: recipe, semanticRunner: semanticRunner)
         runner.start(stage: stage, activityWindow: WindowEntity(id: 1, pid: 1, owner: "A",
                                                                 bounds: CGRect(x: 0, y: 0, width: 400, height: 300)),
                      now: 0)
@@ -274,13 +292,64 @@ final class GameTests: XCTestCase {
         stage.elapse(seconds: 1)
         runner.tick(now: 2)
         XCTAssertFalse(runner.isActive, "锚点窗口没了 = 场景中断，不追空窗口")
+        XCTAssertEqual(semanticRunner.status, .cancelled)
         XCTAssertTrue(stage.propsCleared)
+    }
+
+    func testSceneDecisionActionMustPassCoreAuthorizationBeforeBodyExecution() {
+        let recipe = SimulationSceneRecipe(
+            id: "decision-action", goals: [.wander],
+            steps: [SimulationSceneStep(.wait(0), decisionPoint: true)])
+        let stage = FakeStage()
+        stage.hasClips = true
+        stage.nextDecision = .perform(["think"])
+        var actions: [SimulationNeedleAction] = []
+        var completions: [(Bool) -> Void] = []
+        let runner = SceneBodyDriver(recipe: recipe) { action, completion in
+            actions.append(action)
+            completions.append(completion)
+        }
+
+        runner.start(stage: stage, activityWindow: nil, now: 0)
+        runner.tick(now: 0)
+        completions.removeFirst()(true)
+        runner.tick(now: 0)
+
+        XCTAssertEqual(actions, [.wait, .performCandidates(["think"])])
+        XCTAssertTrue(stage.performedClips.isEmpty)
+
+        completions.removeFirst()(true)
+        XCTAssertEqual(stage.performedClips, ["think"])
+    }
+
+    func testProductionSceneBodyWaitsForCoreAuthorizationBeforeEachStep() {
+        let recipe = SceneCatalog.recipe(id: "tea_break")!
+        let stage = FakeStage()
+        var actions: [SimulationNeedleAction] = []
+        var completions: [(Bool) -> Void] = []
+        let runner = SceneBodyDriver(recipe: recipe) { action, completion in
+            actions.append(action)
+            completions.append(completion)
+        }
+
+        runner.start(stage: stage, activityWindow: nil, now: 0)
+        runner.tick(now: 0)
+
+        XCTAssertEqual(actions, [.moveTo("floor_near")])
+        XCTAssertTrue(stage.spawnedProps.isEmpty)
+
+        completions.removeFirst()(true)
+        XCTAssertEqual(actions, [.moveTo("floor_near"), .spawnProp("tea")])
+        XCTAssertTrue(stage.spawnedProps.isEmpty)
+
+        completions.removeFirst()(true)
+        XCTAssertEqual(stage.spawnedProps, ["tea"])
     }
 
     func testSceneRunnerDecisionPointAsksStage() {
         let recipe = SceneCatalog.recipe(id: "complain")!
         let stage = FakeStage()
-        let runner = SceneRunner(recipe: recipe)
+        let runner = SceneBodyDriver(recipe: recipe)
         runner.start(stage: stage, activityWindow: nil, now: 0)
         var guardCounter = 0
         while runner.isActive, guardCounter < 200 {
@@ -347,13 +416,13 @@ final class GameTests: XCTestCase {
         XCTAssertEqual(recipes.map(\.id), ["tease_user"])
         guard let recipe = recipes.first else { return }
         XCTAssertTrue(recipe.steps.contains {
-            if case .perform(let candidates) = $0.op {
+            if case .performCandidates(let candidates) = $0.operation {
                 return candidates == ActionCatalog.candidates(for: .tease)
             }
             return false
         })
         XCTAssertTrue(recipe.steps.contains {
-            if case .say(.tease) = $0.op { return true }
+            if case .say("tease") = $0.operation { return true }
             return false
         })
     }
@@ -788,7 +857,7 @@ final class GameTests: XCTestCase {
         // tea_break / read_near_user 以 putDown 收尾（道具留在原地淡出，不是瞬间清掉）。
         for id in ["tea_break", "read_near_user"] {
             let recipe = SceneCatalog.recipe(id: id)
-            XCTAssertEqual(recipe?.steps.last?.op, .putDown, "\(id) 应以放下收尾")
+            XCTAssertEqual(recipe?.steps.last?.operation, .putDown, "\(id) 应以放下收尾")
         }
     }
 
@@ -813,7 +882,7 @@ final class GameTests: XCTestCase {
     }
 }
 
-// MARK: - 假舞台（SceneRunner 离线执行）
+// MARK: - 假舞台（SceneBodyDriver 离线执行）
 
 private final class FakeStage: SceneStaging {
     var petX: CGFloat = 100
@@ -823,6 +892,8 @@ private final class FakeStage: SceneStaging {
     var propsCleared = false
     var decisionPoints = 0
     var performedClips: [String] = []
+    var hasClips = false
+    var nextDecision: SceneDecision?
     /// 场景等待的绝对时钟（elapse 推进）。
     var fakeClock: Double = 0
     /// 决策点回答策略：第二次离开，其余继续。
@@ -834,7 +905,7 @@ private final class FakeStage: SceneStaging {
 
     func elapse(seconds: Double) { fakeClock += seconds }
 
-    func hasClip(_ name: String) -> Bool { false }   // 全部缺素材：走降级路径
+    func hasClip(_ name: String) -> Bool { hasClips }
 
     func resolveAnchor(_ text: String) -> (x: CGFloat, top: Bool, window: WindowEntity?)? {
         resolveAnchorSucceeds ? (350, true, nil) : nil
@@ -872,6 +943,11 @@ private final class FakeStage: SceneStaging {
 
     func sceneDecisionPoint(_ scene: SceneRecipe, stepIndex: Int, resume: @escaping (SceneDecision) -> Void) {
         decisionPoints += 1
+        if let nextDecision {
+            self.nextDecision = nil
+            resume(nextDecision)
+            return
+        }
         decisionCount += 1
         resume(decisionCount >= 3 ? .leaveScene : .continueScene)
     }

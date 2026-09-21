@@ -96,8 +96,8 @@ final class NeedleBrainTests: XCTestCase {
         let calls = NeedleBrain.parseCalls(output)
         XCTAssertEqual(calls.count, 3)
         XCTAssertEqual(calls[0], .chooseScene("coding_companion"))
-        XCTAssertEqual(calls[1], .moveToAnchor("window_17.topRight"))
-        XCTAssertEqual(calls[2], .say(.greet))
+        XCTAssertEqual(calls[1], .moveTo("window_17.topRight"))
+        XCTAssertEqual(calls[2], .say("greet"))
     }
 
     func testValidateRejectsUngrounded() {
@@ -105,14 +105,14 @@ final class NeedleBrainTests: XCTestCase {
         XCTAssertFalse(NeedleBrain.validate(.chooseScene("tea_break"), facts: facts))
         XCTAssertTrue(NeedleBrain.validate(.chooseScene("coding_companion"), facts: facts))
         // 未声明锚点 → 拒绝。
-        XCTAssertFalse(NeedleBrain.validate(.moveToAnchor("window_99.topLeft"), facts: facts))
-        XCTAssertTrue(NeedleBrain.validate(.moveToAnchor("window_17.topRight"), facts: facts))
+        XCTAssertFalse(NeedleBrain.validate(.moveTo("window_99.topLeft"), facts: facts))
+        XCTAssertTrue(NeedleBrain.validate(.moveTo("window_17.topRight"), facts: facts))
         // 道具/表演/说话同理。
         XCTAssertFalse(NeedleBrain.validate(.spawnProp("popcorn"), facts: facts))
         XCTAssertTrue(NeedleBrain.validate(.spawnProp("laptop"), facts: facts))
         XCTAssertFalse(NeedleBrain.validate(.perform("bath"), facts: facts))
         XCTAssertTrue(NeedleBrain.validate(.perform("nod"), facts: facts))
-        XCTAssertTrue(NeedleBrain.validate(.say(.greet), facts: facts))
+        XCTAssertTrue(NeedleBrain.validate(.say("greet"), facts: facts))
         XCTAssertTrue(NeedleBrain.validate(.wait, facts: facts))
         // leave_scene 只在场景决策点合法。
         XCTAssertFalse(NeedleBrain.validate(.leaveScene, facts: facts))

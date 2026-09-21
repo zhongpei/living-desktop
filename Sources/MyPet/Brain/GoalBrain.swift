@@ -7,7 +7,7 @@ import MyPetCore
 // GoalBrainCoordinator 可同时调度两个适配器；行动脑和游戏身体不感知模型实现。
 struct GoalBrainInput {
     let petID: String
-    let world: WorldState
+    let world: BrainContextSnapshot
     let brain: BrainState
     let personality: Personality
     let memory: [String]
@@ -33,7 +33,7 @@ protocol GoalBrain: AnyObject {
     /// 行动脑决定「该说话」，可用的文本生成脑决定「说什么」。返回 false = 本实现
     /// 当前不可用，调用方走内置 Quips。回调主队列，reply=nil = 失败。
     @discardableResult
-    func requestSpeech(intent: SpeechIntent, world: WorldState, brain: BrainState,
+    func requestSpeech(intent: SpeechIntent, world: BrainContextSnapshot, brain: BrainState,
                        personality: Personality, characterID: String,
                        dialogue: DialogueProfile?, traceID: String?,
                        completion: @escaping (SpeechReply?) -> Void) -> Bool
@@ -47,7 +47,7 @@ enum BrainDecisionLog {
         BrainTraceLog.logURL
     }
 
-    static func log(world: WorldState, brain: BrainState, output: String?,
+    static func log(world: BrainContextSnapshot, brain: BrainState, output: String?,
                     chosen: GoalDecision?, latency: TimeInterval,
                     mode: String = "teacher", decisionValid: Bool = true,
                     traceID: String? = nil,
@@ -100,7 +100,7 @@ enum BrainDecisionLog {
     }
 
     /// 没有模型参与时也记一条目标层记录，避免日志只留下“模型成功”的幸存者。
-    static func logPolicy(world: WorldState, brain: BrainState, goal: Goal,
+    static func logPolicy(world: BrainContextSnapshot, brain: BrainState, goal: Goal,
                           personality: Personality, memory: [String],
                           traceID: String, reason: String) {
         let decision = GoalDecision(
@@ -138,7 +138,7 @@ enum BrainDecisionLog {
 
     // MARK: Outcome（game.md §16：训练数据的 label）
 
-    /// 一段目标/场景执行完的结局。WorldState+BrainState+Goal+轨迹+Outcome
+    /// 一段目标/场景执行完的结局。BrainContextSnapshot+BrainState+Goal+轨迹+Outcome
     /// 拼起来才是完整的 (输入, 输出, 效果) 训练样本。
     static func outcomeRecord(
         goalKind: String?, goalSource: String?, scene: String?,
@@ -306,7 +306,7 @@ final class TeacherBrain: GoalBrain {
     @discardableResult
     func requestSpeech(
         intent: SpeechIntent,
-        world: WorldState,
+        world: BrainContextSnapshot,
         brain: BrainState,
         personality: Personality,
         characterID: String,
@@ -363,7 +363,7 @@ final class TeacherBrain: GoalBrain {
         ]
     }
 
-    static func buildPlanRequest(model: String, world: WorldState, brain: BrainState,
+    static func buildPlanRequest(model: String, world: BrainContextSnapshot, brain: BrainState,
                                  personality: Personality, memory: [String],
                                  sampling: PlanSampling = .init()) -> [String: Any] {
         let system = """
@@ -431,7 +431,7 @@ final class TeacherBrain: GoalBrain {
         return request
     }
 
-    static func buildSpeechRequest(model: String, intent: SpeechIntent, world: WorldState,
+    static func buildSpeechRequest(model: String, intent: SpeechIntent, world: BrainContextSnapshot,
                                    brain: BrainState, personality: Personality) -> [String: Any] {
         let system = """
         You write one short spoken line for a desktop pet. Intent: \(intent.rawValue). \
@@ -681,7 +681,7 @@ final class GoalBrainCoordinator {
     }
 
     @discardableResult
-    func requestSpeech(intent: SpeechIntent, world: WorldState, brain: BrainState,
+    func requestSpeech(intent: SpeechIntent, world: BrainContextSnapshot, brain: BrainState,
                        personality: Personality, characterID: String,
                        dialogue: DialogueProfile?, traceID: String?,
                        completion: @escaping (SpeechReply?) -> Void) -> Bool {
