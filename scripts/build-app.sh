@@ -36,9 +36,9 @@ APP="$DIST/$APP_NAME.app"
 echo "==> Living Desktop release build (version: $VERSION)"
 
 echo "==> swift build -c release ($(uname -m))"
-swift build -c release
+swift build -c release --product LivingDesktop
 BUILT_DIR="$ROOT/.build/release"
-BIN="$BUILT_DIR/MyPet"
+BIN="$BUILT_DIR/LivingDesktop"
 [ -x "$BIN" ] || { echo "error: 找不到构建产物 $BIN" >&2; exit 1; }
 
 echo "==> 组装 $APP"
