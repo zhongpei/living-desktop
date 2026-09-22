@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import MyPetContent
 import MyPetCore
 
@@ -51,6 +52,8 @@ public struct ActorAppearance {
 @MainActor
 public final class ActorPresentation {
     private let animator: SpriteAnimator
+    private let voiceURL: (String) -> URL?
+    private var voicePlayer: AVAudioPlayer?
     private let panel: OverlayPanel
     private let view: PetView
     private let bubble: SpeechBubble
@@ -68,6 +71,9 @@ public final class ActorPresentation {
     private var detachedFromCastLayout = false
     private var transition: (plan: CastTransitionPlan, startedAt: Double)?
     public private(set) var projectedFrame: LayoutRect?
+    public var voicePlaybackEnabled = true {
+        didSet { if !voicePlaybackEnabled { stopVoice() } }
+    }
 
     public var onMouseDown: ((CGPoint) -> Void)? {
         get { view.onMouseDown }
@@ -96,6 +102,7 @@ public final class ActorPresentation {
     ) {
         let space = coordinateSpace ?? AppKitRenderCoordinateSpace()
         animator = SpriteAnimator(source: source)
+        voiceURL = (source as? ClipLibrary)?.voiceURL(for:) ?? { _ in nil }
         view = PetView(frame: CGRect(origin: .zero, size: initialFrame.size), coordinateSpace: space)
         panel = OverlayPanel(contentView: view, initialFrame: initialFrame)
         bubble = SpeechBubble()
@@ -124,6 +131,22 @@ public final class ActorPresentation {
         let previous = animator.clipName
         let restart = effects.contains { $0.actorID == actorID }
         animator.play(clip, restart: restart)
+        if previous != animator.clipName || restart {
+            stopVoice()
+            if voicePlaybackEnabled, animator.clipName == clip,
+               Self.shouldStartVoice(previous: previous, current: clip,
+                                     effects: effects, actorID: actorID),
+               let url = voiceURL(clip) {
+                do {
+                    let player = try AVAudioPlayer(contentsOf: url)
+                    player.numberOfLoops = 0
+                    player.play()
+                    voicePlayer = player
+                } catch {
+                    NSLog("MyPet: 动作语音播放失败 %@: %@", url.lastPathComponent, String(describing: error))
+                }
+            }
+        }
         let mirrored = pose.map {
             appearance.leftAuthoredClips.contains(animator.clipName)
                 ? $0.facingRight : !$0.facingRight
@@ -156,8 +179,21 @@ public final class ActorPresentation {
     }
 
     public func stop() {
+        stopVoice()
         cancelTransition()
         layoutCoordinator?.remove(actorID)
+    }
+
+    private func stopVoice() {
+        voicePlayer?.stop()
+        voicePlayer = nil
+    }
+
+    static func shouldStartVoice(previous: String, current: String,
+                                 effects: [PresentationEffect], actorID: EntityID) -> Bool {
+        previous != current || effects.contains {
+            $0.actorID == actorID && $0.kind == .behaviorStarted
+        }
     }
 
     private func place(pose: BodyPose, now: Double) {
@@ -242,7 +278,7 @@ public final class ActorPresentation {
     }
 
     public func show() { panel.orderFrontRegardless() }
-    public func hide() { panel.orderOut(nil); bubble.dismiss() }
+    public func hide() { stopVoice(); panel.orderOut(nil); bubble.dismiss() }
     public func speak(_ text: String, headX: CGFloat, headY: CGFloat) {
         bubble.show(text, headX: headX, headY: headY)
     }

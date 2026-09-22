@@ -1,0 +1,14 @@
+{
+  "id": "journey_west_guanyin_counsel",
+  "groupID": "journey_west",
+  "episodes": [{
+    "id": "guanyin_offers_counsel", "title": "观音指引",
+    "participants": ["guanyin", "tang_sanzang", "sun_wukong"],
+    "beats": [
+      {"id": "counsel", "actorIDs": ["guanyin"], "intent": "talk", "targetID": "tang_sanzang", "durationTicks": 3},
+      {"id": "hear", "actorIDs": ["tang_sanzang"], "intent": "listen", "targetID": "guanyin", "durationTicks": 3},
+      {"id": "accept", "actorIDs": ["sun_wukong"], "intent": "nod", "targetID": "guanyin", "durationTicks": 2,
+       "effectsOnSuccess": [{"kind": "relationDelta", "relationKey": "guanyin/sun_wukong/respect", "delta": 0.01}]}
+    ], "cooldownTicks": 150
+  }]
+}

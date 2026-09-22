@@ -1,0 +1,14 @@
+{
+  "id": "dream_red_chamber_baochai_poetry",
+  "groupID": "dream_red_chamber",
+  "episodes": [{
+    "id": "baochai_reads_the_poem", "title": "宝钗评诗",
+    "participants": ["xue_baochai", "lin_daiyu"],
+    "beats": [
+      {"id": "read", "actorIDs": ["xue_baochai"], "intent": "read", "targetID": "poetry_book", "durationTicks": 3},
+      {"id": "reply", "actorIDs": ["lin_daiyu"], "intent": "talk", "targetID": "xue_baochai", "durationTicks": 3},
+      {"id": "listen", "actorIDs": ["xue_baochai"], "intent": "listen", "targetID": "lin_daiyu", "durationTicks": 3,
+       "effectsOnSuccess": [{"kind": "relationDelta", "relationKey": "lin_daiyu/xue_baochai/respect", "delta": 0.01}]}
+    ], "cooldownTicks": 120
+  }]
+}

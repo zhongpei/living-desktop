@@ -1,5 +1,7 @@
 import AppKit
+import MyPetContent
 import MyPetCore
+import MyPetEngine
 
 /// 菜单栏：快捷动作 + 玩法开关 + 状态 + 设置入口；完整配置在设置窗。
 final class Tray: NSObject {
@@ -21,6 +23,7 @@ final class Tray: NSObject {
     var onSingleRoleExit: (() -> Void)?
     /// 打开设置窗。
     var onOpenSettings: (() -> Void)?
+    var onOpenContentManager: (() -> Void)?
     /// 打开业务化脑路日志窗。
     var onOpenLogs: (() -> Void)?
     /// 召唤道具（placed = 召唤到面前落地；否则召唤到手上）。
@@ -155,7 +158,7 @@ final class Tray: NSObject {
     init(settings: Settings) {
         self.settings = settings
         self.castSelection = settings.castSelection
-        self.gameplayCatalog = GameplayCatalogLibrary.loadAvailable()
+        self.gameplayCatalog = ContentResourceLocator.gameplayCatalog()
         super.init()
         installStatusButton()
         rebuild()
@@ -170,6 +173,7 @@ final class Tray: NSObject {
         case teacherBrain = "高阶教师脑（llama.cpp Qwen VL）"
         case localDecisionBrain = "本地决策脑（端侧 MLX 0.8B）"
         case speech = "让宠物说话"
+        case voicePlayback = "播放动作语音"
         case scenes = "场景玩法（目标-场景执行环）"
         case props = "道具"
         case senses = "AX 屏幕感知（辅助功能）"
@@ -185,6 +189,7 @@ final class Tray: NSObject {
         static let teacherBrain = NSUserInterfaceItemIdentifier("teacherBrain")
         static let localDecisionBrain = NSUserInterfaceItemIdentifier("localDecisionBrain")
         static let speech = NSUserInterfaceItemIdentifier("speech")
+        static let voicePlayback = NSUserInterfaceItemIdentifier("voicePlayback")
         static let scenes = NSUserInterfaceItemIdentifier("scenes")
         static let props = NSUserInterfaceItemIdentifier("props")
         static let senses = NSUserInterfaceItemIdentifier("senses")
@@ -262,6 +267,7 @@ final class Tray: NSObject {
         menu.addItem(.separator())
         menu.addItem(withTitle: "查看日志…", action: #selector(openLogs), keyEquivalent: "").target = self
         menu.addItem(withTitle: "设置…", action: #selector(openSettings), keyEquivalent: ",").target = self
+        menu.addItem(withTitle: "内容包管理…", action: #selector(openContentManager), keyEquivalent: "").target = self
         menu.addItem(withTitle: "退出 MyPet", action: #selector(quit), keyEquivalent: "q").target = self
         statusItem.menu = menu
         attachedMenu = menu
@@ -395,6 +401,8 @@ final class Tray: NSObject {
     /// 玩法子菜单（完整字段在设置窗“玩法”页）。
     private func buildGameplayMenu() -> NSMenu {
         let submenu = NSMenu(title: "玩法")
+        submenu.addItem(checkmarkItem(Toggle.voicePlayback, id: MenuID.voicePlayback,
+                                      on: settings.voicePlaybackEnabled))
         if let gameplayCatalog {
             for plugin in gameplayCatalog.plugins where plugin.surfaces.contains("tray") {
                 guard let item = gameplayMenuItem(for: plugin) else { continue }
@@ -539,6 +547,7 @@ final class Tray: NSObject {
 
     @objc private func openLogs() { onOpenLogs?() }
     @objc private func openSettings() { onOpenSettings?() }
+    @objc private func openContentManager() { onOpenContentManager?() }
 
     private func checkmarkItem(
         _ toggle: Toggle,
@@ -570,6 +579,7 @@ final class Tray: NSObject {
         case MenuID.teacherBrain: toggle = .teacherBrain
         case MenuID.localDecisionBrain: toggle = .localDecisionBrain
         case MenuID.speech: toggle = .speech
+        case MenuID.voicePlayback: toggle = .voicePlayback
         case MenuID.scenes: toggle = .scenes
         case MenuID.props: toggle = .props
         case MenuID.senses: toggle = .senses
@@ -645,6 +655,7 @@ extension Tray: NSMenuDelegate {
                 case MenuID.teacherBrain: item.state = settings.teacherBrainEnabled ? .on : .off
                 case MenuID.localDecisionBrain: item.state = settings.localBrainEnabled ? .on : .off
                 case MenuID.speech: item.state = settings.speechEnabled ? .on : .off
+                case MenuID.voicePlayback: item.state = settings.voicePlaybackEnabled ? .on : .off
                 case MenuID.scenes: item.state = settings.scenesEnabled ? .on : .off
                 case MenuID.props: item.state = settings.propsEnabled ? .on : .off
                 case MenuID.senses: item.state = settings.sensesEnabled ? .on : .off

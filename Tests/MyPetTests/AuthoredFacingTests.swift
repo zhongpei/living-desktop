@@ -2,7 +2,7 @@ import AppKit
 import XCTest
 import MyPetContent
 
-@testable import MyPet
+@testable import MyPetApp
 
 /// 步态朝向修复的回归测试：rei_chibi 的步态像素实为朝左（H3 未按声明出图），
 /// 运行时必须按 manifest.facing 镜像，否则倒着走。

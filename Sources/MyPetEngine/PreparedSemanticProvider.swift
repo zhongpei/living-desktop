@@ -1,4 +1,5 @@
 import Foundation
+import MyPetCore
 
 /// Async model adapters prepare values outside GameRuntime.step. Inside the
 /// runtime lock this provider only validates scope and consumes a cached value.

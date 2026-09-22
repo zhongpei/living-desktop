@@ -5,6 +5,8 @@
 #   VERSION 缺省时自动推断：HEAD 上的精确标签（v0.2 → 0.2）；
 #   标签之后的提交 → 「标签-偏移-g哈希」；不在 git 仓库里 → dev。
 # 产物：dist/LivingDesktop.app
+# LIVING_DESKTOP_CONTENT_MODE=external 时只打程序与内置规则，角色/组/剧情
+# 由单独的内容 Release 提供；LIVING_DESKTOP_DIST 可指定隔离输出目录。
 #
 # bundle 组装流程改自 Hopet（MIT License, © 2026 BinaryFroggy）的
 # scripts/build-release.sh，按 Living Desktop 裁剪：不做 DMG、不做 universal。
@@ -17,8 +19,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT"
 RESOURCE_ROOT="${LIVING_DESKTOP_RESOURCES:-$ROOT/Resources}"
+CONTENT_MODE="${LIVING_DESKTOP_CONTENT_MODE:-bundled}"
 
-if [ ! -d "$RESOURCE_ROOT/petpack" ]; then
+if [ "$CONTENT_MODE" != bundled ] && [ "$CONTENT_MODE" != external ]; then
+    echo "error: LIVING_DESKTOP_CONTENT_MODE 必须是 bundled 或 external" >&2
+    exit 1
+fi
+if [ "$CONTENT_MODE" = bundled ] && [ ! -d "$RESOURCE_ROOT/petpack" ]; then
     echo "error: 发布构建需要角色资源；请设置 LIVING_DESKTOP_RESOURCES" >&2
     exit 1
 fi
@@ -30,7 +37,7 @@ if [ -z "$VERSION" ]; then
 fi
 BUNDLE_ID="com.zhongpei.livingdesktop"
 APP_NAME="LivingDesktop"
-DIST="$ROOT/dist"
+DIST="${LIVING_DESKTOP_DIST:-$ROOT/dist}"
 APP="$DIST/$APP_NAME.app"
 
 echo "==> Living Desktop release build (version: $VERSION)"
@@ -62,11 +69,18 @@ if [ -f "$RESOURCE_ROOT/tray-cat.png" ]; then
 fi
 
 # 运行时目录全部按原结构入包。缺失目录由运行时既有降级路径处理。
-for resource_dir in petpack props castpacks castgroups categories characters effects gameplay relationships; do
+for resource_dir in categories effects gameplay relationships; do
     if [ -d "$RESOURCE_ROOT/$resource_dir" ]; then
         cp -R "$RESOURCE_ROOT/$resource_dir" "$APP/Contents/Resources/$resource_dir"
     fi
 done
+if [ "$CONTENT_MODE" = bundled ]; then
+    for resource_dir in packages petpack props castpacks stories castgroups characters; do
+        if [ -d "$RESOURCE_ROOT/$resource_dir" ]; then
+            cp -R "$RESOURCE_ROOT/$resource_dir" "$APP/Contents/Resources/$resource_dir"
+        fi
+    done
+fi
 
 # 行动脑模型（Needle 3）进包：缺失时自动下载一次（~34MB）。
 # 模型不入 git；打上它，行动脑开箱即用。

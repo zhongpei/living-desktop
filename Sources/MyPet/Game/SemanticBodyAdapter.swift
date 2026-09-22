@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import MyPetCore
+import MyPetEngine
 
 /// Executes a Core-approved BodyCommand on the AppKit stage. It never owns or
 /// advances a scene cursor; completion returns only through BodyResult.

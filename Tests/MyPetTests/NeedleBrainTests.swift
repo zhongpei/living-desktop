@@ -1,7 +1,7 @@
 import CoreGraphics
 import XCTest
 
-@testable import MyPet
+@testable import MyPetApp
 
 /// NeedleBrain 纯函数测试：schema 动态 enum、快照、解析、语义校验。
 /// 模型推理本身不进单测（需要 needle3.cact，由冒烟路径覆盖）。
@@ -9,12 +9,26 @@ final class NeedleBrainTests: XCTestCase {
 
     func testPreemptionInvalidatesInFlightNeedleGeneration() {
         let brain = NeedleBrain()
+        brain.activeActor = "actor-a"
         let old = brain.requestGeneration
-        brain.invalidatePendingDecision()
+        brain.invalidatePendingDecision(for: "actor-a")
         XCTAssertFalse(brain.isCurrentGeneration(old))
+        brain.activeActor = "actor-a"
         let current = brain.requestGeneration
-        brain.expedite()
+        brain.expedite(for: "actor-a")
         XCTAssertFalse(brain.isCurrentGeneration(current))
+    }
+
+    func testAnotherActorCannotInvalidateSharedNeedleGeneration() {
+        let brain = NeedleBrain()
+        brain.activeActor = "actor-b"
+        let generation = brain.requestGeneration
+        brain.invalidatePendingDecision(for: "actor-a")
+        XCTAssertTrue(brain.isCurrentGeneration(generation))
+        brain.expedite(for: "actor-a")
+        XCTAssertTrue(brain.isCurrentGeneration(generation))
+        brain.invalidatePendingDecision(for: "actor-b")
+        XCTAssertFalse(brain.isCurrentGeneration(generation))
     }
 
     private var facts: NeedleBrain.WorldFacts {

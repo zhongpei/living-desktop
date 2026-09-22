@@ -1,6 +1,6 @@
 import XCTest
 
-@testable import MyPet
+@testable import MyPetApp
 
 final class BrainDecisionScopeTests: XCTestCase {
     private func world(title: String = "Code", content: [String] = ["draft"]) -> BrainContextSnapshot {

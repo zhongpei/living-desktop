@@ -1,4 +1,5 @@
 import Foundation
+import MyPetCore
 
 /// CastRuntime 到桌面表现层的只读投影。
 ///

@@ -1,5 +1,6 @@
 import Foundation
 import MyPetCore
+import MyPetEngine
 
 // BrainPrefixBuilder —— 本地大脑的两段式 prompt（brain-local.md §4，定稿）。
 //

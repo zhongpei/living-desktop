@@ -1,7 +1,9 @@
 import XCTest
 import MyPetCore
+@testable import MyPetEngine
+import MyPetSimulation
 
-@testable import MyPet
+@testable import MyPetApp
 import MyPetPlatform
 
 /// 大脑层纯函数测试：BrainContextSnapshot 装配、BrainState 动力学、GoalDecision 解析校验、
@@ -445,15 +447,49 @@ final class BrainTests: XCTestCase {
 
         XCTAssertTrue(brain.plan(input: input) { _ in delivered.fulfill() })
         wait(for: [started], timeout: 2)
-        brain.cancelPendingPlan()
+        brain.cancelPendingPlan(traceID: "another-actor")
+        XCTAssertFalse(brain.plan(input: input) { _ in delivered.fulfill() },
+                       "another actor cannot clear the active Teacher request")
+        brain.cancelPendingPlan(traceID: input.traceID)
         wait(for: [stopped], timeout: 2)
 
         CancellationURLProtocol.onStart = nil
         CancellationURLProtocol.onStop = nil
         XCTAssertTrue(brain.plan(input: input) { _ in delivered.fulfill() },
                       "取消后应立即允许下一轮规划")
-        brain.cancelPendingPlan()
+        brain.cancelPendingPlan(traceID: input.traceID)
         wait(for: [delivered], timeout: 0.1)
+    }
+
+    func testLocalPlanGateOnlyCancelsOwnedRequest() {
+        let gate = DispatchGate()
+        XCTAssertTrue(gate.claim(traceID: "actor-b-request"))
+        let task = Task<Void, Never> {
+            try? await Task.sleep(for: .seconds(10))
+        }
+        gate.trackPlan(task, traceID: "actor-b-request")
+        XCTAssertFalse(gate.claim(traceID: "actor-a-request"))
+        gate.cancelPlan(traceID: "actor-a-request")
+        XCTAssertFalse(task.isCancelled)
+        gate.release(traceID: "actor-a-request")
+        XCTAssertFalse(gate.claim(traceID: "actor-a-request"))
+        gate.cancelPlan(traceID: "actor-b-request")
+        XCTAssertTrue(task.isCancelled)
+        gate.release(traceID: "actor-b-request")
+        XCTAssertTrue(gate.claim(traceID: "actor-a-request"))
+        gate.release(traceID: "actor-a-request")
+    }
+
+    func testLocalPlanGateCancelsRequestBeforeTaskIsTracked() {
+        let gate = DispatchGate()
+        XCTAssertTrue(gate.claim(traceID: "actor-a-request"))
+        gate.cancelPlan(traceID: "actor-a-request")
+        let task = Task<Void, Never> {
+            try? await Task.sleep(for: .seconds(10))
+        }
+        gate.trackPlan(task, traceID: "actor-a-request")
+        XCTAssertTrue(task.isCancelled, "取消和任务注册之间的竞态不能让昂贵生成继续运行")
+        gate.release(traceID: "actor-a-request")
     }
 
     func testSpeechReplyParse() {

@@ -13,6 +13,8 @@ let package = Package(
     ],
     products: [
         .library(name: "MyPetCore", targets: ["MyPetCore"]),
+        .library(name: "MyPetEngine", targets: ["MyPetEngine"]),
+        .library(name: "MyPetSimulation", targets: ["MyPetSimulation"]),
         .library(name: "MyPetAI", targets: ["MyPetAI"]),
         .library(name: "MyPetPlatform", targets: ["MyPetPlatform"]),
         .library(name: "MyPetContent", targets: ["MyPetContent"]),
@@ -28,11 +30,22 @@ let package = Package(
             revision: "c6446cf7bfb7cea76408013b614d4b2c530eaa03"),
         .package(url: "https://github.com/ml-explore/mlx-swift.git", exact: "0.31.6"),
         .package(url: "https://github.com/huggingface/swift-transformers.git", from: "1.3.0"),
+        .package(url: "https://github.com/weichsel/ZIPFoundation.git", exact: "0.9.20"),
     ],
     targets: [
         .target(
             name: "MyPetCore",
             path: "Sources/MyPetCore"
+        ),
+        .target(
+            name: "MyPetEngine",
+            dependencies: ["MyPetCore"],
+            path: "Sources/MyPetEngine"
+        ),
+        .target(
+            name: "MyPetSimulation",
+            dependencies: ["MyPetCore", "MyPetEngine"],
+            path: "Sources/MyPetSimulation"
         ),
         // Needle 3 C 接口：needle.h + shim（空实现，只为生成 C 模块），
         // 静态库 libneedle.a 由 MyPet 目标的 linkerSettings 链接。
@@ -64,17 +77,19 @@ let package = Package(
         ),
         .target(
             name: "MyPetContent",
+            dependencies: ["MyPetCore", "ZIPFoundation"],
             path: "Sources/MyPetContent"
         ),
         .target(
             name: "MyPetRender",
-            dependencies: ["MyPetContent", "MyPetCore"],
+            dependencies: ["MyPetContent", "MyPetCore", "MyPetEngine"],
             path: "Sources/MyPetRender"
         ),
-        .executableTarget(
-            name: "MyPet",
+        .target(
+            name: "MyPetApp",
             dependencies: [
                 "MyPetCore",
+                "MyPetEngine",
                 "MyPetAI",
                 "MyPetPlatform",
                 "MyPetContent",
@@ -82,14 +97,19 @@ let package = Package(
             ],
             path: "Sources/MyPet"
         ),
+        .executableTarget(
+            name: "MyPet",
+            dependencies: ["MyPetApp"],
+            path: "Sources/MyPetEntry"
+        ),
         .testTarget(
             name: "MyPetTests",
-            dependencies: ["MyPet", "MyPetCore", "MyPetPlatform", "MyPetContent", "MyPetRender"],
+            dependencies: ["MyPetApp", "MyPetCore", "MyPetEngine", "MyPetSimulation", "MyPetPlatform", "MyPetContent", "MyPetRender"],
             path: "Tests/MyPetTests"
         ),
         .testTarget(
             name: "MyPetCoreTests",
-            dependencies: ["MyPetCore"],
+            dependencies: ["MyPetCore", "MyPetEngine", "MyPetSimulation", "MyPetContent"],
             path: "Tests/MyPetCoreTests"
         ),
         .testTarget(
@@ -104,12 +124,12 @@ let package = Package(
         ),
         .testTarget(
             name: "MyPetRenderTests",
-            dependencies: ["MyPetRender", "MyPetContent", "MyPetCore"],
+            dependencies: ["MyPetRender", "MyPetContent", "MyPetCore", "MyPetEngine"],
             path: "Tests/MyPetRenderTests"
         ),
         .testTarget(
             name: "MyPetContentTests",
-            dependencies: ["MyPetContent"],
+            dependencies: ["MyPetContent", "MyPetCore", "MyPetEngine", "ZIPFoundation"],
             path: "Tests/MyPetContentTests"
         )
     ]

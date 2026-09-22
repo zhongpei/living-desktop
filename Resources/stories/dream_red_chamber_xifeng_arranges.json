@@ -1,0 +1,14 @@
+{
+  "id": "dream_red_chamber_xifeng_arranges",
+  "groupID": "dream_red_chamber",
+  "episodes": [{
+    "id": "xifeng_arranges_a_reading", "title": "凤姐安排读诗",
+    "participants": ["wang_xifeng", "jia_baoyu", "lin_daiyu"],
+    "beats": [
+      {"id": "arrange", "actorIDs": ["wang_xifeng"], "intent": "talk", "targetID": "jia_baoyu", "durationTicks": 3},
+      {"id": "open_book", "actorIDs": ["jia_baoyu"], "intent": "read", "targetID": "poetry_book", "durationTicks": 3},
+      {"id": "respond", "actorIDs": ["lin_daiyu"], "intent": "talk", "targetID": "jia_baoyu", "durationTicks": 3,
+       "effectsOnSuccess": [{"kind": "relationDelta", "relationKey": "jia_baoyu/lin_daiyu/affection", "delta": 0.01}]}
+    ], "cooldownTicks": 120
+  }]
+}

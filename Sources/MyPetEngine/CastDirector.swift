@@ -1,4 +1,5 @@
 import Foundation
+import MyPetCore
 
 public struct CastDirectorSnapshot: Codable, Equatable, Sendable {
     public let selection: CastSelection

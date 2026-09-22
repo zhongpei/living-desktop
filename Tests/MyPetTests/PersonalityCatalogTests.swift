@@ -1,6 +1,8 @@
 import XCTest
 import MyPetCore
-@testable import MyPet
+@testable import MyPetEngine
+import MyPetSimulation
+@testable import MyPetApp
 
 final class PersonalityCatalogTests: XCTestCase {
     func testGeneratedCatalogKeepsHumanSemanticProfileBesideInternalNumbers() throws {

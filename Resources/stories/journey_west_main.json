@@ -1,0 +1,137 @@
+{
+  "id": "journey_west_main",
+  "groupID": "journey_west",
+  "episodes": [
+    {
+      "id": "west_shared_scroll",
+      "title": "共同守护经卷",
+      "participants": [
+        "tang_sanzang",
+        "sun_wukong",
+        "zhu_bajie",
+        "sha_wujing"
+      ],
+      "prerequisites": [],
+      "beats": [
+        {
+          "id": "scroll",
+          "actorIDs": [
+            "tang_sanzang"
+          ],
+          "intent": "read",
+          "durationTicks": 3,
+          "targetID": "sacred_scroll",
+          "slotID": "surface",
+          "claims": [
+            "body",
+            "manipulator"
+          ],
+          "occupySlotOnSuccess": true,
+          "releaseSlotOnSuccess": true,
+          "effectsOnSuccess": []
+        },
+        {
+          "id": "hand_off",
+          "actorIDs": [
+            "tang_sanzang"
+          ],
+          "intent": "give",
+          "durationTicks": 2,
+          "targetID": "sacred_scroll",
+          "slotID": "surface",
+          "claims": [
+            "body",
+            "manipulator"
+          ],
+          "occupySlotOnSuccess": true,
+          "releaseSlotOnSuccess": true,
+          "handoff": {
+            "propID": "sacred_scroll",
+            "fromActorID": "tang_sanzang",
+            "toActorID": "sun_wukong",
+            "fromSlotID": "surface",
+            "toSlotID": "surface",
+            "durationTicks": 4
+          },
+          "effectsOnSuccess": []
+        },
+        {
+          "id": "receive",
+          "actorIDs": [
+            "sun_wukong"
+          ],
+          "intent": "receive",
+          "durationTicks": 2,
+          "targetID": "sacred_scroll",
+          "slotID": "surface",
+          "claims": [
+            "body",
+            "manipulator"
+          ],
+          "occupySlotOnSuccess": true,
+          "effectsOnSuccess": []
+        },
+        {
+          "id": "gather",
+          "actorIDs": [
+            "tang_sanzang",
+            "sun_wukong",
+            "zhu_bajie",
+            "sha_wujing"
+          ],
+          "intent": "greet_other",
+          "durationTicks": 3,
+          "effectsOnSuccess": []
+        },
+        {
+          "id": "argue",
+          "actorIDs": [
+            "sun_wukong",
+            "zhu_bajie"
+          ],
+          "intent": "argue",
+          "durationTicks": 4,
+          "effectsOnSuccess": [
+            {
+              "kind": "relationDelta",
+              "relationKey": "zhu_bajie/sun_wukong/tension",
+              "delta": 0.05
+            }
+          ]
+        },
+        {
+          "id": "guide",
+          "actorIDs": [
+            "guanyin",
+            "tang_sanzang"
+          ],
+          "intent": "comfort",
+          "durationTicks": 3,
+          "effectsOnSuccess": [
+            {
+              "kind": "setFact",
+              "fact": "pilgrimage_guidance_received",
+              "factTTL": 120
+            }
+          ]
+        },
+        {
+          "id": "guard_master",
+          "actorIDs": [
+            "sun_wukong"
+          ],
+          "intent": "protect",
+          "durationTicks": 3,
+          "targetID": "tang_sanzang",
+          "slotID": "side",
+          "claims": [
+            "body"
+          ],
+          "occupySlotOnSuccess": true,
+          "effectsOnSuccess": []
+        }
+      ],
+      "cooldownTicks": 60
+    }
+  ]
+}

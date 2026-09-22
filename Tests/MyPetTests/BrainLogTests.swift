@@ -1,5 +1,5 @@
 import XCTest
-@testable import MyPet
+@testable import MyPetApp
 
 final class BrainLogTests: XCTestCase {
 

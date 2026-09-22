@@ -280,41 +280,6 @@ public final class GameKernel {
         self.storyInterruptionPolicy = storyInterruptionPolicy
     }
 
-    public convenience init(scenario: HarnessScenario) {
-        self.init(seed: scenario.seed, stepMilliseconds: scenario.stepMilliseconds)
-        for entity in scenario.entities {
-            world.entities[entity.id.raw] = entity
-            world.planEpochs[entity.id.raw] = 0
-        }
-        // VirtualDesktop windows occupy the environment side of the seam. A
-        // scenario may still provide explicit EntityState/slots when it needs
-        // a non-default layout; otherwise the kernel receives ordinary window
-        // entities and two stable perch slot definitions.
-        for window in scenario.desktop.windows.values.sorted(by: { $0.id.raw < $1.id.raw }) {
-            if world.entities[window.id.raw] == nil {
-                let entity = EntityState(
-                    id: window.id, kind: .window,
-                    revision: window.revision, alive: window.alive)
-                world.entities[window.id.raw] = entity
-                world.planEpochs[window.id.raw] = 0
-            }
-        }
-        for slot in scenario.slots {
-            world.slots[slot.key] = slot
-        }
-        for window in world.entities.values where window.kind == .window && window.alive {
-            for slotID in ["top.left", "top.right"] {
-                let key = "\(window.id.raw)/\(slotID)"
-                if world.slots[key] == nil {
-                    world.slots[key] = InteractionSlot(entityID: window.id, slotID: slotID)
-                }
-            }
-        }
-        for scheduled in scenario.events {
-            inbox.enqueue(scheduled.event, atTick: scheduled.atTick)
-        }
-    }
-
     public init(snapshot: KernelSnapshot) {
         clock = snapshot.clock
         world = snapshot.world
@@ -369,7 +334,7 @@ public final class GameKernel {
     }
 
     @discardableResult
-    func tick(
+    public func tick(
         afterEvents: (() -> Void)?,
         beforeBehaviorAdvance: () -> Void
     ) -> TickReport {

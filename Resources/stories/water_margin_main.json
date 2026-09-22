@@ -1,0 +1,75 @@
+{
+  "id": "water_margin_main",
+  "groupID": "water_margin",
+  "episodes": [
+    {
+      "id": "margin_training",
+      "title": "梁山切磋",
+      "participants": [
+        "lu_zhishen",
+        "wu_song"
+      ],
+      "prerequisites": [],
+      "beats": [
+        {
+          "id": "drink",
+          "actorIDs": [
+            "wu_song"
+          ],
+          "intent": "drink",
+          "durationTicks": 2,
+          "targetID": "wine_gourd",
+          "slotID": "handle",
+          "claims": [
+            "body",
+            "manipulator"
+          ],
+          "occupySlotOnSuccess": true,
+          "effectsOnSuccess": []
+        },
+        {
+          "id": "face",
+          "actorIDs": [
+            "lu_zhishen",
+            "wu_song"
+          ],
+          "intent": "face_other",
+          "durationTicks": 2,
+          "effectsOnSuccess": []
+        },
+        {
+          "id": "practice",
+          "actorIDs": [
+            "lu_zhishen",
+            "wu_song"
+          ],
+          "intent": "play",
+          "durationTicks": 5,
+          "effectsOnSuccess": [
+            {
+              "kind": "relationDelta",
+              "relationKey": "wu_song/lu_zhishen/respect",
+              "delta": 0.03
+            }
+          ]
+        },
+        {
+          "id": "spar",
+          "actorIDs": [
+            "wu_song"
+          ],
+          "intent": "challenge",
+          "durationTicks": 3,
+          "targetID": "lu_zhishen",
+          "slotID": "spar",
+          "claims": [
+            "body"
+          ],
+          "occupySlotOnSuccess": true,
+          "effectsOnSuccess": []
+        }
+      ],
+      "cooldownTicks": 60
+    }
+  ]
+}

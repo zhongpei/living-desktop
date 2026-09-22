@@ -1,5 +1,5 @@
 import XCTest
-@testable import MyPet
+@testable import MyPetApp
 import MyPetPlatform
 
 /// 感知契约与存储的纯函数部分（离线可测，不需要 AX 权限）。

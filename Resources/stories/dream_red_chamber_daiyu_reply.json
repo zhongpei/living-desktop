@@ -1,0 +1,14 @@
+{
+  "id": "dream_red_chamber_daiyu_reply",
+  "groupID": "dream_red_chamber",
+  "episodes": [{
+    "id": "daiyu_answers_baoyu", "title": "黛玉的回话",
+    "participants": ["lin_daiyu", "jia_baoyu"],
+    "beats": [
+      {"id": "ask", "actorIDs": ["jia_baoyu"], "intent": "talk", "targetID": "lin_daiyu", "durationTicks": 3},
+      {"id": "sharp_reply", "actorIDs": ["lin_daiyu"], "intent": "complain", "targetID": "jia_baoyu", "durationTicks": 3},
+      {"id": "make_amends", "actorIDs": ["jia_baoyu"], "intent": "comfort", "targetID": "lin_daiyu", "durationTicks": 3,
+       "effectsOnSuccess": [{"kind": "relationDelta", "relationKey": "jia_baoyu/lin_daiyu/affection", "delta": 0.01}]}
+    ], "cooldownTicks": 120
+  }]
+}

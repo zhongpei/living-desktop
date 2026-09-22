@@ -21,21 +21,5 @@
     { "entityID": "eva00", "slotID": "cockpit", "capacity": 1 },
     { "entityID": "eva02", "slotID": "cockpit", "capacity": 1 },
     { "entityID": "shinji", "slotID": "protect", "capacity": 1 }
-  ],
-  "episodes": [
-    { "id": "eva_launch_argument", "title": "出击前争执", "participants": ["shinji", "rei", "asuka", "eva01", "eva00", "eva02"], "prerequisites": [], "beats": [
-      { "id": "radio", "actorIDs": ["shinji"], "intent": "signal", "durationTicks": 2, "targetID": "command_radio", "slotID": "handle", "claims": ["body", "manipulator"], "occupySlotOnSuccess": true, "effectsOnSuccess": [] },
-      { "id": "standby", "actorIDs": ["eva01", "eva00", "eva02"], "intent": "standby", "durationTicks": 3, "effectsOnSuccess": [] },
-      { "id": "enter_eva01", "actorIDs": ["shinji"], "intent": "enter_cockpit", "durationTicks": 3, "targetID": "eva01", "slotID": "cockpit", "claims": ["body", "locomotion"], "occupySlotOnSuccess": true, "effectsOnSuccess": [ { "kind": "setFact", "fact": "eva01_cockpit_occupied", "factTTL": 180 } ] },
-      { "id": "activate_eva01", "actorIDs": ["eva01"], "intent": "activate", "durationTicks": 2, "targetID": "shinji", "claims": ["body"], "effectsOnSuccess": [] },
-      { "id": "argue", "actorIDs": ["shinji", "asuka"], "intent": "argue", "durationTicks": 4, "effectsOnSuccess": [ { "kind": "relationDelta", "relationKey": "asuka/shinji/tension", "delta": 0.04 } ] },
-      { "id": "protect", "actorIDs": ["rei", "shinji"], "intent": "comfort", "durationTicks": 3, "effectsOnSuccess": [] }
-    ], "cooldownTicks": 90, "branches": [
-      { "id": "rei_protects_shinji", "prerequisites": [ { "relationKey": "rei/shinji/trust", "minimum": 0.4 } ], "priority": 10, "beats": [
-      { "id": "enter_eva01", "actorIDs": ["shinji"], "intent": "enter_cockpit", "durationTicks": 3, "targetID": "eva01", "slotID": "cockpit", "claims": ["body", "locomotion"], "occupySlotOnSuccess": true, "effectsOnSuccess": [ { "kind": "setFact", "fact": "eva01_cockpit_occupied", "factTTL": 180 } ] },
-      { "id": "activate_eva01", "actorIDs": ["eva01"], "intent": "activate", "durationTicks": 2, "targetID": "shinji", "claims": ["body"], "effectsOnSuccess": [] },
-      { "id": "quiet_signal", "actorIDs": ["rei"], "intent": "comfort", "durationTicks": 2, "targetID": "shinji", "slotID": "protect", "claims": ["body"], "occupySlotOnSuccess": true, "effectsOnSuccess": [ { "kind": "setFact", "fact": "eva_quiet_signal", "factTTL": 180 } ] }
-      ] }
-    ] }
   ]
 }

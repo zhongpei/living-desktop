@@ -1,6 +1,7 @@
 import CoreGraphics
 import MyPetContent
 import MyPetCore
+@testable import MyPetEngine
 @testable import MyPetRender
 import XCTest
 
@@ -116,6 +117,20 @@ final class RenderBoundaryTests: XCTestCase {
         presentation.apply(snapshot: runtime.presentationSnapshot(),
                            effects: [], dt: 0, now: 3)
         XCTAssertEqual(presentation.projectedFrame!.x, 860)
+    }
+
+    func testActionVoiceDoesNotReplayOnBehaviorCompletion() {
+        let actor = EntityID("pet")
+        let started = PresentationEffect(kind: .behaviorStarted, behaviorID: "one",
+                                         actorID: actor, intent: "wave")
+        let completed = PresentationEffect(kind: .behaviorCompleted, behaviorID: "one",
+                                           actorID: actor, intent: "wave")
+        XCTAssertTrue(ActorPresentation.shouldStartVoice(
+            previous: "actions/wave", current: "actions/wave", effects: [started], actorID: actor))
+        XCTAssertFalse(ActorPresentation.shouldStartVoice(
+            previous: "actions/wave", current: "actions/wave", effects: [completed], actorID: actor))
+        XCTAssertTrue(ActorPresentation.shouldStartVoice(
+            previous: "base/idle", current: "actions/wave", effects: [], actorID: actor))
     }
 
     private func makeImage() -> CGImage {

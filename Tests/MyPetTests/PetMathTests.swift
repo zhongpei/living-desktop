@@ -1,7 +1,7 @@
 import CoreGraphics
 import XCTest
 
-@testable import MyPet
+@testable import MyPetApp
 
 final class PetMathTests: XCTestCase {
 

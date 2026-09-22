@@ -1,4 +1,5 @@
 import Foundation
+import MyPetCore
 
 public struct CastRuntimeSnapshot: Codable, Equatable, Sendable {
     public let kernel: KernelSnapshot
@@ -46,6 +47,7 @@ public final class CastRuntime {
 
     public convenience init(
         resolvedPacks: [ResolvedCastPack],
+        stories: [StoryPack] = [],
         selection: CastSelection,
         seed: UInt64 = 0,
         bodyExecutionMode: BodyExecutionMode = .headless,
@@ -54,7 +56,7 @@ public final class CastRuntime {
         storyExecutionProvider: (any StoryExecutionProvider)? = nil
     ) {
         self.init(
-            packs: resolvedPacks.map(\.pack), selection: selection, seed: seed,
+            packs: resolvedPacks.map(\.pack), stories: stories, selection: selection, seed: seed,
             bodyExecutionMode: bodyExecutionMode, arrivalDelayTicks: arrivalDelayTicks,
             storyConfiguration: storyConfiguration,
             storyExecutionProvider: storyExecutionProvider,
@@ -65,6 +67,7 @@ public final class CastRuntime {
 
     public init(
         packs: [CastPack],
+        stories: [StoryPack] = [],
         selection: CastSelection,
         seed: UInt64 = 0,
         bodyExecutionMode: BodyExecutionMode = .headless,
@@ -84,7 +87,9 @@ public final class CastRuntime {
             seed: seed,
             arrivalDelayTicks: arrivalDelayTicks)
         storyDirector = StoryDirector(
-            episodes: packs.flatMap(\.episodes),
+            episodes: packs.flatMap(\.episodes) + stories
+                .filter { pack in packs.contains { $0.groupID == pack.groupID } }
+                .flatMap(\.runtimeEpisodes),
             configuration: storyConfiguration,
             executionProvider: storyExecutionProvider)
     }
@@ -92,6 +97,7 @@ public final class CastRuntime {
     public init(
         snapshot: CastRuntimeSnapshot,
         packs: [CastPack],
+        stories: [StoryPack] = [],
         storyExecutionProvider: (any StoryExecutionProvider)? = nil
     ) {
         characterDefinitions = [:]
@@ -104,7 +110,9 @@ public final class CastRuntime {
             arrivalDelayTicks: snapshot.director.arrivalDelayTicks)
         director.restore(from: snapshot.director)
         storyDirector = StoryDirector(
-            episodes: packs.flatMap(\.episodes),
+            episodes: packs.flatMap(\.episodes) + stories
+                .filter { pack in packs.contains { $0.groupID == pack.groupID } }
+                .flatMap(\.runtimeEpisodes),
             configuration: snapshot.storyDirector.configuration,
             executionProvider: storyExecutionProvider)
         if snapshot.runtimeCheckpoint == nil {

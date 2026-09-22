@@ -1,6 +1,7 @@
 import Foundation
 import MyPetAI
 import MyPetCore
+import MyPetEngine
 
 // GoalBrain —— 高层目标决策的统一接口：
 //   TeacherBrain → 本机 llama.cpp + Qwen VLM（高阶教师脑）
@@ -23,7 +24,7 @@ protocol GoalBrain: AnyObject {
 
     /// 当前规划已经失效。昂贵且可取消的实现应停止底层工作；轻量实现可以只丢弃结果。
     /// 主线程调用，不影响独立的聊天请求。
-    func cancelPendingPlan()
+    func cancelPendingPlan(traceID: String)
 
     /// 发起一次目标规划。调度节奏由 GoalBrainCoordinator 统一管理。
     /// 返回 false = 不可用/已在飞；回调主队列，decision=nil = 失败/被拒/弃权。
@@ -242,6 +243,7 @@ final class TeacherBrain: GoalBrain {
     private var speechPending = false
     private var planGeneration: UInt64 = 0
     private var planTask: URLSessionTask?
+    private var planTraceID: String?
 
     var isAvailable: Bool { effectiveConfig != nil }
 
@@ -250,11 +252,13 @@ final class TeacherBrain: GoalBrain {
     /// 调度器会把下一轮教师规划提前；适配器自身只处理 pending。
     func expedite() {}
 
-    func cancelPendingPlan() {
+    func cancelPendingPlan(traceID: String) {
+        guard planTraceID == traceID else { return }
         planGeneration &+= 1
         planTask?.cancel()
         planTask = nil
         planPending = false
+        planTraceID = nil
     }
 
     // MARK: 配置
@@ -280,6 +284,7 @@ final class TeacherBrain: GoalBrain {
                    completion: @escaping (GoalDecision?) -> Void) -> Bool {
         guard !planPending, let config = effectiveConfig else { return false }
         planPending = true
+        planTraceID = input.traceID
         planGeneration &+= 1
         let generation = planGeneration
 
@@ -293,6 +298,7 @@ final class TeacherBrain: GoalBrain {
                 guard let self, self.planGeneration == generation else { return }
                 self.planTask = nil
                 self.planPending = false
+                self.planTraceID = nil
                 let decision = output.flatMap { GoalDecision.parse($0) }
                 let valid = decision.flatMap { GoalDecision.validate($0, world: input.world) ? $0 : nil }
                 BrainDecisionLog.log(world: input.world, brain: input.brain, output: output,
@@ -562,6 +568,7 @@ final class GoalBrainCoordinator {
     private var nextPlanAt: Double = 0
     private var pending = false
     private var planGeneration: UInt64 = 0
+    private var pendingTraceID: String?
 
     private(set) var runtimeSource: Source?
 
@@ -600,8 +607,10 @@ final class GoalBrainCoordinator {
     func cancelPendingPlan() {
         planGeneration &+= 1
         pending = false
-        local.cancelPendingPlan()
-        teacher.cancelPendingPlan()
+        guard let traceID = pendingTraceID else { return }
+        pendingTraceID = nil
+        local.cancelPendingPlan(traceID: traceID)
+        teacher.cancelPendingPlan(traceID: traceID)
     }
 
     @discardableResult
@@ -615,6 +624,7 @@ final class GoalBrainCoordinator {
             !sources.isEmpty else { return false }
 
         pending = true
+        pendingTraceID = input.traceID
         nextPlanAt = now + Double.random(in: interval)
         self.runtimeSource = runtimeSource
         let generation = planGeneration
@@ -627,6 +637,7 @@ final class GoalBrainCoordinator {
             allDone: { [weak self] in
                 guard self?.planGeneration == generation else { return }
                 self?.pending = false
+                self?.pendingTraceID = nil
             })
 
         for source in sources {

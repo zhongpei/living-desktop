@@ -1,6 +1,8 @@
 import AppKit
+import MyPetContent
 import MyPetPlatform
 import MyPetCore
+import MyPetEngine
 
 /// 设置窗：完整配置的唯一入口（菜单只留快捷开关）。
 ///
@@ -14,6 +16,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     var onApply: ((Settings) -> Void)?
     /// 拖动滑杆时的实时预览：不落盘，直接喂给控制器热更新（宠物/道具当场变大变小）。
     var onPreview: ((Settings) -> Void)?
+    var onOpenContentManager: (() -> Void)?
     /// 本地决策脑真实聊天测试；由 AppDelegate 复用当前 PetController 的 actor。
     var localChatTester: (() async -> LocalBrain.ChatTestResult)?
 
@@ -52,6 +55,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var teacherReasoningField: NSTextField!
     private var logBox: NSButton!
     private var speechBox: NSButton!
+    private var voicePlaybackBox: NSButton!
     private var actionBrainBox: NSButton!
     private var actionBrainStatusLabel: NSTextField!
     private var localDecisionBrainBox: NSButton!
@@ -110,7 +114,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         self.draft = settings
         self.initial = settings
         self.castPacks = castPacks
-        self.gameplayCatalog = GameplayCatalogLibrary.loadAvailable()
+        self.gameplayCatalog = ContentResourceLocator.gameplayCatalog()
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 580, height: 620),
             styleMask: [.titled, .closable],
@@ -140,6 +144,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         tabs.addTabViewItem(tab("通用", buildGeneralTab()))
         tabs.addTabViewItem(tab("玩法", buildGameplayTab()))
         tabs.addTabViewItem(tab("角色", buildCastTab()))
+        tabs.addTabViewItem(tab("内容包", buildContentPackagesTab()))
         tabs.addTabViewItem(tab("剧情与关系", buildStoryTab()))
         tabs.addTabViewItem(tab("大脑", buildBrainTab()))
         tabs.addTabViewItem(tab("感知", buildSensesTab()))
@@ -179,6 +184,18 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         item.view = view
         return item
     }
+
+    private func buildContentPackagesTab() -> NSView {
+        let open = NSButton(title: "打开内容包管理…", target: self,
+                            action: #selector(openContentManager))
+        return formStack([
+            note("角色、角色组和剧情是彼此独立的单文件包。这里可查看来源与状态、导入、启停及安全移除。"),
+            open,
+            note("活动内容的变更会先结束当前会话再重新启动；内置包只能停用，不能物理删除。"),
+        ])
+    }
+
+    @objc private func openContentManager() { onOpenContentManager?() }
 
     private func formStack(_ views: [NSView]) -> NSView {
         let stack = NSStackView(views: views)
@@ -462,12 +479,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         logBox = checkbox("完整脑路日志（仅保存在本机）", draft.brainTraceEnabled, #selector(toggleDraft(_:)))
         speechBox = checkbox(gameplayLabel("speech", fallback: "让宠物说话"),
                              draft.speechEnabled, #selector(toggleDraft(_:)))
+        voicePlaybackBox = checkbox("播放动作语音（角色专属动作的录制台词）",
+                                    draft.voicePlaybackEnabled, #selector(toggleDraft(_:)))
         goalMinIntervalField = numberField(String(format: "%.3g", draft.goalBrainMinInterval))
         goalMaxIntervalField = numberField(String(format: "%.3g", draft.goalBrainMaxInterval))
 
         let shared = NSStackView(views: [
             note("三个大脑可独立开关；同时运行时本地决策脑驱动行为，高阶教师脑只产训练标签。"),
-            logBox, speechBox,
+            logBox, speechBox, voicePlaybackBox,
             row("目标最短间隔", goalMinIntervalField),
             row("目标最长间隔", goalMaxIntervalField),
         ])
@@ -738,6 +757,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         draft.teacherBrainReasoningEffort = teacherReasoningField.stringValue.trimmingCharacters(in: .whitespaces)
         draft.brainTraceEnabled = logBox.state == .on
         draft.speechEnabled = speechBox.state == .on
+        draft.voicePlaybackEnabled = voicePlaybackBox.state == .on
         draft.actionBrainEnabled = actionBrainBox.state == .on
         draft.localBrainEnabled = localDecisionBrainBox.state == .on
         draft.localBrainGoalTemperature = boundedDouble(localGoalTemperatureField, fallback: 0.0,

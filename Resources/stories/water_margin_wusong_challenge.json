@@ -1,0 +1,14 @@
+{
+  "id": "water_margin_wusong_challenge",
+  "groupID": "water_margin",
+  "episodes": [{
+    "id": "wusong_and_lu_spar", "title": "武松与鲁智深切磋",
+    "participants": ["wu_song", "lu_zhishen"],
+    "beats": [
+      {"id": "challenge", "actorIDs": ["wu_song"], "intent": "challenge", "targetID": "lu_zhishen", "durationTicks": 3},
+      {"id": "answer", "actorIDs": ["lu_zhishen"], "intent": "defend", "targetID": "wu_song", "durationTicks": 3},
+      {"id": "respect", "actorIDs": ["wu_song"], "intent": "greet_other", "targetID": "lu_zhishen", "durationTicks": 3,
+       "effectsOnSuccess": [{"kind": "relationDelta", "relationKey": "wu_song/lu_zhishen/respect", "delta": 0.02}]}
+    ], "cooldownTicks": 150
+  }]
+}

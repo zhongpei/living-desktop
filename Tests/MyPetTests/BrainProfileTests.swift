@@ -1,5 +1,5 @@
 import XCTest
-@testable import MyPet
+@testable import MyPetApp
 import struct MyPetCore.DialogueProfile
 
 /// 配置档案 v1：代码兜底 + 用户档叠加 + 前缀 hash（brain-local.md §7，离线）。
@@ -259,6 +259,66 @@ final class BrainProfileTests: XCTestCase {
         teacher.finish(nil)
         XCTAssertEqual(delivered, [fresh])
     }
+
+    func testStoppingAnotherCoordinatorDoesNotCancelSharedOwnerPlan() {
+        let shared = SingleFlightGoalBrain()
+        let idle = StubGoalBrain()
+        let owner = GoalBrainCoordinator(local: shared, teacher: idle)
+        let other = GoalBrainCoordinator(local: shared, teacher: idle)
+        owner.configure(localEnabled: true, teacherEnabled: false, interval: 0...0)
+        other.configure(localEnabled: true, teacherEnabled: false, interval: 0...0)
+
+        func input(_ petID: String) -> GoalBrainInput {
+            GoalBrainInput(
+                petID: petID,
+                world: BrainContextSnapshot(capturedAt: 1, activeApp: "Code", windowTitle: "",
+                    appActivity: "coding", userActivity: "editing_text", focusRole: "textarea",
+                    visibleContext: [], salientUI: [], nearbyWindows: [], recentEvents: []),
+                brain: BrainState(), personality: .default, memory: [], traceID: "trace-\(petID)")
+        }
+
+        var ownerResult: GoalDecision?
+        XCTAssertTrue(owner.maybePlan(now: 0, input: input("actor-b")) { decision, _ in
+            ownerResult = decision
+        })
+        XCTAssertTrue(other.maybePlan(now: 0, input: input("actor-a")) { _, _ in })
+        other.cancelPendingPlan()
+
+        XCTAssertEqual(shared.cancelCount, 0, "actor A must not cancel actor B's shared request")
+        let decision = GoalDecision(goal: .rest, target: nil, activity: nil, style: nil,
+                                    speech: nil, speechIntent: nil, memory: nil, why: nil)
+        shared.finish(decision)
+        XCTAssertEqual(ownerResult, decision)
+    }
+}
+
+private final class SingleFlightGoalBrain: GoalBrain {
+    let isAvailable = true
+    private var completion: ((GoalDecision?) -> Void)?
+    private(set) var cancelCount = 0
+
+    func expedite() {}
+    func cancelPendingPlan(traceID: String) {
+        cancelCount += 1
+        completion = nil
+    }
+
+    func plan(input: GoalBrainInput, completion: @escaping (GoalDecision?) -> Void) -> Bool {
+        guard self.completion == nil else { return false }
+        self.completion = completion
+        return true
+    }
+
+    func requestSpeech(intent: SpeechIntent, world: BrainContextSnapshot, brain: BrainState,
+                       personality: Personality, characterID: String,
+                       dialogue: DialogueProfile?, traceID: String?,
+                       completion: @escaping (SpeechReply?) -> Void) -> Bool { false }
+
+    func finish(_ decision: GoalDecision?) {
+        let callback = completion
+        completion = nil
+        callback?(decision)
+    }
 }
 
 private final class StubGoalBrain: GoalBrain {
@@ -268,7 +328,7 @@ private final class StubGoalBrain: GoalBrain {
     private var completions: [(GoalDecision?) -> Void] = []
 
     func expedite() {}
-    func cancelPendingPlan() { cancelPendingPlanCount += 1 }
+    func cancelPendingPlan(traceID: String) { cancelPendingPlanCount += 1 }
 
     @discardableResult
     func plan(input: GoalBrainInput,

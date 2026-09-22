@@ -1,5 +1,6 @@
 import Foundation
 import MyPetCore
+import MyPetEngine
 import MyPetPlatform
 
 /// 多角色共享的外界感知总线。

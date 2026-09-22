@@ -3,6 +3,7 @@ import CoreGraphics
 import CoreText
 import MyPetContent
 import MyPetCore
+import MyPetEngine
 import MyPetPlatform
 import MyPetRender
 
@@ -228,6 +229,7 @@ final class PetController {
             baselineRatio: Double(ClipLibrary.baselineRatio),
             layoutCoordinator: layoutCoordinator,
             stepMilliseconds: runtime.clock.stepMilliseconds)
+        presentation.voicePlaybackEnabled = settings.voicePlaybackEnabled
 
         wireView()
         goalBrainCoordinator = GoalBrainCoordinator(local: self.localBrain, teacher: self.teacherBrain)
@@ -479,7 +481,7 @@ final class PetController {
     func stop() {
         guard !isStopped else { return }
         isStopped = true
-        needle.invalidatePendingDecision()
+        needle.invalidatePendingDecision(for: runtimeActorID.raw)
         goalBrainCoordinator.cancelPendingPlan()
         isDeparting = false
         presentation.stop()
@@ -524,6 +526,7 @@ final class PetController {
     @objc func tick() { tickFrame(presentationEffects: nil) }
 
     func tickFrame(presentationEffects: [PresentationEffect]?) {
+        guard !isStopped else { return }
         let now = ProcessInfo.processInfo.systemUptime
         let dt = min(0.25, max(0, now - lastTick))
         lastTick = now
@@ -1128,7 +1131,7 @@ final class PetController {
     }
 
     private func clearGoal(reason: String) {
-        needle.invalidatePendingDecision()
+        needle.invalidatePendingDecision(for: runtimeActorID.raw)
         guard let goal = currentGoal else { return }
         cancelPendingRuntimeActions()
         pushRecentEvent("goal cleared: \(reason)")
@@ -1175,7 +1178,7 @@ final class PetController {
     /// 用户/行动脑主动接管时，同时终止当前场景和它所属的目标。
     /// 没有目标但仍有挂起场景时，保留纯场景中断路径。
     private func cancelGoalAndScene(reason: String) {
-        needle.invalidatePendingDecision()
+        needle.invalidatePendingDecision(for: runtimeActorID.raw)
         goalBrainCoordinator.cancelPendingPlan()
         cancelPendingRuntimeActions()
         if reason.localizedCaseInsensitiveContains("user") ||
@@ -1204,12 +1207,12 @@ final class PetController {
         guard let wanted = goalActivity, wanted != .unknown else { return }
         guard let fg = world.foreground, fg.appActivity != wanted else { return }
         goalBrainCoordinator.expedite()
-        needle.expedite()
+        needle.expedite(for: runtimeActorID.raw)
         clearGoal(reason: "world changed: \(wanted.rawValue) → \(fg.appActivity.rawValue)")
     }
 
     private func abortScene(reason: String = "interrupted") {
-        needle.invalidatePendingDecision()
+        needle.invalidatePendingDecision(for: runtimeActorID.raw)
         if !usesSharedGameplayKernel, settings.scenesEnabled,
            semanticPipeline.sceneRunner.status == .running {
             if let id = semanticPipeline.cancel() { gameplayRuntime.cancelBodyBehavior(id) }
@@ -1733,6 +1736,7 @@ final class PetController {
             || s.sensesEnabled != settings.sensesEnabled
             || s.ocrEnabled != settings.ocrEnabled
         settings = s
+        presentation.voicePlaybackEnabled = s.voicePlaybackEnabled
         props.userScale = s.propScale
         if heightChanged {
             model.displayHeight = s.displayHeight
@@ -1779,7 +1783,7 @@ final class PetController {
             // 内容只推动快速反应，不直接执行动作；本地脑在下一次 tick
             // 看到更新后的 BrainContextSnapshot 后决定是否升级当前反应。
             goalBrainCoordinator.expedite()
-            needle.expedite()
+            needle.expedite(for: runtimeActorID.raw)
         }
         perceptionEventCursor = input.latestSequence
 
@@ -2123,7 +2127,7 @@ final class PetController {
         pushRecentEvent(window.map { "user switched to \($0.owner)" } ?? "user left foreground window")
         // 重要窗口出现（game.md §5/§4 触发器）：行动脑下个边界立即反应。
         goalBrainCoordinator.expedite()
-        needle.expedite()
+        needle.expedite(for: runtimeActorID.raw)
         guard let window else { return }
         guard settings.foregroundFollow else { return }
         guard foregroundCooldown <= 0 else { return }
@@ -2222,7 +2226,7 @@ final class PetController {
             pokeTimes = []
             brainState.apply(event: .poked, now: clock)
             pushRecentEvent("user poked the pet repeatedly")
-            needle.expedite()
+            needle.expedite(for: runtimeActorID.raw)
             flee(distance: 160)
             if settings.speechEnabled { speak(intent: .complain) }
         } else {

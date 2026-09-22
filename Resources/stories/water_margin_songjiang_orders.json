@@ -1,0 +1,14 @@
+{
+  "id": "water_margin_songjiang_orders",
+  "groupID": "water_margin",
+  "episodes": [{
+    "id": "songjiang_sets_the_watch", "title": "宋江布置守望",
+    "participants": ["song_jiang", "lin_chong", "lu_zhishen"],
+    "beats": [
+      {"id": "assign", "actorIDs": ["song_jiang"], "intent": "talk", "targetID": "lin_chong", "durationTicks": 3},
+      {"id": "survey", "actorIDs": ["lin_chong"], "intent": "look_around", "durationTicks": 3},
+      {"id": "agree", "actorIDs": ["lu_zhishen"], "intent": "nod", "targetID": "song_jiang", "durationTicks": 2,
+       "effectsOnSuccess": [{"kind": "relationDelta", "relationKey": "lu_zhishen/song_jiang/trust", "delta": 0.01}]}
+    ], "cooldownTicks": 120
+  }]
+}

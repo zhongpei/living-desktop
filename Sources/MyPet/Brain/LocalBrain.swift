@@ -1,6 +1,7 @@
 import Foundation
 import MyPetAI
 import MyPetCore
+import MyPetEngine
 
 // LocalBrain —— 本地决策脑：端侧 MLX Qwen3.5-0.8B（brain-local.md §5.2/§5.3）。
 //
@@ -80,8 +81,8 @@ actor LocalBrain: GoalBrain {
     nonisolated func expedite() {}
 
     /// 只取消目标规划；聊天使用同一模型门闩，但有独立的用户可见生命周期。
-    nonisolated func cancelPendingPlan() {
-        gate.cancelPlan()
+    nonisolated func cancelPendingPlan(traceID: String) {
+        gate.cancelPlan(traceID: traceID)
     }
 
     nonisolated func configure(_ configuration: Configuration) {
@@ -93,16 +94,16 @@ actor LocalBrain: GoalBrain {
     @discardableResult
     nonisolated func plan(input: GoalBrainInput,
                           completion: @escaping (GoalDecision?) -> Void) -> Bool {
-        guard LocalBrainModel.isInstalled, gate.claim() else { return false }
+        guard LocalBrainModel.isInstalled, gate.claim(traceID: input.traceID) else { return false }
         let configuration = configurationStore.get()
         let task = Task {
-            defer { gate.release() }
+            defer { gate.release(traceID: input.traceID) }
             let outcome = await self.plan(input: input, configuration: configuration)
             await MainActor.run {
                 completion(outcome.decision)
             }
         }
-        gate.trackPlan(task)
+        gate.trackPlan(task, traceID: input.traceID)
         return true
     }
 
@@ -360,10 +361,12 @@ actor LocalBrain: GoalBrain {
 
 /// 决策在飞门闩（锁守卫，nonisolated 可达）。调度时间由协调器统一管理。
 /// actor 的可变存储属性不允许 nonisolated，故把这份同步语义收进独立小类。
-private final class DispatchGate: @unchecked Sendable {
+final class DispatchGate: @unchecked Sendable {
     private let lock = NSLock()
     private var planPending = false
     private var planTask: Task<Void, Never>?
+    private var planTraceID: String?
+    private var planCancelled = false
 
     func claim() -> Bool {
         lock.lock()
@@ -375,20 +378,43 @@ private final class DispatchGate: @unchecked Sendable {
 
     func release() {
         lock.lock()
+        defer { lock.unlock() }
+        guard planTraceID == nil else { return }
+        planPending = false
+    }
+
+    func claim(traceID: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !planPending else { return false }
+        planPending = true
+        planTraceID = traceID
+        planCancelled = false
+        return true
+    }
+
+    func release(traceID: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard planTraceID == traceID else { return }
         planPending = false
         planTask = nil
-        lock.unlock()
+        planTraceID = nil
+        planCancelled = false
     }
 
-    func trackPlan(_ task: Task<Void, Never>) {
+    func trackPlan(_ task: Task<Void, Never>, traceID: String) {
         lock.lock()
-        planTask = task
+        let cancelled = planTraceID == traceID && planCancelled
+        if planTraceID == traceID { planTask = task }
         lock.unlock()
+        if cancelled { task.cancel() }
     }
 
-    func cancelPlan() {
+    func cancelPlan(traceID: String) {
         lock.lock()
-        let task = planTask
+        if planTraceID == traceID { planCancelled = true }
+        let task = planTraceID == traceID ? planTask : nil
         lock.unlock()
         task?.cancel()
     }

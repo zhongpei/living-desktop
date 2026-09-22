@@ -2,7 +2,7 @@ import CoreGraphics
 import XCTest
 import MyPetContent
 
-@testable import MyPet
+@testable import MyPetApp
 
 /// PetBodyDriver 测试：verbs 注入 + 表演取消规则。
 final class ActionRuntimeTests: XCTestCase {

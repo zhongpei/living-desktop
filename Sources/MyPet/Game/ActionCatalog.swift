@@ -1,5 +1,6 @@
 import Foundation
 import MyPetCore
+import MyPetEngine
 
 /// 运行时只认语义动作；具体 clip 名是素材实现细节。
 ///

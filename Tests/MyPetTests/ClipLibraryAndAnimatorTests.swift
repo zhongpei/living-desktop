@@ -1,7 +1,7 @@
 import AppKit
 import XCTest
 
-@testable import MyPet
+@testable import MyPetApp
 import MyPetRender
 import MyPetContent
 
@@ -80,6 +80,45 @@ final class ClipLibraryAndAnimatorTests: XCTestCase {
         XCTAssertEqual(library.actionNames, ["sleep_loop", "tail", "wave"])
         XCTAssertEqual(library.action(named: "wave"), "actions/wave")
         XCTAssertEqual(library.sleepActionKey(), "actions/sleep_loop")
+    }
+
+    func testRecordedVoiceBelongsOnlyToExistingActionFile() throws {
+        let dir = try makePack()
+        let manifestURL = dir.appendingPathComponent("manifest.json")
+        var manifest = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: Data(contentsOf: manifestURL)) as? [String: Any])
+        var clips = try XCTUnwrap(manifest["clips"] as? [String: [String: Any]])
+        clips["actions/wave"]?["voice"] = [
+            "path": "actions/wave/voice.mp3", "language": "zh-Hans", "duration_seconds": 1.0,
+        ]
+        manifest["clips"] = clips
+        try JSONSerialization.data(withJSONObject: manifest).write(to: manifestURL)
+        let audioURL = dir.appendingPathComponent("actions/wave/voice.mp3")
+        try Data([0x49, 0x44, 0x33]).write(to: audioURL)
+
+        let library = try ClipLibrary.load(from: dir)
+        XCTAssertEqual(library.voiceURL(for: "actions/wave"), audioURL)
+        XCTAssertNil(library.voiceURL(for: "base/idle"))
+        XCTAssertNil(library.voiceURL(for: "actions/tail"))
+        try FileManager.default.removeItem(at: audioURL)
+        XCTAssertNil(library.voiceURL(for: "actions/wave"))
+    }
+
+    func testVoiceSwitchPersistsIndependentlyOfTextSpeech() throws {
+        var settings = Settings()
+        settings.voicePlaybackEnabled = false
+        settings.speechEnabled = true
+        let data = try JSONEncoder().encode(settings)
+        let restored = try JSONDecoder().decode(Settings.self, from: data)
+        XCTAssertFalse(restored.voicePlaybackEnabled)
+        XCTAssertTrue(restored.speechEnabled)
+
+        var old = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        old.removeValue(forKey: "voicePlaybackEnabled")
+        let migrated = try JSONDecoder().decode(Settings.self,
+            from: JSONSerialization.data(withJSONObject: old))
+        XCTAssertTrue(migrated.voicePlaybackEnabled)
+        XCTAssertTrue(migrated.speechEnabled)
     }
 
     func testMissingBaseWalkThrows() throws {

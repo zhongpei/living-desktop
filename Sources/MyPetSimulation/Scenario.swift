@@ -1,4 +1,6 @@
 import Foundation
+import MyPetCore
+import MyPetEngine
 
 public struct ScenarioExpectations: Codable, Sendable, Equatable {
     /// Stage names such as `goal`, `scene`, `needle`, `action` that must occur.

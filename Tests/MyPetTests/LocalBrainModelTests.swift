@@ -1,5 +1,5 @@
 import XCTest
-@testable import MyPet
+@testable import MyPetApp
 
 /// 本地 Student Brain 模型目录：下载源写死与清单完整性（离线可测，不联网）。
 final class LocalBrainModelTests: XCTestCase {

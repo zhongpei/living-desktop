@@ -16,12 +16,5 @@
   "slots": [
     { "entityID": "poetry_book", "slotID": "pages", "capacity": 1 },
     { "entityID": "lin_daiyu", "slotID": "side", "capacity": 1 }
-  ],
-  "episodes": [
-    { "id": "red_chamber_reading", "title": "窗边读诗", "participants": ["jia_baoyu", "lin_daiyu"], "prerequisites": [], "beats": [
-      { "id": "book", "actorIDs": ["lin_daiyu"], "intent": "read", "durationTicks": 5, "targetID": "poetry_book", "slotID": "pages", "claims": ["body", "manipulator"], "occupySlotOnSuccess": true, "effectsOnSuccess": [] },
-      { "id": "poem", "actorIDs": ["jia_baoyu", "lin_daiyu"], "intent": "talk", "durationTicks": 4, "effectsOnSuccess": [ { "kind": "relationDelta", "relationKey": "jia_baoyu/lin_daiyu/affection", "delta": 0.02 } ] },
-      { "id": "stay_close", "actorIDs": ["jia_baoyu"], "intent": "comfort", "durationTicks": 3, "targetID": "lin_daiyu", "slotID": "side", "claims": ["body"], "occupySlotOnSuccess": true, "effectsOnSuccess": [] }
-    ], "cooldownTicks": 60 }
   ]
 }

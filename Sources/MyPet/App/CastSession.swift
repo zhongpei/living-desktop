@@ -1,6 +1,7 @@
 import AppKit
 import MyPetContent
 import MyPetCore
+import MyPetEngine
 import MyPetRender
 
 /// Owns the production Cast clock, body consumption, and AppKit projections.
@@ -9,9 +10,10 @@ import MyPetRender
 final class CastSession: NSObject {
     private let settingsProvider: () -> Settings?
     private var settings: Settings? { settingsProvider() }
-    private let library: [(id: String, url: URL)]
+    private let visualsByActor: [String: URL]
     private let castPacks: [CastPack]
     private let resolvedCastPacks: [ResolvedCastPack]
+    private let storyPacks: [StoryPack]
     private let layoutCoordinator: SpatialLayoutCoordinator
     private let perceptionHub: PerceptionHub
     private let sharedNeedle: NeedleBrain
@@ -34,9 +36,10 @@ final class CastSession: NSObject {
 
     init(
         settingsProvider: @escaping () -> Settings?,
-        library: [(id: String, url: URL)],
+        visualsByActor: [String: URL],
         castPacks: [CastPack],
         resolvedCastPacks: [ResolvedCastPack],
+        storyPacks: [StoryPack],
         layoutCoordinator: SpatialLayoutCoordinator,
         perceptionHub: PerceptionHub,
         sharedNeedle: NeedleBrain,
@@ -44,9 +47,10 @@ final class CastSession: NSObject {
         sharedTeacherBrain: TeacherBrain
     ) {
         self.settingsProvider = settingsProvider
-        self.library = library
+        self.visualsByActor = visualsByActor
         self.castPacks = castPacks
         self.resolvedCastPacks = resolvedCastPacks
+        self.storyPacks = storyPacks
         self.layoutCoordinator = layoutCoordinator
         self.perceptionHub = perceptionHub
         self.sharedNeedle = sharedNeedle
@@ -82,6 +86,7 @@ final class CastSession: NSObject {
         if !resolvedCastPacks.isEmpty {
             runtime = CastRuntime(
                 resolvedPacks: resolvedCastPacks,
+                stories: storyPacks,
                 selection: settings.castSelection,
                 seed: UInt64(Date().timeIntervalSince1970),
                 bodyExecutionMode: .external,
@@ -89,6 +94,7 @@ final class CastSession: NSObject {
         } else {
             runtime = CastRuntime(
                 packs: castPacks,
+                stories: storyPacks,
                 selection: settings.castSelection,
                 seed: UInt64(Date().timeIntervalSince1970),
                 bodyExecutionMode: .external,
@@ -127,6 +133,20 @@ final class CastSession: NSObject {
             controller = nil
             perceptionHub.ownerID = nil
         }
+    }
+
+    /// A package switch is an explicit terminal event, not a file-system
+    /// disappearance. Retire story and actors at a Kernel boundary before
+    /// releasing AppKit projections and their image sources.
+    func retireForPackageChange() {
+        if let runtime = castRuntime {
+            castTimer?.invalidate()
+            castTimer = nil
+            runtime.runtime.abortStory(runtime.storyDirector)
+            for id in runtime.activeMemberIDs { _ = runtime.depart(memberID: id) }
+            _ = runtime.tick()
+        }
+        stop()
     }
 
     @objc private func tickCastRuntime() {
@@ -177,15 +197,12 @@ final class CastSession: NSObject {
 
         let orderedIDs = runtime.activeMemberIDs.sorted()
         let renderableIDs = orderedIDs.filter { id in
-            guard let member = runtime.director.member(id),
-                  let visualID = member.visualPackID else { return false }
-            return library.contains { $0.id == visualID }
+            runtime.director.member(id)?.visualPackID != nil && visualsByActor[id] != nil
         }
         for (index, id) in orderedIDs.enumerated() {
             if castControllers[id] != nil { continue }
             guard let member = runtime.director.member(id) else { continue }
-            guard let visualID = member.visualPackID,
-                  let entry = library.first(where: { $0.id == visualID }) else {
+            guard member.visualPackID != nil, let visualURL = visualsByActor[id] else {
                 if reportedMissingCastVisuals.insert(id).inserted {
                     if member.visualPackID == nil {
                         NSLog("MyPet: 角色 %@ 已入场，但没有 visualPackID，暂不创建面板", member.id)
@@ -196,7 +213,7 @@ final class CastSession: NSObject {
                 continue
             }
             do {
-                let pack = try ClipLibrary.load(from: entry.url)
+                let pack = try ClipLibrary.load(from: visualURL)
                 let spawn = castSpawn(index: index, count: max(orderedIDs.count, 1))
                 let pet = PetController(
                     library: pack,
@@ -217,7 +234,7 @@ final class CastSession: NSObject {
                 pet.start()
             } catch {
                 if reportedMissingCastVisuals.insert(id).inserted {
-                    NSLog("MyPet: 角色 %@ 的视觉包加载失败 %@ — %@", id, entry.url.path, error.localizedDescription)
+                    NSLog("MyPet: 角色 %@ 的视觉包加载失败 %@ — %@", id, visualURL.path, error.localizedDescription)
                 }
             }
         }

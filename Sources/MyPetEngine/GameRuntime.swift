@@ -1,4 +1,5 @@
 import Foundation
+import MyPetCore
 
 /// Platform-neutral facts needed by the semantic chain. Real macOS input and
 /// `VirtualDesktop` both project into this value; neither platform leaks into

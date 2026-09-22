@@ -1,7 +1,7 @@
 import CoreGraphics
 import XCTest
 
-@testable import MyPet
+@testable import MyPetApp
 
 /// 状态机测试：用脚本化的假世界驱动 PetModel。
 final class PetModelTests: XCTestCase {

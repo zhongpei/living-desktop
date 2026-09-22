@@ -2,6 +2,7 @@ import CoreGraphics
 import Foundation
 import MyPetAI
 import MyPetCore
+import MyPetEngine
 
 /// Needle 3 行动脑：Goal + 世界快照 → 一次 tool call。
 ///
@@ -267,8 +268,9 @@ final class NeedleBrain {
     private let runtime = CNeedleRuntime.shared
     private var pending = false
     private var activeRequest: CNeedleRequestToken?
+    var activeActor: String?
     private static let requestTimeout: TimeInterval = 15
-    private var nextDecisionAt: Double = 0
+    private var nextDecisionAtByActor: [String: Double] = [:]
     private(set) var requestGeneration: Int64 = 0
 
     func isCurrentGeneration(_ generation: Int64) -> Bool {
@@ -278,10 +280,12 @@ final class NeedleBrain {
     /// Queued CNeedle calls are skipped; one already inside the C function
     /// finishes naturally and its old answer is not adopted. The shared model
     /// session is never interrupted here.
-    func invalidatePendingDecision() {
+    func invalidatePendingDecision(for actor: String) {
+        guard activeActor == actor else { return }
         requestGeneration &+= 1
         activeRequest?.cancel()
         activeRequest = nil
+        activeActor = nil
         pending = false
     }
 
@@ -318,9 +322,9 @@ final class NeedleBrain {
 
     /// 世界大变化 / 有趣事件（game.md §4 行动边界触发器）：
     /// 把下一次决策提前到现在，下一个 tick 的边界询问立即发出。
-    func expedite() {
-        invalidatePendingDecision()
-        nextDecisionAt = 0
+    func expedite(for actor: String) {
+        invalidatePendingDecision(for: actor)
+        nextDecisionAtByActor[actor] = 0
     }
 
     /// 到点且闲着才发起决策。回调在主队列，返回 nil = 决策失败（调用方自行兜底）。
@@ -329,9 +333,9 @@ final class NeedleBrain {
         facts: WorldFacts,
         completion: @escaping (SemanticAction?, [String]) -> Void
     ) {
-        guard !pending, now >= nextDecisionAt else { return }
+        guard !pending, now >= (nextDecisionAtByActor[facts.actor] ?? 0) else { return }
         dispatchDecision(facts: facts, completion: completion)
-        nextDecisionAt = now + Double.random(in: interval)
+        nextDecisionAtByActor[facts.actor] = now + Double.random(in: interval)
     }
 
     /// 立即决策（场景决策点专用，不吃冷却）。返回 false = 繁忙/不可用，
@@ -351,6 +355,7 @@ final class NeedleBrain {
     ) {
         guard let modelURL = Self.modelURL() else { return }
         pending = true
+        activeActor = facts.actor
         let generation = requestGeneration
         let token = CNeedleRequestToken()
         activeRequest = token
@@ -358,7 +363,7 @@ final class NeedleBrain {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.requestTimeout) { [weak self] in
             guard let self, self.activeRequest === token,
                   self.isCurrentGeneration(generation) else { return }
-            self.invalidatePendingDecision()
+            self.invalidatePendingDecision(for: facts.actor)
             completion(nil, [])
         }
 
@@ -388,6 +393,7 @@ final class NeedleBrain {
                 guard self.activeRequest === token,
                       self.isCurrentGeneration(generation) else { return }
                 self.activeRequest = nil
+                self.activeActor = nil
                 self.pending = false
                 completion(valid, calls.map(Self.describe))
             }

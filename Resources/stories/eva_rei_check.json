@@ -1,0 +1,14 @@
+{
+  "id": "eva_rei_check",
+  "groupID": "eva",
+  "episodes": [{
+    "id": "rei_checks_the_channel", "title": "丽确认通讯",
+    "participants": ["rei", "shinji", "eva00"],
+    "beats": [
+      {"id": "signal", "actorIDs": ["rei"], "intent": "signal", "targetID": "command_radio", "durationTicks": 3},
+      {"id": "standby", "actorIDs": ["eva00"], "intent": "standby", "durationTicks": 3},
+      {"id": "acknowledge", "actorIDs": ["shinji"], "intent": "listen", "targetID": "rei", "durationTicks": 3,
+       "effectsOnSuccess": [{"kind": "relationDelta", "relationKey": "rei/shinji/trust", "delta": 0.01}]}
+    ], "cooldownTicks": 120
+  }]
+}

@@ -1,4 +1,6 @@
 import Foundation
+import MyPetCore
+import MyPetEngine
 
 public struct SimulationActionDefinition: Codable, Equatable, Sendable {
     public var id: String

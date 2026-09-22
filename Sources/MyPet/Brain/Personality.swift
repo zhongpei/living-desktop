@@ -1,5 +1,6 @@
 import Foundation
 import MyPetCore
+import MyPetEngine
 
 // Personality v2 —— 稳定人格，两颗脑共用。
 //

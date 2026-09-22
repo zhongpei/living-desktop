@@ -1,7 +1,9 @@
 import XCTest
 import MyPetCore
+@testable import MyPetEngine
+import MyPetSimulation
 
-@testable import MyPet
+@testable import MyPetApp
 
 final class ActionCatalogTests: XCTestCase {
 

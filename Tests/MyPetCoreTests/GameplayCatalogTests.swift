@@ -1,5 +1,8 @@
 import XCTest
+import MyPetContent
 @testable import MyPetCore
+@testable import MyPetEngine
+import MyPetSimulation
 
 final class GameplayCatalogTests: XCTestCase {
     func testBundledGameplayCatalogLoadsOnlyKnownBuiltInAdapters() throws {

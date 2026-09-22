@@ -1,0 +1,13 @@
+{
+  "id": "water_margin_pan_gourd",
+  "groupID": "water_margin",
+  "episodes": [{
+    "id": "pan_notices_the_gourd", "title": "金莲看酒葫芦",
+    "participants": ["pan_jinlian", "lu_zhishen", "song_jiang"],
+    "beats": [
+      {"id": "notice", "actorIDs": ["pan_jinlian"], "intent": "inspect", "targetID": "wine_gourd", "durationTicks": 3},
+      {"id": "drink", "actorIDs": ["lu_zhishen"], "intent": "drink", "targetID": "wine_gourd", "durationTicks": 3},
+      {"id": "comment", "actorIDs": ["song_jiang"], "intent": "talk", "targetID": "pan_jinlian", "durationTicks": 3}
+    ], "cooldownTicks": 120
+  }]
+}

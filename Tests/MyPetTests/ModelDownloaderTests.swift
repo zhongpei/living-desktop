@@ -1,5 +1,5 @@
 import XCTest
-@testable import MyPet
+@testable import MyPetApp
 
 /// 模型下载组件：续传决策矩阵与「已齐即跳过、不发请求」（离线可测，不联网）。
 final class ModelDownloaderTests: XCTestCase {

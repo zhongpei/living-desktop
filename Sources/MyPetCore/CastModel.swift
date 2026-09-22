@@ -626,6 +626,8 @@ public struct CastPack: Codable, Equatable, Sendable {
     public var members: [CastMember]
     public var relations: [CastRelation]
     public var slots: [CastSlot]
+    /// Read-only compatibility for cast JSON authored before stories were separate.
+    /// New cast JSON never encodes this field.
     public var episodes: [StoryEpisode]
     /// Optional for backwards-compatible cast-pack JSON.
     public var props: [CastProp]?
@@ -691,7 +693,6 @@ public struct CastPack: Codable, Equatable, Sendable {
         try values.encode(members, forKey: .members)
         try values.encode(relations, forKey: .relations)
         try values.encode(slots, forKey: .slots)
-        try values.encode(episodes, forKey: .episodes)
         try values.encodeIfPresent(props, forKey: .props)
     }
 
@@ -815,65 +816,5 @@ public enum StoryCatalog {
             requestedActorsBySlot[key, default: []].insert(actorID)
         }
         return true
-    }
-}
-
-public enum CastPackLibrary {
-    public static func loadJSON(at url: URL) throws -> CastPack {
-        try JSONDecoder().decode(CastPack.self, from: Data(contentsOf: url))
-    }
-
-    public static func loadDirectory(_ url: URL) throws -> [CastPack] {
-        try files(in: url).map(loadJSON(at:))
-    }
-
-    public static func files(in url: URL) throws -> [URL] {
-        try FileManager.default.contentsOfDirectory(
-            at: url,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        )
-        .filter { $0.pathExtension.lowercased() == "json" }
-        .sorted { $0.lastPathComponent < $1.lastPathComponent }
-    }
-
-    /// 资源查找顺序：环境变量 → .app Resources → swift run 时向上寻找 Resources/castpacks。
-    public static func roots(
-        bundle: Bundle = .main,
-        executablePath: String = CommandLine.arguments.first ?? "",
-        environment: [String: String] = ProcessInfo.processInfo.environment
-    ) -> [URL] {
-        var result: [URL] = []
-        let fm = FileManager.default
-        if let raw = environment["MYPET_CASTPACKS"] {
-            result.append(URL(fileURLWithPath: raw))
-        }
-        if let resourceURL = bundle.resourceURL {
-            result.append(resourceURL.appendingPathComponent("castpacks", isDirectory: true))
-        }
-        var dir = URL(fileURLWithPath: executablePath).resolvingSymlinksInPath()
-            .deletingLastPathComponent()
-        for _ in 0..<6 {
-            result.append(dir.appendingPathComponent("Resources/castpacks", isDirectory: true))
-            dir = dir.deletingLastPathComponent()
-        }
-        var seen = Set<String>()
-        return result.filter { fm.fileExists(atPath: $0.path) && seen.insert($0.standardizedFileURL.path).inserted }
-    }
-
-    public static func loadAvailable(
-        bundle: Bundle = .main,
-        executablePath: String = CommandLine.arguments.first ?? "",
-        environment: [String: String] = ProcessInfo.processInfo.environment
-    ) -> [CastPack] {
-        var seen = Set<String>()
-        var packs: [CastPack] = []
-        for root in roots(bundle: bundle, executablePath: executablePath, environment: environment) {
-            guard let candidates = try? loadDirectory(root) else { continue }
-            for pack in candidates where seen.insert(pack.id).inserted {
-                packs.append(pack)
-            }
-        }
-        return packs.sorted { $0.id < $1.id }
     }
 }

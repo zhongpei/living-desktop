@@ -1,5 +1,6 @@
 import CoreGraphics
 import MyPetCore
+import MyPetEngine
 
 /// Projects macOS window samples into the same lifecycle events used by
 /// VirtualDesktop. Title changes are content, not geometry invalidations.

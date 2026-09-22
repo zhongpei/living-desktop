@@ -1,5 +1,7 @@
 import XCTest
 @testable import MyPetCore
+@testable import MyPetEngine
+import MyPetSimulation
 
 final class GameRuntimeTests: XCTestCase {
     func testPreparedSceneWithoutRequiredFocusRejectsDeterministicStep() {
@@ -605,7 +607,7 @@ final class GameRuntimeTests: XCTestCase {
 
         runtime.restore(runtime.snapshot())
 
-        XCTAssertEqual(runtime.kernel.storyInterruptionPolicy, policy)
+        XCTAssertEqual(runtime.checkpoint().storyInterruptionPolicy, policy)
     }
 
     func testCheckpointPreservesExternalBodyAndPendingIngress() {
@@ -632,7 +634,7 @@ final class GameRuntimeTests: XCTestCase {
 
         let restored = GameRuntime(checkpoint: runtime.checkpoint())
 
-        XCTAssertEqual(restored.kernel.storyInterruptionPolicy, policy)
+        XCTAssertEqual(restored.checkpoint().storyInterruptionPolicy, policy)
         XCTAssertEqual(restored.drainBodyCommands(for: actor.id).map(\.behaviorID), [request.id])
         XCTAssertEqual(
             restored.presentationSnapshot().entities.first { $0.id == actor.id }?.pose?.action,

@@ -1,6 +1,7 @@
 import Foundation
 import ServiceManagement
 import MyPetCore
+import MyPetEngine
 
 struct StorySettings: Codable, Equatable {
     var enabled = true
@@ -162,6 +163,8 @@ struct Settings: Codable {
 
     /// 说话总闸：本地决策脑或高阶教师脑可生成短聊天；失败时回退 Quips。
     var speechEnabled = true
+    /// Recorded lines attached to authored action clips; independent of generated text speech.
+    var voicePlaybackEnabled = true
     /// 三档大脑统一脑路日志（brain_trace.jsonl）。只保存在本机。
     var brainTraceEnabled = true
 
@@ -270,7 +273,7 @@ struct Settings: Codable {
         case localBrainChatMaxTokens, localBrainChatSeed
         case localBrainTemperature, localBrainTopP, localBrainTopK, localBrainMaxTokens, localBrainSeed // legacy wire keys
         case goalBrainMinInterval, goalBrainMaxInterval
-        case speechEnabled, brainTraceEnabled
+        case speechEnabled, voicePlaybackEnabled, brainTraceEnabled
         case slowBrainLogEnabled, teacherLogEnabled // legacy wire keys
         case scenesEnabled, propsEnabled
         case sensesEnabled, ocrEnabled, inputPlugins
@@ -335,6 +338,7 @@ struct Settings: Codable {
         try c.encode(goalBrainMinInterval, forKey: .goalBrainMinInterval)
         try c.encode(goalBrainMaxInterval, forKey: .goalBrainMaxInterval)
         try c.encode(speechEnabled, forKey: .speechEnabled)
+        try c.encode(voicePlaybackEnabled, forKey: .voicePlaybackEnabled)
         try c.encode(brainTraceEnabled, forKey: .brainTraceEnabled)
         try c.encode(scenesEnabled, forKey: .scenesEnabled)
         try c.encode(propsEnabled, forKey: .propsEnabled)
@@ -407,6 +411,7 @@ struct Settings: Codable {
         goalBrainMinInterval = try c.decodeIfPresent(Double.self, forKey: .goalBrainMinInterval) ?? 45.0
         goalBrainMaxInterval = try c.decodeIfPresent(Double.self, forKey: .goalBrainMaxInterval) ?? 90.0
         speechEnabled = try c.decodeIfPresent(Bool.self, forKey: .speechEnabled) ?? true
+        voicePlaybackEnabled = try c.decodeIfPresent(Bool.self, forKey: .voicePlaybackEnabled) ?? true
         brainTraceEnabled = try c.decodeIfPresent(Bool.self, forKey: .brainTraceEnabled)
             ?? c.decodeIfPresent(Bool.self, forKey: .slowBrainLogEnabled)
             ?? c.decodeIfPresent(Bool.self, forKey: .teacherLogEnabled) ?? true

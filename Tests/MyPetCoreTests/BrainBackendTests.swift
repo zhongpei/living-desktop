@@ -1,5 +1,7 @@
 import XCTest
 @testable import MyPetCore
+@testable import MyPetEngine
+import MyPetSimulation
 
 final class BrainBackendTests: XCTestCase {
     func testStubAndReplayInstallTheSameCassetteIntoTheRealKernel() {

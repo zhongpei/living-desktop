@@ -1,9 +1,11 @@
 import CoreGraphics
 import XCTest
 import MyPetCore
+@testable import MyPetEngine
+import MyPetSimulation
 import MyPetContent
 
-@testable import MyPet
+@testable import MyPetApp
 import MyPetPlatform
 
 /// game-v2 纯函数与执行器测试：活动归类、锚点、道具、目标策略、
@@ -858,8 +860,8 @@ final class GameTests: XCTestCase {
         let invalidURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("missing-\(UUID().uuidString)")
         let session = CastSession(
-            settingsProvider: { settings }, library: [(id: "invalid-pack", url: invalidURL)], castPacks: [pack],
-            resolvedCastPacks: [], layoutCoordinator: SpatialLayoutCoordinator(),
+            settingsProvider: { settings }, visualsByActor: ["logical-actor": invalidURL], castPacks: [pack],
+            resolvedCastPacks: [], storyPacks: [], layoutCoordinator: SpatialLayoutCoordinator(),
             perceptionHub: hub, sharedNeedle: NeedleBrain(),
             sharedLocalBrain: LocalBrain(), sharedTeacherBrain: TeacherBrain())
 
@@ -867,13 +869,23 @@ final class GameTests: XCTestCase {
         XCTAssertEqual(session.activeMemberIDs, ["logical-actor"])
         XCTAssertNil(session.primaryController)
         XCTAssertNil(hub.ownerID)
-        session.stop()
+        session.retireForPackageChange()
         XCTAssertTrue(session.activeMemberIDs.isEmpty)
         XCTAssertNil(hub.ownerID)
         session.start()
         XCTAssertEqual(session.activeMemberIDs, ["logical-actor"])
         session.stop()
         XCTAssertTrue(session.activeMemberIDs.isEmpty)
+    }
+
+    func testContentManagerCanOpenWithEmptyCatalog() {
+        _ = NSApplication.shared
+        let manager = ContentManagerWindowController()
+        manager.records = { [] }
+        manager.reload()
+        XCTAssertEqual(manager.window?.title, "内容包管理")
+        XCTAssertNotNil(manager.window?.contentView)
+        manager.close()
     }
 
     // MARK: GoalDecision 气泡

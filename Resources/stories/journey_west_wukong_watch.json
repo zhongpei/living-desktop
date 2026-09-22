@@ -1,0 +1,14 @@
+{
+  "id": "journey_west_wukong_watch",
+  "groupID": "journey_west",
+  "episodes": [{
+    "id": "wukong_watches_the_road", "title": "悟空探路",
+    "participants": ["sun_wukong", "tang_sanzang"],
+    "beats": [
+      {"id": "scout", "actorIDs": ["sun_wukong"], "intent": "look_around", "durationTicks": 3},
+      {"id": "guard", "actorIDs": ["sun_wukong"], "intent": "defend", "targetID": "tang_sanzang", "durationTicks": 3},
+      {"id": "answer", "actorIDs": ["tang_sanzang"], "intent": "talk", "targetID": "sun_wukong", "durationTicks": 3,
+       "effectsOnSuccess": [{"kind": "relationDelta", "relationKey": "sun_wukong/tang_sanzang/trust", "delta": 0.01}]}
+    ], "cooldownTicks": 120
+  }]
+}

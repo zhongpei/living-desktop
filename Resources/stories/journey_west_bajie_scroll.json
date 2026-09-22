@@ -1,0 +1,14 @@
+{
+  "id": "journey_west_bajie_scroll",
+  "groupID": "journey_west",
+  "episodes": [{
+    "id": "bajie_and_the_scroll", "title": "八戒与经卷",
+    "participants": ["zhu_bajie", "sha_wujing", "tang_sanzang"],
+    "beats": [
+      {"id": "notice", "actorIDs": ["zhu_bajie"], "intent": "inspect", "targetID": "sacred_scroll", "durationTicks": 3},
+      {"id": "steady", "actorIDs": ["sha_wujing"], "intent": "carry", "targetID": "sacred_scroll", "durationTicks": 3},
+      {"id": "thanks", "actorIDs": ["tang_sanzang"], "intent": "talk", "targetID": "sha_wujing", "durationTicks": 3,
+       "effectsOnSuccess": [{"kind": "relationDelta", "relationKey": "sha_wujing/tang_sanzang/trust", "delta": 0.01}]}
+    ], "cooldownTicks": 120
+  }]
+}

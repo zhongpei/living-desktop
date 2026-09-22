@@ -23,9 +23,21 @@ public struct PetPackManifest: Decodable {
         public let facing: String?
         /// loop = 循环播放；once = 播完停末帧（onFinish）。
         public let playback: String?
+        public let voice: VoiceMeta?
 
         enum CodingKeys: String, CodingKey {
-            case frames, fps, facing, playback
+            case frames, fps, facing, playback, voice
+        }
+    }
+
+    public struct VoiceMeta: Decodable {
+        public let path: String
+        public let language: String
+        public let durationSeconds: Double
+
+        enum CodingKeys: String, CodingKey {
+            case path, language
+            case durationSeconds = "duration_seconds"
         }
     }
 
@@ -179,6 +191,16 @@ public final class ClipLibrary: SpriteClipSource {
 
     public func clip(_ key: String) -> Clip? { clips[key] }
     public func meta(for key: String) -> PetPackManifest.ClipMeta? { clips[key]?.meta }
+
+    /// Optional recorded line belonging to one authored action, never inferred for base clips.
+    public func voiceURL(for key: String) -> URL? {
+        guard key.hasPrefix("actions/"),
+              let voice = clips[key]?.meta.voice,
+              voice.path == "\(key)/voice.mp3",
+              let packURL else { return nil }
+        let url = packURL.appendingPathComponent(voice.path)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
 
     public func facing(for key: String) -> AuthoredFacing {
         clips[key]?.meta.facing.flatMap(AuthoredFacing.init(rawValue:)) ?? .right

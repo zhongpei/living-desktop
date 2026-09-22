@@ -1,0 +1,14 @@
+{
+  "id": "eva_asuka_challenge",
+  "groupID": "eva",
+  "episodes": [{
+    "id": "asuka_demands_the_lead", "title": "明日香争先",
+    "participants": ["asuka", "shinji", "eva02"],
+    "beats": [
+      {"id": "challenge", "actorIDs": ["asuka"], "intent": "argue", "targetID": "shinji", "durationTicks": 3},
+      {"id": "ready", "actorIDs": ["eva02"], "intent": "activate", "durationTicks": 3},
+      {"id": "answer", "actorIDs": ["shinji"], "intent": "talk", "targetID": "asuka", "durationTicks": 3,
+       "effectsOnSuccess": [{"kind": "relationDelta", "relationKey": "asuka/shinji/tension", "delta": 0.02}]}
+    ], "cooldownTicks": 150
+  }]
+}

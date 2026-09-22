@@ -1,4 +1,5 @@
 import Foundation
+import MyPetCore
 
 public struct StoryDirectorConfiguration: Codable, Equatable, Sendable {
     public var enabled: Bool
@@ -507,19 +508,25 @@ public final class StoryDirector {
             tick: kernel.clock.tick,
             availableMembers: available)
             .filter { cooldownUntil[$0.id, default: 0] <= kernel.clock.tick }
-        guard let episode = eligible.first else { return nil }
-        let branch = StoryCatalog.branch(
-            for: episode,
-            world: kernel.world,
-            tick: kernel.clock.tick,
-            availableMembers: available)
-        var resolvedEpisode = episode
-        if let branch { resolvedEpisode.beats = branch.beats }
-        guard !resolvedEpisode.beats.isEmpty else { return nil }
-        guard StoryCatalog.firstBeatCanStart(
-            resolvedEpisode.beats[0], world: kernel.world, availableMembers: available) else {
-            return nil
+        var selected: (episode: StoryEpisode, resolved: StoryEpisode, branch: StoryBranch?)?
+        for episode in eligible {
+            let branch = StoryCatalog.branch(
+                for: episode,
+                world: kernel.world,
+                tick: kernel.clock.tick,
+                availableMembers: available)
+            var resolved = episode
+            if let branch { resolved.beats = branch.beats }
+            guard let firstBeat = resolved.beats.first,
+                  StoryCatalog.firstBeatCanStart(
+                    firstBeat, world: kernel.world, availableMembers: available) else { continue }
+            selected = (episode, resolved, branch)
+            break
         }
+        guard let selected else { return nil }
+        let episode = selected.episode
+        let resolvedEpisode = selected.resolved
+        let branch = selected.branch
         currentEpisode = resolvedEpisode
         currentEpisodeID = episode.id
         currentBranchID = branch?.id

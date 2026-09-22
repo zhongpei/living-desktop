@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import MyPetCore
+import MyPetEngine
 
 // Scene / Action Recipe —— 复杂行为的「内容化」表达（game.md 第十一节）。
 //
@@ -19,7 +20,7 @@ typealias SceneOp = SimulationSceneOperation
 enum SceneCatalog {
 
     /// Production and headless simulation read the same authored recipes.
-    static let recipes = MyPetCore.SceneRunner.defaultRecipes
+    static let recipes = MyPetEngine.SceneRunner.defaultRecipes
 
     /// 给目标挑适配配方（行动脑 choose_scene 的合法集；无行动脑时也是兜底池）。
     /// empathy 高的角色在用户忙时避开打扰型场景（求关注类）——若过滤后为空，

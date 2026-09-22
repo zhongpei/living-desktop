@@ -1,6 +1,7 @@
 import AppKit
 import MyPetContent
 import MyPetCore
+import MyPetEngine
 import MyPetPlatform
 import MyPetRender
 
@@ -14,6 +15,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var activeController: PetController? { castSession?.primaryController ?? controller }
     private var tray: Tray?
     private var settingsWindow: SettingsWindowController?
+    private var contentManagerWindow: ContentManagerWindowController?
+    private var contentDiagnostics: [String] = []
     private var brainLogWindow: BrainLogWindowController?
     /// 所有同时可见角色共用，防止各自面板独立摆放造成重叠。
     private let layoutCoordinator = SpatialLayoutCoordinator()
@@ -26,35 +29,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let sharedTeacherBrain = TeacherBrain()
     /// 生产 Cast 的唯一时钟、面板和 Story 身体 owner。
     private var castSession: CastSession?
-    /// 发现的全部宠物包（id → 目录），按字母序。
-    private var library: [(id: String, url: URL)] = []
-    /// 发现的角色组与剧情包；它们独立于单个 petpack，可按设置动态启用。
-    private var castPacks: [CastPack] = []
-    private var resolvedCastPacks: [ResolvedCastPack] = []
+    /// 同一内容目录投影供启动、菜单与 Runtime 消费。
+    private var contentRegistry: ContentRegistry?
+    private var contentCatalog: PackagedContentCatalog?
+    private var library: [PackagedRole] { contentCatalog?.roles ?? [] }
+    private var castVisualsByActor: [String: URL] { contentCatalog?.visualsByActor ?? [:] }
+    private var castPacks: [CastPack] { contentCatalog?.groups.map(\.pack) ?? [] }
+    private var resolvedCastPacks: [ResolvedCastPack] { contentCatalog?.groups ?? [] }
+    private var storyPacks: [StoryPack] { contentCatalog?.stories ?? [] }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 日志格式尚未对外发布：每次启动只分析本次会话，避免旧链路污染当前诊断。
         BrainTraceLog.startFreshSession()
         NSApp.setActivationPolicy(.accessory) // 无 Dock 图标（swift run 时兜底 LSUIElement）
 
-        discoverLibrary()
-        discoverCastPacks()
+        discoverContent()
         var settings = Settings.load()
         settings.castSelection = settings.castSelection.normalized(availablePacks: castPacks)
+        // 优先级：-pet 启动参数 > 上次选择 > 库里第一只。空的 currentPet 视为未选择。
+        let saved = settings.currentPet.isEmpty ? nil : settings.currentPet
+        let requested = PetPackLibrary.requestedPet() ?? saved
+        let selected = library.contains { $0.id == requested } ? requested : library.first?.id
+        if requested != nil && requested != selected {
+            NSLog("MyPet: 旧角色选择 %@ 不可用，回退到 %@", requested ?? "", selected ?? "无")
+        }
+        if settings.currentPet != (selected ?? "") {
+            settings.currentPet = selected ?? ""
+            settings.save()
+        }
         self.settings = settings
-        guard !library.isEmpty else { return }
-
         let tray = Tray(settings: settings)
         self.tray = tray
         wireTray(tray)
-
-        // 优先级：-pet 启动参数 > 上次选择 > 库里第一只。空的 currentPet 视为未选择。
-        let saved = settings.currentPet.isEmpty ? nil : settings.currentPet
-        let requested = PetPackLibrary.requestedPet() ?? saved ?? library.first?.id
+        tray.updatePets(library.map(\.id), current: settings.currentPet)
+        tray.updateCastCatalog(castPacks, selection: settings.castSelection)
         if settings.castSelection.isRuntimeEnabled, !castPacks.isEmpty {
             startCastRuntime()
-        } else {
-            activatePet(requested ?? library[0].id)
+        } else if let selected {
+            activatePet(selected)
         }
     }
 
@@ -66,49 +78,115 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: 素材库
 
-    /// 汇总所有查找根里的宠物包（按 id 去重：.app 内置包优先于仓库路径）。
-    private func discoverLibrary() {
-        var seen = Set<String>()
-        for root in PetPackLibrary.roots() {
-            for entry in PetPackLibrary.availablePacks(in: root) where !seen.contains(entry.id) {
-                seen.insert(entry.id)
-                library.append(entry)
+    private func discoverContent() {
+        contentDiagnostics = []
+        let roots = ContentResourceLocator.roots()
+        let resourcesRoot = roots.first { root in
+            FileManager.default.fileExists(atPath: root.appendingPathComponent("packages").path)
+        } ?? roots.first ?? Bundle.main.resourceURL ?? FileManager.default.temporaryDirectory
+        guard let support = ProcessInfo.processInfo.environment["MYPET_CONTENT_SUPPORT_PATH"]
+            .map({ URL(fileURLWithPath: $0, isDirectory: true) }) ??
+            FileManager.default.urls(for: .applicationSupportDirectory,
+                                     in: .userDomainMask).first?.appendingPathComponent("LivingDesktop") else { return }
+        do {
+            let registry: ContentRegistry
+            if let existing = contentRegistry {
+                existing.refresh()
+                registry = existing
+            } else {
+                registry = try ContentRegistry(
+                    builtInDirectory: resourcesRoot.appendingPathComponent("packages"),
+                    appSupportDirectory: support)
             }
+            contentRegistry = registry
+            let catalog = ContentCatalogLoader.load(registry: registry,
+                relationshipCatalogURL: resourcesRoot.appendingPathComponent("relationships/catalog.json"))
+            contentCatalog = catalog
+            contentDiagnostics = catalog.diagnostics
+            for diagnostic in catalog.diagnostics { NSLog("MyPet content: %@", diagnostic) }
+        } catch {
+            NSLog("MyPet: 内容登记不可用：%@", String(describing: error))
         }
-        if library.isEmpty {
-            let alert = NSAlert()
-                alert.messageText = "找不到任何宠物素材（petpack）"
-                alert.informativeText = "请先运行 desktop/scripts/sync_assets.py 从素材工厂同步素材，或用 MYPET_PETPACK 指向素材库目录。"
-            alert.runModal()
-            NSApp.terminate(nil)
-        } else {
-            NSLog("MyPet: 可用宠物 %@", library.map { $0.id }.joined(separator: ", "))
+        NSLog("MyPet: 包目录角色 %d、角色组 %d、剧情 %d",
+              library.count, castPacks.count, storyPacks.count)
+    }
+
+    /// All package writes cross this App-owned barrier. The old Runtime and
+    /// presentations are retired before Content may remove bytes. A failed
+    /// operation rebuilds the old selection from still-installed packages.
+    private func changeContent(_ operation: (ContentRegistry) throws -> Void,
+                               afterRetirement: ((ContentRegistry) -> Void)? = nil) throws {
+        guard let registry = contentRegistry else { throw ContentRegistry.RegistryError.unavailable }
+        // Import, enable/disable and logical removal are transactional while
+        // the old extracted content is still alive. Failure leaves this world
+        // untouched; only a successful mutation crosses the retirement barrier.
+        try operation(registry)
+        castSession?.retireForPackageChange()
+        castSession = nil
+        controller?.stop()
+        controller?.closePanel()
+        controller = nil
+        perceptionHub.ownerID = nil
+        contentCatalog = nil
+        settingsWindow?.close()
+        settingsWindow = nil
+        afterRetirement?(registry)
+        discoverContent()
+        resumeContentSession()
+    }
+
+    private func resumeContentSession() {
+        guard var settings else { return }
+        settings.castSelection = settings.castSelection.normalized(availablePacks: castPacks)
+        settings.currentPet = library.first(where: { $0.id == settings.currentPet })?.id
+            ?? library.first?.id ?? ""
+        self.settings = settings
+        settings.save()
+        tray?.updatePets(library.map(\.id), current: settings.currentPet)
+        tray?.updateCastCatalog(castPacks, selection: settings.castSelection)
+        if settings.castSelection.isRuntimeEnabled && !castPacks.isEmpty {
+            startCastRuntime()
+        } else if let selected = library.first(where: { $0.id == settings.currentPet })?.id
+                    ?? library.first?.id {
+            activatePet(selected)
         }
     }
 
-    private func discoverCastPacks() {
-        let source = CastPackLibrary.loadAvailable()
-        guard let resourcesRoot = CastContentLibrary.roots().first else {
-            resolvedCastPacks = []
-            castPacks = []
-            NSLog("MyPet: 未发现角色内容目录，角色组模式不可用")
-            return
+    func importContentPackage(at url: URL, confirmUpdate: Bool) throws {
+        try changeContent { registry in
+            try registry.importPackage(at: url, confirmUpdate: confirmUpdate)
         }
-        do {
-            let catalog = try CastContentLibrary.load(resourcesRoot: resourcesRoot)
-            let resolved = try catalog.resolve(source)
-            resolvedCastPacks = resolved
-            castPacks = resolved.map(\.pack)
-        } catch {
-            resolvedCastPacks = []
-            castPacks = []
-            NSLog("MyPet: 角色内容解析失败，拒绝启用未解析 CastPack: %@", String(describing: error))
-            return
+    }
+
+    func setContentPackageEnabled(_ enabled: Bool, kind: ContentPackageKind, id: String) throws {
+        try changeContent { registry in
+            try registry.setEnabled(enabled, kind: kind, id: id)
         }
-        if castPacks.isEmpty {
-            NSLog("MyPet: 未发现角色组资源，继续使用单宠物模式")
-        } else {
-            NSLog("MyPet: 可用角色组 %@", castPacks.map { $0.id }.joined(separator: ", "))
+    }
+
+    func removeContentPackage(kind: ContentPackageKind, id: String) throws {
+        var retired: URL?
+        try changeContent { registry in
+            retired = try registry.removeUserPackage(kind: kind, id: id)
+        } afterRetirement: { registry in
+            do {
+                try registry.purgeCache(kind: kind, id: id, source: .user)
+                if let retired { try registry.finalizeRemoval(at: retired) }
+            } catch {
+                NSLog("MyPet: 内容已退出会话，旧缓存/归档清理待重试：%@", String(describing: error))
+            }
+        }
+    }
+
+    func removeCorruptContentPackage(at url: URL) throws {
+        var retired: URL?
+        try changeContent { registry in
+            retired = try registry.removeCorruptUserPackage(at: url)
+        } afterRetirement: { registry in
+            if let retired {
+                do { try registry.finalizeRemoval(at: retired) }
+                catch { NSLog("MyPet: 损坏包已退出目录，归档清理待重试：%@", String(describing: error)) }
+            }
         }
     }
 
@@ -121,7 +199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         do {
-            let pack = try ClipLibrary.load(from: entry.url)
+            let pack = try ClipLibrary.load(from: entry.visualURL)
             for warning in pack.warnings { NSLog("MyPet petpack: %@", warning) }
 
             settings.currentPet = id
@@ -139,20 +217,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 spawnAt: spawn,
                 layoutCoordinator: layoutCoordinator,
                 perceptionHub: perceptionHub,
+                characterDefinition: entry.definition,
                 needle: sharedNeedle,
                 localBrain: sharedLocalBrain,
                 teacherBrain: sharedTeacherBrain)
             controller = newController
             newController.start()
 
-            NSLog("MyPet: 当前宠物 = %@（%@，%d 个 clip）", id, entry.url.path, pack.clipCount)
+            NSLog("MyPet: 当前宠物 = %@（%@，%d 个 clip）", id, entry.visualURL.path, pack.clipCount)
             if let tray {
                 wireTray(tray)
                 tray.updatePets(library.map { $0.id }, current: id)
                 tray.updateCastCatalog(castPacks, selection: settings.castSelection)
             }
         } catch {
-            NSLog("MyPet: petpack 加载失败 %@ — %@", entry.url.path, error.localizedDescription)
+            NSLog("MyPet: petpack 加载失败 %@ — %@", entry.visualURL.path, error.localizedDescription)
         }
     }
 
@@ -165,6 +244,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             win.onApply = { [weak self] applied in
                 self?.applySettings(applied)
             }
+            win.onOpenContentManager = { [weak self] in self?.showContentManager() }
             // 拖动滑杆的实时预览：热更新所有可见控制器，不落盘、不刷菜单。
             win.onPreview = { [weak self] preview in
                 self?.updateVisibleControllers(preview)
@@ -180,6 +260,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             settingsWindow = win
         }
         settingsWindow?.show()
+    }
+
+    private func showContentManager() {
+        if contentManagerWindow == nil {
+            let manager = ContentManagerWindowController()
+            manager.records = { [weak self] in self?.contentRegistry?.list() ?? [] }
+            manager.diagnostics = { [weak self] in self?.contentDiagnostics ?? [] }
+            manager.onImport = { [weak self] url, confirm in
+                guard let self else { throw ContentRegistry.RegistryError.unavailable }
+                try self.importContentPackage(at: url, confirmUpdate: confirm)
+            }
+            manager.onSetEnabled = { [weak self] enabled, kind, id in
+                guard let self else { throw ContentRegistry.RegistryError.unavailable }
+                try self.setContentPackageEnabled(enabled, kind: kind, id: id)
+            }
+            manager.onRemove = { [weak self] record in
+                guard let self else { throw ContentRegistry.RegistryError.unavailable }
+                if let manifest = record.manifest {
+                    try self.removeContentPackage(kind: manifest.kind, id: manifest.id)
+                } else {
+                    try self.removeCorruptContentPackage(at: record.url)
+                }
+            }
+            contentManagerWindow = manager
+        }
+        contentManagerWindow?.show()
     }
 
     private func showBrainLogs() {
@@ -200,7 +306,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if normalized.castSelection.isRuntimeEnabled, !castPacks.isEmpty {
             startCastRuntime()
         } else if castSession != nil {
-            let fallback = normalized.currentPet.isEmpty ? (library.first?.id ?? "") : normalized.currentPet
+            let fallback = library.first(where: { $0.id == normalized.currentPet })?.id
+                ?? library.first?.id ?? ""
             stopCastRuntime()
             if !fallback.isEmpty { activatePet(fallback) }
         } else {
@@ -229,9 +336,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         castSession?.stop()
         let session = CastSession(
             settingsProvider: { [weak self] in self?.settings },
-            library: library,
+            visualsByActor: castVisualsByActor,
             castPacks: castPacks,
             resolvedCastPacks: resolvedCastPacks,
+            storyPacks: storyPacks,
             layoutCoordinator: layoutCoordinator,
             perceptionHub: perceptionHub,
             sharedNeedle: sharedNeedle,
@@ -341,6 +449,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.applySettings(settings)
         }
         tray.onOpenSettings = { [weak self] in self?.showSettings() }
+        tray.onOpenContentManager = { [weak self] in self?.showContentManager() }
         tray.onOpenLogs = { [weak self] in self?.showBrainLogs() }
         tray.brainAvailable = NeedleBrain.modelURL() != nil
         tray.statusLines = { [weak self] in
@@ -388,6 +497,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             case .speech:
                 settings.speechEnabled.toggle()
+            case .voicePlayback:
+                settings.voicePlaybackEnabled.toggle()
             case .scenes:
                 settings.scenesEnabled.toggle()
             case .props:

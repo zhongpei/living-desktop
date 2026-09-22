@@ -1,7 +1,89 @@
 import XCTest
+import MyPetContent
 @testable import MyPetCore
+@testable import MyPetEngine
+import MyPetSimulation
 
 final class CastModelTests: XCTestCase {
+    func testSeparateStoryPacksNamespaceEqualEpisodeIDsAndOwnPrerequisites() {
+        let episode = StoryEpisode(id: "intro", title: "Intro", participants: ["actor"],
+            prerequisites: [.init(requiredFact: "episode/intro/completed")])
+        let first = StoryPack(id: "plot_a", groupID: "group", episodes: [episode])
+        let second = StoryPack(id: "plot_b", groupID: "group", episodes: [episode])
+        let pack = CastPack(id: "group", groupID: "group", displayName: "Group", summary: "",
+            members: [CastMember(id: "actor", kind: .character, displayName: "Actor", role: "lead")])
+        let runtime = CastRuntime(packs: [pack], stories: [second, first], selection: CastSelection())
+        XCTAssertEqual(runtime.storyDirector.episodes.map(\.id), ["plot_a::intro", "plot_b::intro"])
+        XCTAssertEqual(runtime.storyDirector.episodes[0].prerequisites[0].requiredFact,
+                       "episode/plot_a::intro/completed")
+    }
+
+    func testLegacyCastEpisodesAreReadOnlyAndNewStoryDataHasOwnGroup() throws {
+        let legacy = CastPack(
+            id: "legacy", groupID: "group", displayName: "Group", summary: "",
+            members: [CastMember(id: "actor", kind: .character, displayName: "Actor", role: "lead")],
+            episodes: [StoryEpisode(id: "episode", title: "Story", participants: ["actor"])])
+        var oldObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy)) as? [String: Any])
+        oldObject["episodes"] = try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(legacy.episodes))
+        let oldJSON = try JSONSerialization.data(withJSONObject: oldObject)
+        let decoded = try JSONDecoder().decode(CastPack.self, from: oldJSON)
+        XCTAssertEqual(decoded.episodes.map(\.id), ["episode"])
+        let newJSON = try JSONEncoder().encode(decoded)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: newJSON) as? [String: Any])
+        XCTAssertNil(object["episodes"])
+
+        let story = StoryPack(id: "group-main", groupID: "group", episodes: decoded.episodes)
+        XCTAssertEqual(try JSONDecoder().decode(StoryPack.self, from: JSONEncoder().encode(story)), story)
+    }
+
+    func testNoStoryPackKeepsCastLifecycleAvailable() {
+        let pack = CastPack(id: "quiet", groupID: "quiet", displayName: "Quiet", summary: "",
+                            members: [CastMember(id: "actor", kind: .character,
+                                                 displayName: "Actor", role: "lead")])
+        let runtime = CastRuntime(
+            packs: [pack], selection: CastSelection(allGroupsEnabled: false,
+                enabledGroupIDs: ["quiet"], allMembersEnabled: true, maxActiveMembers: 1,
+                automaticArrivalsEnabled: true), arrivalDelayTicks: 0)
+        _ = runtime.start()
+        _ = runtime.tick()
+        XCTAssertTrue(runtime.world.isAlive(EntityID("actor")))
+        XCTAssertTrue(runtime.storyDirector.episodes.isEmpty)
+    }
+
+    func testBundledStoriesResolveAgainstCastWithoutEmbedding() throws {
+        let resources = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Resources")
+        let catalog = try CastContentLibrary.load(resourcesRoot: resources)
+        let casts = try catalog.resolve(CastPackLibrary.loadDirectory(
+            resources.appendingPathComponent("castpacks")))
+        let stories = try catalog.resolveStories(StoryPackLibrary.loadDirectory(
+            resources.appendingPathComponent("stories")), for: casts)
+        XCTAssertEqual(casts.count, 4)
+        XCTAssertEqual(stories.count, 16)
+        XCTAssertTrue(casts.allSatisfy { $0.pack.episodes.isEmpty })
+        XCTAssertEqual(Set(stories.map(\.groupID)), Set(casts.map { $0.pack.groupID }))
+
+        let journey = try XCTUnwrap(casts.first { $0.pack.groupID == "journey_west" })
+        func invalid(_ episode: StoryEpisode) -> StoryPack {
+            StoryPack(id: "invalid", groupID: "journey_west", episodes: [episode])
+        }
+        XCTAssertThrowsError(try catalog.resolveStories([
+            invalid(StoryEpisode(id: "bad-person", title: "Bad", participants: ["stranger"]))
+        ], for: [journey]))
+        XCTAssertThrowsError(try catalog.resolveStories([
+            invalid(StoryEpisode(id: "bad-slot", title: "Bad", participants: ["sun_wukong"],
+                beats: [StoryBeat(id: "bad", actorIDs: ["sun_wukong"], intent: "read",
+                                  targetID: "sacred_scroll", slotID: "missing")]))
+        ], for: [journey]))
+        XCTAssertThrowsError(try catalog.resolveStories([
+            invalid(StoryEpisode(id: "bad-capability", title: "Bad", participants: ["guanyin"],
+                beats: [StoryBeat(id: "bad", actorIDs: ["guanyin"], intent: "attack")]))
+        ], for: [journey]))
+    }
+
     func testCastRuntimeStartsFirstStoryBeatInsideTheSameTick() throws {
         let actorID = "actor"
         let requestID = "story/episode/run-1/beat-greet/\(actorID)"
@@ -425,8 +507,12 @@ final class CastModelTests: XCTestCase {
             .appendingPathComponent("Resources/castpacks", isDirectory: true)
         let packs = try CastPackLibrary.loadDirectory(root)
         let journey = try XCTUnwrap(packs.first { $0.id == "journey_west" })
+        let stories = try StoryPackLibrary.loadDirectory(
+            root.deletingLastPathComponent().appendingPathComponent("stories"))
+        let story = try XCTUnwrap(stories.first { $0.id == "journey_west_main" })
+        XCTAssertTrue(journey.episodes.isEmpty)
         let handoff = try XCTUnwrap(
-            journey.episodes
+            story.episodes
                 .flatMap(\.beats)
                 .first(where: { $0.id == "hand_off" })?.handoff)
 
@@ -444,8 +530,12 @@ final class CastModelTests: XCTestCase {
             .appendingPathComponent("Resources/castpacks", isDirectory: true)
         let packs = try CastPackLibrary.loadDirectory(root)
         let journey = try XCTUnwrap(packs.first { $0.id == "journey_west" })
+        let stories = try StoryPackLibrary.loadDirectory(
+            root.deletingLastPathComponent().appendingPathComponent("stories"))
+        let story = try XCTUnwrap(stories.first { $0.id == "journey_west_main" })
         let runtime = CastRuntime(
             packs: [journey],
+            stories: [story],
             selection: CastSelection(
                 allGroupsEnabled: false,
                 enabledGroupIDs: [journey.groupID],
@@ -471,6 +561,35 @@ final class CastModelTests: XCTestCase {
         XCTAssertEqual(events.first?.handoff.propID, "sacred_scroll")
     }
 
+    func testStandaloneStoryReplayMatchesLegacyExecutionWithSameRuntimeIdentities() throws {
+        let resources = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Resources")
+        let cast = try CastPackLibrary.loadJSON(
+            at: resources.appendingPathComponent("castpacks/journey_west.json"))
+        let story = try StoryPackLibrary.loadJSON(
+            at: resources.appendingPathComponent("stories/journey_west_main.json"))
+        var legacy = cast
+        // Story packages deliberately namespace episode identity. Compare the
+        // two execution routes with the same runtime IDs, not raw authored IDs.
+        legacy.episodes = story.runtimeEpisodes
+        let selection = CastSelection(
+            allGroupsEnabled: false, enabledGroupIDs: [cast.groupID],
+            allMembersEnabled: true, maxActiveMembers: cast.members.count,
+            automaticArrivalsEnabled: true)
+        let old = CastRuntime(packs: [legacy], selection: selection, seed: 48123)
+        let current = CastRuntime(packs: [cast], stories: [story],
+                                  selection: selection, seed: 48123)
+        _ = old.start()
+        _ = current.start()
+        for _ in 0..<40 {
+            _ = old.tick()
+            _ = current.tick()
+        }
+        XCTAssertEqual(current.snapshot(), old.snapshot())
+        XCTAssertEqual(current.consumeStoryHandoffEvents(), old.consumeStoryHandoffEvents())
+    }
+
     func testRequestedCastPacksRunRelationshipContactBeats() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -478,6 +597,8 @@ final class CastModelTests: XCTestCase {
             .deletingLastPathComponent()
             .appendingPathComponent("Resources/castpacks", isDirectory: true)
         let packs = try CastPackLibrary.loadDirectory(root)
+        let stories = try StoryPackLibrary.loadDirectory(
+            root.deletingLastPathComponent().appendingPathComponent("stories"))
 
         for pack in packs {
             let selection = CastSelection(
@@ -487,7 +608,10 @@ final class CastModelTests: XCTestCase {
                 maxActiveMembers: pack.members.count,
                 invitationsEnabled: true,
                 automaticArrivalsEnabled: true)
-            let runtime = CastRuntime(packs: [pack], selection: selection, seed: 48123)
+            let contactStory = try XCTUnwrap(stories.first { $0.id == "\(pack.groupID)_main" })
+            let runtime = CastRuntime(
+                packs: [pack], stories: [contactStory],
+                selection: selection, seed: 48123)
             _ = runtime.start()
             let ticks = pack.id == "eva" ? 60 : 30
             for _ in 0..<ticks { _ = runtime.tick() }
@@ -1190,6 +1314,22 @@ final class CastModelTests: XCTestCase {
         XCTAssertTrue(kernel.trace.contains {
             $0.kind == "story-effect" && $0.detail.contains("relation:a/b/tension:+0.1")
         })
+    }
+
+    func testStoryDirectorSkipsBlockedEpisodeAndStartsNextRunnableStory() {
+        let blocked = StoryEpisode(
+            id: "a-blocked", title: "Blocked", participants: ["a"],
+            beats: [StoryBeat(id: "missing-target", actorIDs: ["a"],
+                              intent: "look", durationTicks: 1, targetID: "absent")])
+        let runnable = StoryEpisode(
+            id: "b-runnable", title: "Runnable", participants: ["a"],
+            beats: [StoryBeat(id: "hello", actorIDs: ["a"],
+                              intent: "wave", durationTicks: 1)])
+        let kernel = GameKernel(scenario: HarnessScenario(
+            id: "story-choice", entities: [EntityState(id: EntityID("a"), kind: .actor)]))
+        _ = kernel.tick()
+        let director = StoryDirector(episodes: [blocked, runnable])
+        XCTAssertEqual(director.startNext(in: kernel), "b-runnable")
     }
 
     func testStoryDirectorInterruptsWithoutCommittingBeatEffects() {

@@ -3,6 +3,7 @@ import CoreGraphics
 import Foundation
 import MyPetContent
 import MyPetCore
+import MyPetEngine
 import MyPetRender
 
 // Props —— 玩法丰富度的第二支柱（game.md 第十节）。

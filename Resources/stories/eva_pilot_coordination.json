@@ -1,0 +1,14 @@
+{
+  "id": "eva_pilot_coordination",
+  "groupID": "eva",
+  "episodes": [{
+    "id": "three_pilots_coordinate", "title": "三名驾驶员协调",
+    "participants": ["shinji", "rei", "asuka"],
+    "beats": [
+      {"id": "shinji_listens", "actorIDs": ["shinji"], "intent": "listen", "targetID": "asuka", "durationTicks": 3},
+      {"id": "asuka_objects", "actorIDs": ["asuka"], "intent": "argue", "targetID": "shinji", "durationTicks": 3},
+      {"id": "rei_reassures", "actorIDs": ["rei"], "intent": "comfort", "targetID": "shinji", "durationTicks": 3,
+       "effectsOnSuccess": [{"kind": "relationDelta", "relationKey": "rei/shinji/trust", "delta": 0.01}]}
+    ], "cooldownTicks": 120
+  }]
+}

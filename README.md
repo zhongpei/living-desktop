@@ -19,8 +19,11 @@ Living Desktop 是运行在 macOS 桌面上的 AI 角色游戏。角色把真实
 
 ## 下载与运行
 
-完整应用请从 [GitHub Releases](https://github.com/zhongpei/living-desktop/releases)
-下载。Release 包含运行所需的角色、道具、特效和本地行动脑模型。
+请从 [GitHub Releases](https://github.com/zhongpei/living-desktop/releases)
+分别下载“程序”与“角色内容”：程序包包含应用、基础规则和本地行动脑模型，
+不预装角色；从角色内容 Release 下载所需的 `.mypetpack`，在应用的“内容包”
+管理页导入。角色组包可独立运行基础玩法；剧情包需对应角色组包。程序版本会继续
+更新，已有角色包保持稳定，后续新增角色或剧情以新包追加。
 
 本仓库只保存代码和公开配置契约，不保存美术资源，因此直接从源码运行时需要自行提供
 兼容的资源包：
@@ -39,8 +42,13 @@ swift test
 ## 项目结构
 
 ```text
-Sources/MyPet/       macOS 应用、角色控制和渲染
-Sources/MyPetCore/   世界、玩法、剧情和确定性规则
+Sources/MyPetEntry/  可执行程序的薄入口
+Sources/MyPet/       MyPetApp：AppKit 装配、菜单和角色控制
+Sources/MyPetCore/   世界事实、纯数据定义和确定性规则
+Sources/MyPetEngine/ 唯一运行时、语义链和剧情协调
+Sources/MyPetSimulation/ 虚拟桌面、场景和确定性回放（测试/Harness 使用）
+Sources/MyPetContent/ 内容包校验、安装登记与目录解析
+Sources/MyPetRender/ AppKit 表现和动作音频
 Resources/           公开玩法与资源契约，不含美术文件
 Tests/               离线测试
 docs/gameplay.md     公开玩法说明

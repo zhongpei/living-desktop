@@ -1,4 +1,6 @@
 import Foundation
+import MyPetCore
+import MyPetEngine
 
 /// The three supported headless execution modes. `existing` keeps the current
 /// deterministic data-only behaviour as the control line; the other two swap

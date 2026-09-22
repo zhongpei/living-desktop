@@ -1,5 +1,5 @@
 import XCTest
-@testable import MyPet
+@testable import MyPetApp
 
 /// 前缀缓存的纯数据边界：key、文件布局和聊天消息桥接均可离线验证。
 final class BrainCacheTests: XCTestCase {

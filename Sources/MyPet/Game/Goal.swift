@@ -1,5 +1,6 @@
 import Foundation
 import MyPetCore
+import MyPetEngine
 
 // Goal —— 决策脑（LLM）或内置策略产出的高层意图。
 //

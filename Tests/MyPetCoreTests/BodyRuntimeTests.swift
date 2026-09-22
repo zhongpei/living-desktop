@@ -1,5 +1,7 @@
 import XCTest
 @testable import MyPetCore
+@testable import MyPetEngine
+import MyPetSimulation
 
 final class BodyRuntimeTests: XCTestCase {
     func testApprovedLeaveSceneCleansHeldPropOnlyAfterBodyResult() {

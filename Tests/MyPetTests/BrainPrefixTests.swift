@@ -1,5 +1,5 @@
 import XCTest
-@testable import MyPet
+@testable import MyPetApp
 import struct MyPetCore.DialogueProfile
 import struct MyPetCore.LocalizedLabel
 

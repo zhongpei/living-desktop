@@ -2,8 +2,10 @@ import CoreGraphics
 import XCTest
 import MyPetContent
 import MyPetCore
+@testable import MyPetEngine
+import MyPetSimulation
 
-@testable import MyPet
+@testable import MyPetApp
 
 /// 检查 SceneGraph 已经接入当前道具运行时，而不只是一个孤立的测试模型。
 final class SceneGraphRuntimeTests: XCTestCase {

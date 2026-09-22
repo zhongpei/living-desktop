@@ -472,6 +472,58 @@ public struct CastContentCatalog: Equatable, Sendable {
         }
     }
 
+    /// Validate standalone narratives against resolved cast facts. A story may
+    /// reference members and props of its target group, but never add them.
+    public func resolveStories(_ stories: [StoryPack],
+                               for casts: [ResolvedCastPack]) throws -> [StoryPack] {
+        let castsByGroup = Dictionary(grouping: casts, by: { $0.pack.groupID })
+        var seen = Set<String>()
+        return try stories.sorted { $0.id < $1.id }.map { story in
+            guard seen.insert(story.id).inserted else {
+                throw CastContentError.invalidPack(packID: story.id, reason: "duplicate story pack ID")
+            }
+            guard let cast = castsByGroup[story.groupID]?.first else {
+                throw CastContentError.unknownGroup(packID: story.id, groupID: story.groupID)
+            }
+            let actors = Set(cast.pack.members.map(\.id))
+            let entities = actors.union((cast.pack.props ?? []).map(\.id))
+            let members = Dictionary(cast.pack.members.map { ($0.id, $0) },
+                                     uniquingKeysWith: { first, _ in first })
+            let slots = Set(cast.pack.slots.map { "\($0.entityID)/\($0.slotID)" })
+            var episodeIDs = Set<String>()
+            for episode in story.episodes {
+                guard episodeIDs.insert(episode.id).inserted else {
+                    throw CastContentError.invalidPack(
+                        packID: story.id, reason: "duplicate episode \(episode.id)")
+                }
+                guard Set(episode.participants).isSubset(of: entities) else {
+                    throw CastContentError.invalidPack(
+                        packID: story.id, reason: "episode \(episode.id) references unknown participant")
+                }
+                for beat in episode.beats + episode.branches.flatMap(\.beats) {
+                    guard !beat.actorIDs.isEmpty, Set(beat.actorIDs).isSubset(of: actors) else {
+                        throw CastContentError.invalidPack(
+                            packID: story.id, reason: "beat \(beat.id) references unknown actor")
+                    }
+                    if let target = beat.targetID, !entities.contains(target) {
+                        throw CastContentError.invalidPack(
+                            packID: story.id, reason: "beat \(beat.id) references unknown target")
+                    }
+                    if let slot = beat.slotID, let target = beat.targetID,
+                       !slots.contains("\(target)/\(slot)") {
+                        throw CastContentError.invalidPack(
+                            packID: story.id, reason: "beat \(beat.id) references unknown slot")
+                    }
+                    guard StoryCapabilityGate.canExecute(beat, membersByID: members) else {
+                        throw CastContentError.invalidPack(
+                            packID: story.id, reason: "beat \(beat.id) fails capability gate")
+                    }
+                }
+            }
+            return story
+        }
+    }
+
     private func mergeRelations(base: [CastRelation], overrides: [CastRelation]) -> [CastRelation] {
         var merged = Dictionary(uniqueKeysWithValues: base.map { (relationID($0), $0) })
         for override in overrides {
@@ -502,60 +554,4 @@ public enum CastContentError: Error, Equatable {
     case unknownGroup(packID: String, groupID: String)
     case memberOutsideGroup(packID: String, memberID: String, groupID: String)
     case invalidPack(packID: String, reason: String)
-}
-
-public enum CastContentLibrary {
-    public static func load(resourcesRoot: URL) throws -> CastContentCatalog {
-        let decoder = JSONDecoder()
-        let characterData = try Data(contentsOf: resourcesRoot
-            .appendingPathComponent("characters/catalog.json"))
-        let categoryURL = resourcesRoot.appendingPathComponent("categories/catalog.json")
-        let relationshipData = try Data(contentsOf: resourcesRoot
-            .appendingPathComponent("relationships/catalog.json"))
-        let groups = try CastPackLibrary.files(
-            in: resourcesRoot.appendingPathComponent("castgroups", isDirectory: true))
-            .map { try decoder.decode(CharacterGroup.self, from: Data(contentsOf: $0)) }
-        let characters = try decoder.decode(CharacterCatalog.self, from: characterData).characters
-        let kinds = try decoder.decode(RelationshipKindCatalog.self, from: relationshipData)
-        let categories = FileManager.default.fileExists(atPath: categoryURL.path)
-            ? try decoder.decode(
-                CharacterCategoryCatalog.self, from: Data(contentsOf: categoryURL)).categories
-            : []
-        return CastContentCatalog(
-            categories: categories, characters: characters, groups: groups,
-            relationshipKinds: kinds)
-    }
-
-    public static func roots(
-        bundle: Bundle = .main,
-        executablePath: String = CommandLine.arguments.first ?? "",
-        environment: [String: String] = ProcessInfo.processInfo.environment
-    ) -> [URL] {
-        var roots: [URL] = []
-        let fm = FileManager.default
-        if let raw = environment["MYPET_RESOURCES"] {
-            roots.append(URL(fileURLWithPath: raw, isDirectory: true))
-        }
-        if let resourceURL = bundle.resourceURL { roots.append(resourceURL) }
-        var dir = URL(fileURLWithPath: executablePath).resolvingSymlinksInPath()
-            .deletingLastPathComponent()
-        for _ in 0..<6 {
-            roots.append(dir.appendingPathComponent("Resources", isDirectory: true))
-            dir = dir.deletingLastPathComponent()
-        }
-        var seen = Set<String>()
-        return roots.filter {
-            fm.fileExists(atPath: $0.appendingPathComponent("characters/catalog.json").path) &&
-                seen.insert($0.standardizedFileURL.path).inserted
-        }
-    }
-
-    public static func loadAvailable(
-        bundle: Bundle = .main,
-        executablePath: String = CommandLine.arguments.first ?? "",
-        environment: [String: String] = ProcessInfo.processInfo.environment
-    ) -> CastContentCatalog? {
-        roots(bundle: bundle, executablePath: executablePath, environment: environment)
-            .lazy.compactMap { try? load(resourcesRoot: $0) }.first
-    }
 }
