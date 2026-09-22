@@ -11,6 +11,51 @@ import MyPetPlatform
 @MainActor
 final class GameTests: XCTestCase {
 
+    func testPreparedSoloSceneUsesSameCoreSessionForExternalAndHeadlessBodies() throws {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let recipe = SimulationSceneRecipe(
+            id: "prepared-solo", goals: [.wander],
+            steps: [SimulationSceneStep(.wait(1))])
+        let goal = SimulationGoalDecision(goal: .wander, issuedAtTick: 0)
+        let context = RuntimeContext()
+        let external = GameRuntime(kernel: GameKernel(scenario: HarnessScenario(
+            id: "external", entities: [actor])), bodyExecutionMode: .external)
+        let headless = GameRuntime(kernel: GameKernel(scenario: HarnessScenario(
+            id: "headless", entities: [actor])), bodyExecutionMode: .headless)
+        let externalProvider = PreparedSemanticProvider(actorID: actor.id)
+        let headlessProvider = PreparedSemanticProvider(actorID: actor.id)
+        let externalPipeline = SemanticPipeline(
+            configuration: SemanticPipelineConfiguration(actorID: actor.id),
+            goalProvider: externalProvider, needleProvider: externalProvider, recipes: [recipe])
+        let headlessPipeline = SemanticPipeline(
+            configuration: SemanticPipelineConfiguration(actorID: actor.id),
+            goalProvider: headlessProvider, needleProvider: headlessProvider, recipes: [recipe])
+        externalProvider.prepareGoal(goal, planEpoch: 0, context: context)
+        headlessProvider.prepareGoal(goal, planEpoch: 0, context: context)
+        _ = external.step(pipeline: externalPipeline, context: context)
+        _ = headless.step(pipeline: headlessPipeline, context: context)
+        XCTAssertEqual(externalPipeline.snapshot().pendingSceneGoal, goal)
+        XCTAssertEqual(headlessPipeline.snapshot().pendingSceneGoal, goal)
+
+        externalProvider.prepareSceneSelection(.selected(recipe.id), goal: goal, planEpoch: 0, context: context)
+        headlessProvider.prepareSceneSelection(.selected(recipe.id), goal: goal, planEpoch: 0, context: context)
+        _ = external.step(pipeline: externalPipeline, context: context)
+        _ = headless.step(pipeline: headlessPipeline, context: context)
+        let id = try XCTUnwrap(externalPipeline.pendingActionID)
+        XCTAssertEqual(id, headlessPipeline.pendingActionID)
+        let stage = FakeStage()
+        let adapter = SemanticBodyAdapter(stage: stage) { _ = external.submitBodyResult($0) }
+        let command = try XCTUnwrap(external.takeBodyCommand(behaviorID: id))
+        let started = try XCTUnwrap(external.world.behaviors[id]?.startedAtTick)
+        adapter.consume(command, startedAtTick: started)
+        adapter.tick(nowTick: external.clock.tick)
+        _ = external.step(pipeline: externalPipeline, context: context)
+        _ = headless.step(pipeline: headlessPipeline, context: context)
+        XCTAssertEqual(externalPipeline.sceneRunner.snapshot(), headlessPipeline.sceneRunner.snapshot())
+        XCTAssertEqual(externalPipeline.trace, headlessPipeline.trace)
+        XCTAssertEqual(external.world.behaviors[id]?.status, headless.world.behaviors[id]?.status)
+    }
+
     func testSemanticBodyAdapterReportsResultWithoutMovingCoreSceneCursor() throws {
         let actor = EntityState(id: EntityID("pet"), kind: .actor)
         let recipe = SimulationSceneRecipe(

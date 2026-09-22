@@ -2,6 +2,63 @@ import XCTest
 @testable import MyPetCore
 
 final class GameRuntimeTests: XCTestCase {
+    func testPreparedProviderDropsPropStepWhenPropsDisabled() {
+        let provider = PreparedSemanticProvider(actorID: EntityID("pet"))
+        provider.setPropsEnabled(false)
+        let action = provider.decide(
+            step: SimulationSceneStep(.spawnProp("book")), tick: 0,
+            context: RuntimeContext(), world: WorldState(), actorID: EntityID("pet"))
+        XCTAssertEqual(action, .wait(1))
+    }
+
+    func testExplicitPipelineCancellationDoesNotResumeOldBodyOrScene() throws {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let recipe = SimulationSceneRecipe(
+            id: "long-move", goals: [.wander],
+            steps: [SimulationSceneStep(.moveTo("floor_near"))])
+        let runtime = GameRuntime(kernel: GameKernel(scenario: HarnessScenario(
+            id: "cancel-session", entities: [actor])), bodyExecutionMode: .external)
+        let pipeline = SemanticPipeline(configuration: SemanticPipelineConfiguration(
+            actorID: actor.id, goalMode: .replay,
+            initialGoal: SimulationGoalDecision(goal: .wander)),
+            recipes: [recipe])
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        let id = try XCTUnwrap(pipeline.pendingActionID)
+        let command = try XCTUnwrap(runtime.takeBodyCommand(behaviorID: id))
+        XCTAssertEqual(pipeline.cancel(), id)
+        runtime.cancelBodyBehavior(id)
+        _ = runtime.submitBodyResult(BodyResult(
+            behaviorID: command.behaviorID, executionToken: command.executionToken,
+            outcome: .completed))
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        XCTAssertEqual(pipeline.sceneRunner.status, .cancelled)
+        XCTAssertNil(pipeline.pendingActionID)
+        XCTAssertNotEqual(runtime.world.behaviors[id]?.status, .completed)
+    }
+
+    func testScenePreemptionClearsItsHeldPropInsideCore() {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let recipe = SimulationSceneRecipe(
+            id: "holding", goals: [.wander],
+            steps: [SimulationSceneStep(.wait(100))])
+        let runtime = GameRuntime(kernel: GameKernel(scenario: HarnessScenario(
+            id: "holding", entities: [actor])))
+        let pipeline = SemanticPipeline(configuration: SemanticPipelineConfiguration(
+            actorID: actor.id, initialGoal: SimulationGoalDecision(goal: .wander)),
+            recipes: [recipe])
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        _ = runtime.step(events: [GameEvent(
+            kind: .propCommand, actorID: actor.id,
+            propCommand: PropCommand(.spawnHeld, propID: "book"))],
+            pipeline: pipeline, context: RuntimeContext())
+        XCTAssertEqual(runtime.world.soloProps[actor.id.raw]?.phase, .held)
+        _ = runtime.step(events: [GameEvent(
+            kind: .userInteraction, actorID: actor.id, userAction: "grab")],
+            pipeline: pipeline, context: RuntimeContext())
+        XCTAssertEqual(pipeline.sceneRunner.status, .cancelled)
+        XCTAssertNil(runtime.world.soloProps[actor.id.raw])
+    }
+
     func testPreparedDecisionsAreOneShotAndRejectOldPlanEpoch() {
         let actor = EntityState(id: EntityID("pet"), kind: .actor)
         let provider = PreparedSemanticProvider(actorID: actor.id)

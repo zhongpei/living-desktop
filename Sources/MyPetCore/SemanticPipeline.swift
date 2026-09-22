@@ -1216,6 +1216,27 @@ public final class SemanticPipeline {
             replayCommands: configuration.needleCommands)
     }
 
+    /// Explicitly ends a production session when its owning Goal is revoked.
+    /// The caller cancels the returned external body behavior through Runtime;
+    /// a late BodyResult can never advance this scene cursor.
+    @discardableResult
+    public func cancel() -> String? {
+        let bodyID = pendingActionID
+        if sceneRunner.status == .running { sceneRunner.cancel() }
+        pendingActionID = nil
+        pendingSceneGoal = nil
+        pendingSceneEpoch = nil
+        pendingSceneContext = nil
+        pendingDecisionSinceTick = nil
+        pendingDecisionAction = nil
+        currentAction = nil
+        sceneEpoch = nil
+        sleepingEpoch = nil
+        trace.append(PipelineTraceEntry(
+            tick: trace.last?.tick ?? 0, stage: "scene", detail: "cancelled_by_owner"))
+        return bodyID
+    }
+
     /// Run the four semantic stages after this tick's environment events have
     /// been applied and before behavior advancement. Only the final
     /// ActionRuntime output crosses the GameEvent boundary.
@@ -1224,7 +1245,7 @@ public final class SemanticPipeline {
         let tick = kernel.clock.tick
         let epoch = kernel.world.planEpochs[configuration.actorID.raw, default: 0]
         if sceneRunner.status == .running, let sceneEpoch, sceneEpoch != epoch {
-            sceneRunner.cancel()
+            cancelScene(kernel: kernel, tick: tick)
             pendingDecisionSinceTick = nil
             pendingDecisionAction = nil
             sleepingEpoch = nil
@@ -1296,7 +1317,7 @@ public final class SemanticPipeline {
             }
             guard let step = sceneRunner.currentStep,
                   let goal = sceneRunner.currentGoal else {
-                sceneRunner.cancel()
+                cancelScene(kernel: kernel, tick: tick)
                 pendingDecisionSinceTick = nil
                 return
             }
@@ -1325,7 +1346,7 @@ public final class SemanticPipeline {
                     action, tick: tick, actorID: configuration.actorID,
                     world: kernel.world, context: context)
                 guard execution.accepted else {
-                    sceneRunner.cancel()
+                    cancelScene(kernel: kernel, tick: tick)
                     return
                 }
                 trace.append(PipelineTraceEntry(
@@ -1344,7 +1365,7 @@ public final class SemanticPipeline {
         guard sceneRunner.status == .running else { return }
         guard let step = sceneRunner.currentStep else {
             logicFailures.append("scene_step_missing")
-            sceneRunner.cancel()
+            cancelScene(kernel: kernel, tick: tick)
             return
         }
         let provider = needleProvider ?? needleBrain
@@ -1357,7 +1378,7 @@ public final class SemanticPipeline {
                 world: kernel.world, actorID: configuration.actorID) else {
             if provider.missPolicy == .waitForPrefetch { return }
             logicFailures.append("needle_no_legal_action")
-            sceneRunner.cancel()
+            cancelScene(kernel: kernel, tick: tick)
             return
         }
         currentAction = action
@@ -1381,7 +1402,7 @@ public final class SemanticPipeline {
         }
         guard execution.accepted else {
             logicFailures.append("action_rejected:\(execution.reason ?? "unknown")")
-            sceneRunner.cancel()
+            cancelScene(kernel: kernel, tick: tick)
             return
         }
         guard let request = execution.request else {
@@ -1428,7 +1449,7 @@ public final class SemanticPipeline {
             pendingDecisionAction = nil
             pendingDecisionSinceTick = nil
             sleepingEpoch = nil
-            sceneRunner.cancel()
+            cancelScene(kernel: kernel, tick: kernel.clock.tick)
         case .running:
             break
         }
@@ -1486,6 +1507,16 @@ public final class SemanticPipeline {
             trace.append(PipelineTraceEntry(tick: tick, stage: "scene", detail: "completed"))
         }
         currentAction = nil
+    }
+
+    private func cancelScene(kernel: GameKernel, tick: Int64) {
+        guard sceneRunner.status == .running else { return }
+        sceneRunner.cancel()
+        if kernel.world.soloProps[configuration.actorID.raw] != nil {
+            kernel.enqueue(GameEvent(
+                kind: .propCommand, actorID: configuration.actorID,
+                propCommand: PropCommand(.despawn)), atTick: tick)
+        }
     }
 
     private func describe(_ action: SimulationNeedleAction) -> String {

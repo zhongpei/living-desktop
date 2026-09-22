@@ -18,6 +18,13 @@ public final class PreparedSemanticProvider: SimulationGoalProvider, SimulationN
     private var goal: Prepared<SimulationGoalDecision>?
     private var scene: Prepared<(SimulationGoalDecision, SimulationSceneSelection)>?
     private var decision: Prepared<(SimulationGoalDecision, SimulationSceneStep, SimulationDecisionPointChoice)>?
+    private var allowsProps = true
+
+    public func setPropsEnabled(_ enabled: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        allowsProps = enabled
+    }
 
     public init(actorID: EntityID) {
         self.actorID = actorID
@@ -105,7 +112,16 @@ public final class PreparedSemanticProvider: SimulationGoalProvider, SimulationN
         world: WorldState,
         actorID: EntityID
     ) -> SimulationNeedleAction? {
-        NeedleBrain().decide(
+        lock.lock()
+        let propsEnabled = allowsProps
+        lock.unlock()
+        if !propsEnabled {
+            switch step.operation {
+            case .spawnProp, .clearProps, .putDown, .pickUp: return .wait(1)
+            default: break
+            }
+        }
+        return NeedleBrain().decide(
             step: step, tick: tick, context: context,
             world: world, actorID: actorID)
     }

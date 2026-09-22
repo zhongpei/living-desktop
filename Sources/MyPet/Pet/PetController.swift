@@ -102,6 +102,18 @@ final class PetController {
     /// AppKit/LLM 只投递事件，状态由 tick 内核消费。
     let gameplayRuntime: GameRuntime
     private let semanticEngine: SemanticEngine
+    private lazy var preparedSemanticProvider = PreparedSemanticProvider(actorID: runtimeActorID)
+    private lazy var semanticPipeline = SemanticPipeline(
+        configuration: SemanticPipelineConfiguration(actorID: runtimeActorID),
+        goalProvider: preparedSemanticProvider,
+        needleProvider: preparedSemanticProvider,
+        engine: semanticEngine)
+    private lazy var semanticBodyAdapter = SemanticBodyAdapter(stage: self) { [weak self] result in
+        _ = self?.gameplayRuntime.submitBodyResult(result)
+    }
+    private var semanticGoal: SimulationGoalDecision?
+    private var semanticSceneStartedAt: Double?
+    private var semanticDecisionRequest: (recipeID: String, stepIndex: Int, sinceTick: Int64)?
     /// 角色组使用 CastRuntime 的共享 kernel，由 CastRuntime 统一推进时钟。
     private let usesSharedGameplayKernel: Bool
     /// 行动脑只提交语义请求。只有 Kernel 接受且计划世代仍有效时，
@@ -564,10 +576,24 @@ final class PetController {
 
         updateSleepState()
         for _ in 0..<runtimeSteps {
-            _ = gameplayRuntime.step { [weak self] _ in
-                self?.submitPendingMenuAction()
-                self?.drainCommittedRuntimeActions()
-                self?.driveMind()
+            if settings.scenesEnabled {
+                driveSemanticMind()
+                preparedSemanticProvider.setPropsEnabled(settings.propsEnabled)
+                _ = gameplayRuntime.step(
+                    pipeline: semanticPipeline, context: runtimeContext(),
+                    afterSemanticWork: { [weak self] in
+                        self?.submitPendingMenuAction()
+                        self?.drainCommittedRuntimeActions()
+                    })
+                drainSemanticBodyCommand()
+                semanticBodyAdapter.tick(nowTick: gameplayRuntime.clock.tick)
+                syncSemanticScene()
+            } else {
+                _ = gameplayRuntime.step { [weak self] _ in
+                    self?.submitPendingMenuAction()
+                    self?.drainCommittedRuntimeActions()
+                    self?.driveMind()
+                }
             }
         }
         if usesSharedGameplayKernel {
@@ -759,7 +785,7 @@ final class PetController {
 
         // 2. 场景层：行动脑选场景（或 Autopilot 兜底），场景没就绪的冷却期发呆。
         guard sceneCooldown <= 0 else { return }
-        if settings.actionBrainEnabled, needle.isAvailable {
+        if settings.scenesEnabled, settings.actionBrainEnabled, needle.isAvailable {
             askNeedleForScene()
             return
         }
@@ -771,6 +797,192 @@ final class PetController {
 
         // 3. 随机脑兜底（场景玩法整体关闭时的经典模式）。
         driveRandom()
+    }
+
+    /// Production solo mode uses the same Core semantic session as Harness.
+    /// Async model work is requested here, outside GameRuntime's state lock.
+    private func driveSemanticMind() {
+        guard !isDeparting else { return }
+        if let p = actions.performance, p.endsAt == nil,
+           presentation.clipName == p.clipKey, presentation.animationFinished {
+            actions.cancelPerformance()
+        }
+        checkWorldChangeInterrupt()
+        if currentGoal?.kind == .rest,
+           GoalPolicy.shouldInterruptRest(energy: brainState.energy, boredom: brainState.boredom) {
+            clearGoal(reason: "bored of resting")
+        }
+        if model.state == .dragged { clearGoal(reason: "user grabbed"); return }
+        if let goal = currentGoal, goal.expired(at: clock) {
+            clearGoal(reason: "expired")
+        }
+        let runner = semanticPipeline.sceneRunner
+        if runner.status == .running {
+            if semanticPipeline.isAwaitingDecision { prepareSemanticDecision() }
+            return
+        }
+        if currentGoal == nil {
+            guard goalCooldown <= 0 else { return }
+            planGoal()
+            return
+        }
+        guard sceneCooldown <= 0,
+              let goal = semanticPipeline.snapshot().pendingSceneGoal ?? semanticGoal else { return }
+        prepareSemanticSceneSelection(for: goal)
+    }
+
+    private func prepareSemanticSceneSelection(for goal: SimulationGoalDecision) {
+        guard let currentGoal else { return }
+        let userBusy = GoalPolicy.isBusy(.init(
+            brain: brainState, personality: personality,
+            userActivity: world.foreground?.appActivity ?? .unknown,
+            userIdleSeconds: systemWorld.idleSeconds(), hasWindows: !world.windows.isEmpty,
+            secondsSinceInteraction: nil, now: clock))
+        let pool = SceneCatalog.compatible(
+            goal: currentGoal, activity: world.foreground?.appActivity ?? .unknown,
+            personality: personality, userBusy: userBusy)
+        guard !pool.isEmpty else { clearGoal(reason: "no compatible scene"); return }
+        let scope = decisionScope()
+        let selected: (String) -> Void = { [weak self] id in
+            guard let self, self.matchesDecisionScope(scope),
+                  pool.contains(where: { $0.id == id }) else { return }
+            self.preparedSemanticProvider.prepareSceneSelection(
+                .selected(id), goal: goal,
+                planEpoch: self.gameplayRuntime.previewWorld().planEpochs[self.runtimeActorID.raw, default: 0],
+                context: self.runtimeContext())
+        }
+        if settings.actionBrainEnabled, needle.isAvailable {
+            var facts = makeWorldFacts()
+            facts.mode = .ambient
+            needle.maybeDecide(now: clock, facts: facts) { [weak self] semantic, _ in
+                guard let self, self.matchesDecisionScope(scope) else { return }
+                var latest = self.makeWorldFacts()
+                latest.mode = .ambient
+                if let semantic, NeedleBrain.validate(semantic, facts: latest),
+                   case .chooseScene(let id) = semantic,
+                   pool.contains(where: { $0.id == id }) {
+                    selected(id)
+                } else {
+                    selected(self.autopilotSceneID(from: pool))
+                }
+            }
+        } else {
+            selected(autopilotSceneID(from: pool))
+        }
+    }
+
+    private func autopilotSceneID(from pool: [SceneRecipe]) -> String {
+        var rng = autopilotRng
+        defer { autopilotRng = rng }
+        return pool[Int.random(in: 0..<pool.count, using: &rng)].id
+    }
+
+    private func prepareSemanticDecision() {
+        let runner = semanticPipeline.sceneRunner
+        guard let recipeID = runner.recipeID,
+              let recipe = SceneCatalog.recipe(id: recipeID),
+              let step = runner.currentStep, let goal = runner.currentGoal,
+              let sinceTick = semanticPipeline.snapshot().pendingDecisionSinceTick else { return }
+        let key = (recipeID: recipeID, stepIndex: runner.stepIndex, sinceTick: sinceTick)
+        if let pending = semanticDecisionRequest,
+           pending.recipeID == key.recipeID, pending.stepIndex == key.stepIndex,
+           pending.sinceTick == key.sinceTick { return }
+        semanticDecisionRequest = key
+        let scope = decisionScope()
+        let finish: (SceneDecision) -> Void = { [weak self] answer in
+            guard let self else { return }
+            defer {
+                if let pending = self.semanticDecisionRequest,
+                   pending.recipeID == key.recipeID,
+                   pending.stepIndex == key.stepIndex,
+                   pending.sinceTick == key.sinceTick {
+                    self.semanticDecisionRequest = nil
+                }
+            }
+            guard self.matchesDecisionScope(scope),
+                  self.semanticPipeline.sceneRunner.recipeID == recipeID,
+                  self.semanticPipeline.sceneRunner.stepIndex == key.stepIndex,
+                  self.semanticPipeline.snapshot().pendingDecisionSinceTick == key.sinceTick,
+                  self.semanticPipeline.isAwaitingDecision else { return }
+            let choice: SimulationDecisionPointChoice
+            switch answer {
+            case .continueScene: choice = .continueScene
+            case .leaveScene: choice = .leaveScene
+            case .say(let intent): choice = .say(intent.rawValue)
+            case .perform(let names): choice = .performCandidates(names)
+            }
+            self.preparedSemanticProvider.prepareDecision(
+                choice, goal: goal, step: step,
+                planEpoch: self.gameplayRuntime.previewWorld().planEpochs[self.runtimeActorID.raw, default: 0],
+                context: self.runtimeContext())
+        }
+        if settings.actionBrainEnabled, needle.isAvailable {
+            var facts = makeWorldFacts()
+            facts.mode = .inScene
+            if needle.decideNow(facts: facts, completion: { [weak self] semantic, _ in
+                guard let self else { return }
+                var latest = self.makeWorldFacts()
+                latest.mode = .inScene
+                let valid = semantic.flatMap {
+                    NeedleBrain.validate($0, facts: latest) ? $0 : nil
+                }
+                finish(self.mapSceneDecision(valid) ?? self.policySceneDecision(recipe))
+            }) { return }
+        }
+        finish(policySceneDecision(recipe))
+    }
+
+    private func drainSemanticBodyCommand() {
+        guard let id = semanticPipeline.pendingActionID,
+              let command = gameplayRuntime.takeBodyCommand(behaviorID: id) else { return }
+        guard command.planEpoch == gameplayRuntime.world.planEpochs[runtimeActorID.raw, default: 0] else {
+            _ = gameplayRuntime.submitBodyResult(BodyResult(
+                behaviorID: command.behaviorID, executionToken: command.executionToken,
+                outcome: .cancelled))
+            return
+        }
+        let runner = semanticPipeline.sceneRunner
+        let activity = currentGoal?.activity ?? world.foreground?.appActivity
+        let window = world.foreground.flatMap { fg in
+            activity == nil || fg.appActivity == activity ? fg : nil
+        } ?? world.windows.first { $0.appActivity == activity }
+        if runner.status == .running { semanticBodyAdapter.bindActivityWindow(window) }
+        semanticBodyAdapter.consume(
+            command,
+            startedAtTick: gameplayRuntime.world.behaviors[id]?.startedAtTick ?? gameplayRuntime.clock.tick)
+    }
+
+    private func syncSemanticScene() {
+        let runner = semanticPipeline.sceneRunner
+        if !semanticPipeline.isAwaitingDecision { semanticDecisionRequest = nil }
+        if runner.status == .running, semanticSceneStartedAt == nil {
+            semanticSceneStartedAt = clock
+            if let id = runner.recipeID { pushRecentEvent("scene: \(id)") }
+        }
+        guard let started = semanticSceneStartedAt,
+              runner.status == .completed || runner.status == .cancelled else { return }
+        let stayed = stayedSeconds(since: started)
+        let completed = runner.status == .completed
+        if let id = runner.recipeID {
+            if completed { brainState.apply(event: .sceneFinished(scene: id, stayedSeconds: stayed), now: clock) }
+            brainState.lastActivity = id
+            logGoalOutcome(goal: currentGoal, scene: id, stayed: stayed,
+                           completed: completed, reason: completed ? "finished" : "aborted")
+        }
+        semanticBodyAdapter.invalidate()
+        preparedSemanticProvider.reset()
+        sceneMoveDone = nil
+        sceneMoveTarget = nil
+        scenePerformDone = nil
+        if !completed { model.stopWalk() }
+        semanticDecisionRequest = nil
+        semanticSceneStartedAt = nil
+        semanticGoal = nil
+        currentGoal = nil
+        goalActivity = nil
+        brainState.clearGoal()
+        goalCooldown = max(goalCooldown, 1.5)
+        sceneCooldown = completed ? 2 : 1.5
     }
 
     /// 经典随机脑路径（v0 兼容；scenesEnabled == false 时使用）。
@@ -910,6 +1122,14 @@ final class PetController {
         goalActivity = goal.activity
         brainState.adopt(goal: goal, now: clock)
         pushRecentEvent("goal: \(goal.kind.rawValue)\(goal.activity.map { " (\($0.rawValue))" } ?? "")")
+        if !usesSharedGameplayKernel, settings.scenesEnabled {
+            let decision = goal.semanticDecision(atTick: gameplayRuntime.clock.tick)
+            semanticGoal = decision
+            preparedSemanticProvider.prepareGoal(
+                decision,
+                planEpoch: gameplayRuntime.previewWorld().planEpochs[runtimeActorID.raw, default: 0],
+                context: runtimeContext())
+        }
     }
 
     private func clearGoal(reason: String) {
@@ -917,6 +1137,36 @@ final class PetController {
         guard let goal = currentGoal else { return }
         cancelPendingRuntimeActions()
         pushRecentEvent("goal cleared: \(reason)")
+        if !usesSharedGameplayKernel, settings.scenesEnabled {
+            let recipeID = semanticPipeline.sceneRunner.recipeID
+            if let recipeID, semanticPipeline.sceneRunner.status == .running {
+                logGoalOutcome(goal: goal, scene: recipeID,
+                               stayed: semanticSceneStartedAt.map(stayedSeconds(since:)) ?? 0,
+                               completed: false, reason: "goal \(reason)")
+            } else {
+                logGoalOutcome(goal: goal, scene: nil, stayed: 0,
+                               completed: false, reason: "goal \(reason)")
+            }
+            _ = gameplayRuntime.submitPlatform(PlatformEvent(GameEvent(
+                kind: .userInteraction, actorID: runtimeActorID,
+                userAction: "goal \(reason)")))
+            if let id = semanticPipeline.cancel() { gameplayRuntime.cancelBodyBehavior(id) }
+            semanticBodyAdapter.invalidate()
+            preparedSemanticProvider.reset()
+            semanticDecisionRequest = nil
+            semanticSceneStartedAt = nil
+            semanticGoal = nil
+            sceneMoveDone = nil
+            sceneMoveTarget = nil
+            scenePerformDone = nil
+            model.stopWalk()
+            submitProp(PropCommand(.despawn))
+            currentGoal = nil
+            goalActivity = nil
+            brainState.clearGoal()
+            goalCooldown = max(goalCooldown, 1.5)
+            return
+        }
         // 先结束场景再清目标，确保 outcome 与原目标共享同一个 trace_id。
         let hadScene = sceneRunner != nil
         abortScene(reason: "goal \(reason)")
@@ -1068,6 +1318,16 @@ final class PetController {
 
     private func abortScene(reason: String = "interrupted") {
         needle.invalidatePendingDecision()
+        if !usesSharedGameplayKernel, settings.scenesEnabled,
+           semanticPipeline.sceneRunner.status == .running {
+            if let id = semanticPipeline.cancel() { gameplayRuntime.cancelBodyBehavior(id) }
+            semanticBodyAdapter.invalidate()
+            preparedSemanticProvider.reset()
+            semanticSceneStartedAt = nil
+            semanticDecisionRequest = nil
+            submitProp(PropCommand(.despawn))
+            return
+        }
         guard let runner = sceneRunner else {
             // 没场景也可能有挂起的场景移动（Needle 的 move_to 语义）。
             sceneMoveDone = nil
@@ -1145,7 +1405,13 @@ final class PetController {
             world: makeWorldState(),
             planEpoch: gameplayRuntime.world.planEpochs[runtimeActorID.raw, default: 0],
             goalTraceID: currentGoal?.traceID,
-            sceneID: sceneRunner?.recipe.id)
+            sceneID: sceneRunner?.recipe.id ?? semanticActiveSceneID)
+    }
+
+    private var semanticActiveSceneID: String? {
+        guard !usesSharedGameplayKernel, settings.scenesEnabled,
+              semanticPipeline.sceneRunner.status == .running else { return nil }
+        return semanticPipeline.sceneRunner.recipeID
     }
 
     private func matchesDecisionScope(_ requested: BrainDecisionScope) -> Bool {
@@ -1417,7 +1683,7 @@ final class PetController {
             actor: runtimeActorID.raw,
             userIdleSeconds: Int(systemWorld.idleSeconds()))
         facts.traceID = currentGoal?.traceID
-        facts.sceneID = sceneRunner?.recipe.id
+        facts.sceneID = sceneRunner?.recipe.id ?? semanticActiveSceneID
         facts.goal = currentGoal.map {
             (kind: $0.kind.rawValue, activity: $0.activity?.rawValue, style: $0.style)
         }
@@ -1714,7 +1980,7 @@ final class PetController {
         pushRecentEvent("pet spoke")
         // game.md §14：语言和动画结合 —— 情绪驱动一个短表演
         // （候选按包内素材降级；场景运行中不插手，场景有自己的节奏）。
-        if sceneRunner == nil {
+        if sceneRunner == nil, semanticActiveSceneID == nil {
             for name in EmotionGesture.clips(for: emotion) {
                 if let key = library.action(named: name) {
                     actions.inject(.perform(key))
@@ -1727,6 +1993,10 @@ final class PetController {
     /// 菜单/设置窗改设置后热更新。displayHeight 也已支持实时预览：
     /// 物理尺寸（bodyRadius 等）与面板大小下一帧即按新值运转。
     func updateSettings(_ s: Settings) {
+        if !usesSharedGameplayKernel, settings.scenesEnabled != s.scenesEnabled,
+           currentGoal != nil {
+            clearGoal(reason: "scene setting changed")
+        }
         let heightChanged = s.displayHeight != settings.displayHeight
         let brainChanged = s.actionBrainEnabled != settings.actionBrainEnabled
             || s.actionBrainMinInterval != settings.actionBrainMinInterval
@@ -2264,7 +2534,7 @@ final class PetController {
             startle.reset()
             return
         }
-        guard sceneRunner == nil,
+        guard sceneRunner == nil, semanticActiveSceneID == nil,
               model.state == .grounded || model.state == .perched else {
             startle.reset()
             return
@@ -2361,7 +2631,9 @@ final class PetController {
         } else {
             r.goal = "（规划中）"
         }
-        r.scene = sceneRunner.map { "\($0.recipe.label)" } ?? "—"
+        r.scene = sceneRunner.map { "\($0.recipe.label)" }
+            ?? semanticActiveSceneID.flatMap { SceneCatalog.recipe(id: $0)?.label }
+            ?? "—"
         let pct = { (v: Double) -> String in String(Int((v * 100).rounded())) }
         r.needs = "能量 \(pct(brainState.energy)) · 无聊 \(pct(brainState.boredom)) · 社交 \(pct(brainState.socialNeed)) · 应激 \(pct(brainState.stress))"
         let local = settings.localBrainEnabled
