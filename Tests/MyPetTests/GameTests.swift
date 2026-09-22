@@ -56,6 +56,62 @@ final class GameTests: XCTestCase {
         XCTAssertEqual(external.world.behaviors[id]?.status, headless.world.behaviors[id]?.status)
     }
 
+    func testMissingAppKitAnchorFailsCoreSceneWithoutExecutingNextStep() throws {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let recipe = SimulationSceneRecipe(id: "missing-anchor", goals: [.wander], steps: [
+            SimulationSceneStep(.moveTo("missing")), SimulationSceneStep(.say("greet")),
+        ])
+        let runtime = GameRuntime(kernel: GameKernel(scenario: HarnessScenario(
+            id: "missing-anchor", entities: [actor])), bodyExecutionMode: .external)
+        let pipeline = SemanticPipeline(configuration: SemanticPipelineConfiguration(
+            actorID: actor.id, initialGoal: SimulationGoalDecision(goal: .wander)),
+            recipes: [recipe])
+        let stage = FakeStage(resolveAnchor: false)
+        let adapter = SemanticBodyAdapter(stage: stage) { _ = runtime.submitBodyResult($0) }
+
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        let id = try XCTUnwrap(pipeline.pendingActionID)
+        let command = try XCTUnwrap(runtime.takeBodyCommand(behaviorID: id))
+        adapter.consume(command, startedAtTick: runtime.world.behaviors[id]?.startedAtTick ?? 0)
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        XCTAssertEqual(pipeline.sceneRunner.status, .cancelled)
+        XCTAssertFalse(runtime.world.behaviors.values.contains { $0.request.intent == "say:greet" })
+    }
+
+    func testCorePropFactCommitsBeforeDependentPhysicalStep() throws {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let recipe = SimulationSceneRecipe(id: "prop-order", goals: [.wander], steps: [
+            SimulationSceneStep(.spawnProp("tea")), SimulationSceneStep(.putDown),
+        ])
+        let runtime = GameRuntime(kernel: GameKernel(scenario: HarnessScenario(
+            id: "prop-order", entities: [actor])), bodyExecutionMode: .external)
+        let pipeline = SemanticPipeline(configuration: SemanticPipelineConfiguration(
+            actorID: actor.id, initialGoal: SimulationGoalDecision(goal: .wander)),
+            recipes: [recipe])
+        let stage = FakeStage()
+        let adapter = SemanticBodyAdapter(stage: stage) { _ = runtime.submitBodyResult($0) }
+
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        let spawnID = try XCTUnwrap(pipeline.pendingActionID)
+        let spawn = try XCTUnwrap(runtime.takeBodyCommand(behaviorID: spawnID))
+        adapter.consume(spawn, startedAtTick: runtime.world.behaviors[spawnID]?.startedAtTick ?? 0)
+        XCTAssertNil(runtime.world.soloProps[actor.id.raw])
+        XCTAssertEqual(pipeline.sceneRunner.stepIndex, 0)
+
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        XCTAssertEqual(runtime.world.soloProps[actor.id.raw]?.phase, .held)
+        XCTAssertEqual(pipeline.sceneRunner.stepIndex, 1)
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        let putDownID = try XCTUnwrap(pipeline.pendingActionID)
+        let putDown = try XCTUnwrap(runtime.takeBodyCommand(behaviorID: putDownID))
+        adapter.consume(putDown, startedAtTick: runtime.world.behaviors[putDownID]?.startedAtTick ?? 0)
+        XCTAssertEqual(stage.putDowns, 1)
+        XCTAssertEqual(runtime.world.soloProps[actor.id.raw]?.phase, .held)
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        XCTAssertEqual(runtime.world.soloProps[actor.id.raw]?.phase, .placed)
+        XCTAssertEqual(pipeline.sceneRunner.status, .completed)
+    }
+
     func testSemanticBodyAdapterReportsResultWithoutMovingCoreSceneCursor() throws {
         let actor = EntityState(id: EntityID("pet"), kind: .actor)
         let recipe = SimulationSceneRecipe(
@@ -297,7 +353,7 @@ final class GameTests: XCTestCase {
         XCTAssertTrue(GoalPolicy.isBusy(policyCtx(brain: BrainState(), activity: .coding)))
     }
 
-    // MARK: SceneCatalog / SceneBodyDriver
+    // MARK: SceneCatalog / Core semantic session
 
     func testSceneCompatibilityFiltersByGoalAndActivity() {
         let goal = Goal(kind: .joinUserActivity, target: "user", activity: .coding,
@@ -366,215 +422,9 @@ final class GameTests: XCTestCase {
         }
     }
 
-    func testSceneRunnerExecutesStepsWithDegrade() {
-        let recipe = SceneCatalog.recipe(id: "tea_break")!
-        let stage = FakeStage()
-        let runner = SceneBodyDriver(recipe: recipe)
-        runner.start(stage: stage, activityWindow: nil, now: 0)
-
-        // 推进直到结束：spawnProp → perform(全缺失降级) → wait → clearProps。
-        var guardCounter = 0
-        while runner.isActive, guardCounter < 200 {
-            runner.tick(now: runner.currentClock + 1)
-            stage.elapse(seconds: 1)
-            guardCounter += 1
-        }
-        XCTAssertTrue(runner.completed)
-        XCTAssertTrue(stage.finishedProps, "自然结束只收束手持道具，保留已放下的道具")
-        XCTAssertFalse(stage.propsCleared)
-    }
-
-    func testSceneRunnerAbortsWhenAnchorVanishes() {
-        let recipe = SceneCatalog.recipe(id: "window_sleep")!  // moveTo @activity → 失败
-        let stage = FakeStage(resolveAnchor: false)
-        let semanticRunner = MyPetCore.SceneRunner(recipes: [recipe])
-        let runner = SceneBodyDriver(recipe: recipe, semanticRunner: semanticRunner)
-        runner.start(stage: stage, activityWindow: WindowEntity(id: 1, pid: 1, owner: "A",
-                                                                bounds: CGRect(x: 0, y: 0, width: 400, height: 300)),
-                     now: 0)
-        runner.tick(now: 1)
-        stage.elapse(seconds: 1)
-        runner.tick(now: 2)
-        XCTAssertFalse(runner.isActive, "锚点窗口没了 = 场景中断，不追空窗口")
-        XCTAssertEqual(semanticRunner.status, .cancelled)
-        XCTAssertTrue(stage.propsCleared)
-    }
-
-    func testSceneDecisionActionMustPassCoreAuthorizationBeforeBodyExecution() {
-        let recipe = SimulationSceneRecipe(
-            id: "decision-action", goals: [.wander],
-            steps: [SimulationSceneStep(.wait(0), decisionPoint: true)])
-        let stage = FakeStage()
-        stage.hasClips = true
-        stage.nextDecision = .perform(["think"])
-        var actions: [SimulationNeedleAction] = []
-        var completions: [(Bool) -> Void] = []
-        let runner = SceneBodyDriver(recipe: recipe) { action, completion in
-            actions.append(action)
-            completions.append(completion)
-        }
-
-        runner.start(stage: stage, activityWindow: nil, now: 0)
-        runner.tick(now: 0)
-        completions.removeFirst()(true)
-        runner.tick(now: 0)
-
-        XCTAssertEqual(actions, [.wait(0), .performCandidates(["think"])])
-        XCTAssertTrue(stage.performedClips.isEmpty)
-
-        completions.removeFirst()(true)
-        XCTAssertEqual(stage.performedClips, ["think"])
-    }
-
-    func testSceneDecisionTimeoutContinuesWithoutModelAndIgnoresLateAnswer() {
-        let recipe = SimulationSceneRecipe(
-            id: "deferred-decision", goals: [.wander],
-            steps: [SimulationSceneStep(.wait(0), decisionPoint: true)])
-        let stage = FakeStage()
-        stage.deferDecisions = true
-        let runner = SceneBodyDriver(recipe: recipe)
-        runner.stepTimeout = 2
-
-        runner.start(stage: stage, activityWindow: nil, now: 0)
-        runner.tick(now: 0)
-        runner.tick(now: 0)
-        XCTAssertEqual(stage.decisionPoints, 1)
-        XCTAssertTrue(runner.isActive)
-
-        runner.tick(now: 3)
-        XCTAssertTrue(runner.completed)
-        stage.pendingDecision?(.leaveScene)
-        XCTAssertTrue(runner.completed)
-        XCTAssertEqual(runner.phase, .finished)
-    }
-
-    func testProductionSceneBodyWaitsForCoreAuthorizationBeforeEachStep() {
-        let recipe = SceneCatalog.recipe(id: "tea_break")!
-        let stage = FakeStage()
-        var actions: [SimulationNeedleAction] = []
-        var completions: [(Bool) -> Void] = []
-        let runner = SceneBodyDriver(recipe: recipe) { action, completion in
-            actions.append(action)
-            completions.append(completion)
-        }
-
-        runner.start(stage: stage, activityWindow: nil, now: 0)
-        runner.tick(now: 0)
-
-        XCTAssertEqual(actions, [.moveTo("floor_near")])
-
-        completions.removeFirst()(true)
-        XCTAssertEqual(actions, [.moveTo("floor_near"), .spawnProp("tea")])
-
-        completions.removeFirst()(true)
-        XCTAssertEqual(actions.count, 3, "第二步授权后才请求下一步")
-    }
-
-    func testSceneReportsBodyCompletionOnlyAfterPhysicalStepFinishes() {
-        let recipe = SimulationSceneRecipe(
-            id: "body-result", goals: [.wander],
-            steps: [SimulationSceneStep(.wait(2))])
-        let stage = FakeStage()
-        var authorization: ((Bool, SceneBodyDriver.BodyResultReporter?) -> Void)?
-        var results: [Bool] = []
-        let runner = SceneBodyDriver(
-            recipe: recipe,
-            authorize: { _, completion in authorization = completion })
-
-        runner.start(stage: stage, activityWindow: nil, now: 0)
-        runner.tick(now: 0)
-        authorization?(true, { results.append($0) })
-        XCTAssertTrue(results.isEmpty)
-
-        runner.tick(now: 0.05)
-        XCTAssertTrue(results.isEmpty)
-        runner.tick(now: 0.1)
-
-        XCTAssertEqual(results, [true])
-        XCTAssertTrue(runner.completed)
-    }
-
-    func testSceneWaitsForCorePropCommitBeforeNextDependentStep() {
-        let recipe = SimulationSceneRecipe(
-            id: "prop-commit", goals: [.wander],
-            steps: [SimulationSceneStep(.spawnProp("tea")), SimulationSceneStep(.putDown)])
-        let stage = FakeStage()
-        var actions: [SimulationNeedleAction] = []
-        var results: [Bool] = []
-        let runner = SceneBodyDriver(recipe: recipe, authorize: { action, completion in
-            actions.append(action)
-            completion(true, { results.append($0) })
-        })
-
-        runner.start(stage: stage, activityWindow: nil, now: 0)
-        runner.tick(now: 0)
-        XCTAssertEqual(actions, [.spawnProp("tea")])
-        XCTAssertEqual(results, [true])
-        runner.tick(now: 1)
-        XCTAssertEqual(actions, [.spawnProp("tea")], "未见 Core 道具事实不能继续放下")
-
-        stage.sceneBodyCommitState = .completed
-        runner.tick(now: 2)
-        XCTAssertEqual(actions, [.spawnProp("tea"), .putDown])
-    }
-
-    func testRejectedPropCommitAbortsSceneWithoutExecutingNextStep() {
-        let recipe = SimulationSceneRecipe(
-            id: "prop-reject", goals: [.wander],
-            steps: [SimulationSceneStep(.spawnProp("tea")), SimulationSceneStep(.putDown)])
-        let stage = FakeStage()
-        var actions: [SimulationNeedleAction] = []
-        let runner = SceneBodyDriver(recipe: recipe, authorize: { action, completion in
-            actions.append(action)
-            completion(true, { _ in })
-        })
-        runner.start(stage: stage, activityWindow: nil, now: 0)
-        runner.tick(now: 0)
-        stage.sceneBodyCommitState = .failed
-        runner.tick(now: 1)
-
-        XCTAssertFalse(runner.isActive)
-        XCTAssertEqual(actions, [.spawnProp("tea")])
-        XCTAssertTrue(stage.propsCleared)
-    }
-
-    func testScenePhysicalTimeoutReportsFailureAndDoesNotAdvance() {
-        let recipe = SimulationSceneRecipe(
-            id: "body-timeout", goals: [.wander],
-            steps: [SimulationSceneStep(.moveTo("floor_near"))])
-        let stage = FakeStage()
-        stage.completeMovesImmediately = false
-        var results: [Bool] = []
-        let runner = SceneBodyDriver(
-            recipe: recipe,
-            authorize: { _, completion in
-                completion(true, { results.append($0) })
-            })
-        runner.stepTimeout = 0.05
-
-        runner.start(stage: stage, activityWindow: nil, now: 0)
-        runner.tick(now: 0)
-        runner.tick(now: 0.1)
-
-        XCTAssertEqual(results, [false])
-        XCTAssertFalse(runner.completed)
-        XCTAssertFalse(runner.isActive)
-    }
-
-    func testSceneRunnerDecisionPointAsksStage() {
-        let recipe = SceneCatalog.recipe(id: "complain")!
-        let stage = FakeStage()
-        let runner = SceneBodyDriver(recipe: recipe)
-        runner.start(stage: stage, activityWindow: nil, now: 0)
-        var guardCounter = 0
-        while runner.isActive, guardCounter < 200 {
-            runner.tick(now: runner.currentClock + 1)
-            stage.elapse(seconds: 1)
-            guardCounter += 1
-        }
-        XCTAssertGreaterThan(stage.decisionPoints, 0, "决策点必须咨询舞台")
-        XCTAssertTrue(stage.propsCleared || stage.finishedProps)
-    }
+    // Scene stepping, authorization, timeout and decision-point regressions
+    // now live against MyPetCore.SemanticPipeline; AppKit tests above cover
+    // the result-only physical adapter.
 
     // MARK: Memory / Quips
 
@@ -1129,35 +979,19 @@ final class GameTests: XCTestCase {
     }
 }
 
-// MARK: - 假舞台（SceneBodyDriver 离线执行）
+// MARK: - Result-only AppKit stage fixture
 
 private final class FakeStage: SceneStaging {
     var petX: CGFloat = 100
     var petYFeet: CGFloat = 800
     var resolveAnchorSucceeds = true
-    var sceneBodyCommitState: SceneBodyCommitState = .pending
-    var propsCleared = false
-    var finishedProps = false
-    var decisionPoints = 0
     var performedClips: [String] = []
-    var hasClips = false
     var completeMovesImmediately = true
     var pendingMove: (() -> Void)?
-    var nextDecision: SceneDecision?
-    var deferDecisions = false
-    var pendingDecision: ((SceneDecision) -> Void)?
-    /// 场景等待的绝对时钟（elapse 推进）。
-    var fakeClock: Double = 0
-    /// 决策点回答策略：第二次离开，其余继续。
-    private var decisionCount = 0
 
     init(resolveAnchor: Bool = true) {
         resolveAnchorSucceeds = resolveAnchor
     }
-
-    func elapse(seconds: Double) { fakeClock += seconds }
-
-    func hasClip(_ name: String) -> Bool { hasClips }
 
     func resolveAnchor(_ text: String) -> (x: CGFloat, top: Bool, window: WindowEntity?)? {
         resolveAnchorSucceeds ? (350, true, nil) : nil
@@ -1174,9 +1008,6 @@ private final class FakeStage: SceneStaging {
         pendingMove = nil
         callback?()
     }
-
-    func sceneFadeProps() { propsCleared = true }
-    func sceneFinishProps() { finishedProps = true }
 
     var putDowns = 0
     var pickUps = 0
@@ -1196,18 +1027,4 @@ private final class FakeStage: SceneStaging {
 
     func sceneSleep() {}
 
-    func sceneDecisionPoint(_ scene: SceneRecipe, stepIndex: Int, resume: @escaping (SceneDecision) -> Void) {
-        decisionPoints += 1
-        if deferDecisions {
-            pendingDecision = resume
-            return
-        }
-        if let nextDecision {
-            self.nextDecision = nil
-            resume(nextDecision)
-            return
-        }
-        decisionCount += 1
-        resume(decisionCount >= 3 ? .leaveScene : .continueScene)
-    }
 }

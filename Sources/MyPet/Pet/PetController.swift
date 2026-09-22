@@ -47,21 +47,18 @@ final class SystemWorld: WorldReading {
 /// - **目标层**（45~90s / 到期 / 世界大变化）：决策脑出 Goal；没配 LLM
 ///   时 GoalPolicy 内置策略兜底 —— 零 LLM 也完整可玩；
 /// - **场景层**（行动边界）：行动脑 Needle 在合法场景集里 choose_scene，
-///   SceneBodyDriver 按配方步进执行（找锚点→走→跳→道具→表演→决策点）；
+///   Core SemanticPipeline 推进配方；AppKit 只执行 BodyCommand 并回报结果；
 ///   Needle 缺模型时 Autopilot 按人格加权随机选场景；
 /// - **反射层**（<50ms，不进大脑）：摸头开心跳、连戳三下应激躲开；
 ///   事件进 recentEvents 供决策脑下一轮社会理解。
 @MainActor
 final class PetController {
     private enum PendingRuntimeAction {
-        case semantic(NeedleBrain.SemanticAction)
         case random(PetIntent)
         case menu(ActionIntent, String?)
-        case scene(
-            SimulationNeedleAction,
-            (Bool, SceneBodyDriver.BodyResultReporter?) -> Void
-        )
     }
+
+    private typealias BodyResultReporter = (Bool) -> Void
 
     let world: WindowWorld
     let systemWorld: SystemWorld
@@ -89,8 +86,6 @@ final class PetController {
     private(set) var lastWorldState: BrainContextSnapshot?
     /// 当前目标（决策脑/内置策略下达）。
     private(set) var currentGoal: Goal?
-    /// 运行中的场景。
-    private(set) var sceneRunner: SceneBodyDriver?
     /// 当前场景的空间根和角色根。道具通过它们挂接，不再自建一套坐标树。
     let sceneGraph: SceneGraph
     let actorNode: SceneNode
@@ -499,7 +494,7 @@ final class PetController {
                            completed: false, reason: "application terminated",
                            traceID: pendingTrace)
             pendingGoalTraceID = nil
-        } else if sceneRunner != nil {
+        } else if semanticActiveSceneID != nil {
             abortScene(reason: "application terminated")
         }
         actionRing.dismiss()
@@ -765,12 +760,6 @@ final class PetController {
 
         let busy = model.state == .airborne || model.state == .dragged
             || model.state == .tossed || model.walking
-        // 场景运行中：行动权在场景（busy 时只推 tick，让等待相位自然计时）。
-        if let runner = sceneRunner {
-            runner.tick(now: clock)
-            if !runner.isActive { finishScene() }
-            return
-        }
         guard !busy, actions.performance == nil else { return }
 
         // 1. 目标层
@@ -783,19 +772,7 @@ final class PetController {
             return
         }
 
-        // 2. 场景层：行动脑选场景（或 Autopilot 兜底），场景没就绪的冷却期发呆。
-        guard sceneCooldown <= 0 else { return }
-        if settings.scenesEnabled, settings.actionBrainEnabled, needle.isAvailable {
-            askNeedleForScene()
-            return
-        }
-        if settings.scenesEnabled {
-            autopilotPickScene()
-            sceneCooldown = 2
-            return
-        }
-
-        // 3. 随机脑兜底（场景玩法整体关闭时的经典模式）。
+        // 场景关闭时只保留经典随机模式；场景玩法由 Core session 推进。
         driveRandom()
     }
 
@@ -974,7 +951,7 @@ final class PetController {
         sceneMoveDone = nil
         sceneMoveTarget = nil
         scenePerformDone = nil
-        if !completed { model.stopWalk() }
+        if !completed { model.stopWalk(); actions.cancelPerformance() }
         semanticDecisionRequest = nil
         semanticSceneStartedAt = nil
         semanticGoal = nil
@@ -1033,7 +1010,7 @@ final class PetController {
         let traceID = UUID().uuidString
         let scope = BrainDecisionScope(
             world: ws, planEpoch: gameplayRuntime.world.planEpochs[runtimeActorID.raw, default: 0],
-            goalTraceID: currentGoal?.traceID, sceneID: sceneRunner?.recipe.id)
+            goalTraceID: currentGoal?.traceID, sceneID: semanticActiveSceneID)
         let input = GoalBrainInput(
             petID: runtimeActorID.raw,
             world: ws,
@@ -1160,6 +1137,7 @@ final class PetController {
             sceneMoveTarget = nil
             scenePerformDone = nil
             model.stopWalk()
+            actions.cancelPerformance()
             submitProp(PropCommand(.despawn))
             currentGoal = nil
             goalActivity = nil
@@ -1167,15 +1145,9 @@ final class PetController {
             goalCooldown = max(goalCooldown, 1.5)
             return
         }
-        // 先结束场景再清目标，确保 outcome 与原目标共享同一个 trace_id。
-        let hadScene = sceneRunner != nil
         abortScene(reason: "goal \(reason)")
-        // 目标可能尚未进入场景（例如刚规划完就被拖拽/世界切换）。
-        // 这类目标也必须有终态，否则查看器只能把它永久显示为“未收束”。
-        if !hadScene {
-            logGoalOutcome(goal: goal, scene: nil, stayed: 0,
-                           completed: false, reason: "goal \(reason)")
-        }
+        logGoalOutcome(goal: goal, scene: nil, stayed: 0,
+                       completed: false, reason: "goal \(reason)")
         goalCooldown = max(goalCooldown, 1.5)
         currentGoal = nil
         goalActivity = nil
@@ -1218,104 +1190,6 @@ final class PetController {
         clearGoal(reason: "world changed: \(wanted.rawValue) → \(fg.appActivity.rawValue)")
     }
 
-    // ---- 场景层 ----
-
-    /// 行动脑选场景（冷却由 Needle 自身节奏控制）。
-    private func askNeedleForScene() {
-        var facts = makeWorldFacts()
-        facts.mode = .ambient
-        let scope = decisionScope()
-        needle.maybeDecide(now: clock, facts: facts) { [weak self] semantic, _ in
-            guard let self else { return }
-            guard !self.isStopped, self.currentGoal != nil else { return }
-            guard self.matchesDecisionScope(scope) else {
-                self.needle.expedite()
-                return
-            }
-            guard let semantic else {
-                // 决策失败：这轮交给 Autopilot，保证玩法不中断。
-                if self.settings.scenesEnabled { self.autopilotPickScene() }
-                return
-            }
-            var currentFacts = self.makeWorldFacts()
-            currentFacts.mode = .ambient
-            guard NeedleBrain.validate(semantic, facts: currentFacts) else {
-                if self.settings.scenesEnabled { self.autopilotPickScene() }
-                return
-            }
-            self.apply(semantic)
-        }
-    }
-
-    /// Autopilot：人格加权的场景兜底（Needle 缺模型/失败时）。
-    private func autopilotPickScene() {
-        guard let goal = currentGoal else { return }
-        let userBusy = GoalPolicy.isBusy(.init(
-            brain: brainState, personality: personality,
-            userActivity: world.foreground?.appActivity ?? .unknown,
-            userIdleSeconds: systemWorld.idleSeconds(),
-            hasWindows: !world.windows.isEmpty,
-            secondsSinceInteraction: nil, now: clock))
-        let pool = SceneCatalog.compatible(goal: goal,
-                                           activity: world.foreground?.appActivity ?? .unknown,
-                                           personality: personality,
-                                           userBusy: userBusy)
-        guard !pool.isEmpty else { sceneCooldown = 5; return }
-        var rng = autopilotRng
-        defer { autopilotRng = rng }
-        let recipe = pool[Int.random(in: 0..<pool.count, using: &rng)]
-        var facts = makeWorldFacts()
-        facts.mode = .ambient
-        NeedleBrain.logFallback(
-            facts: facts,
-            chosen: "choose_scene(\(recipe.id))",
-            mode: "autopilot",
-            reason: "needle_unavailable_or_failed")
-        apply(.chooseScene(recipe.id))
-    }
-
-    private func beginScene(_ recipe: SceneRecipe) {
-        let runner = SceneBodyDriver(
-            recipe: recipe,
-            goal: currentGoal?.semanticDecision(atTick: gameplayRuntime.clock.tick),
-            semanticRunner: semanticEngine.sceneRunner,
-            authorize: { [weak self] action, completion in
-                guard let self else { completion(false, nil); return }
-                self.authorizeSceneAction(action, completion: completion)
-            })
-        // "@activity" 锚点绑定：优先前台窗口，其次最近的活动匹配窗口。
-        let activity = currentGoal?.activity ?? world.foreground?.appActivity
-        let activityWindow: WindowEntity? = {
-            if let fg = world.foreground, activity == nil || fg.appActivity == activity { return fg }
-            return world.windows.first { $0.appActivity == activity }
-        }()
-        runner.start(stage: self, activityWindow: activityWindow, now: clock)
-        sceneRunner = runner
-        pushRecentEvent("scene: \(recipe.id)")
-    }
-
-    private func finishScene() {
-        needle.invalidatePendingDecision()
-        guard let runner = sceneRunner else { return }
-        let stayed = stayedSeconds(since: runner.startedAt)
-        brainState.apply(event: .sceneFinished(scene: runner.recipe.id, stayedSeconds: stayed), now: clock)
-        brainState.lastActivity = runner.recipe.id
-        // 结局先记（currentGoal 还在），再清目标。
-        logSceneOutcome(runner: runner, stayed: stayed, completed: runner.completed,
-                        reason: runner.completed ? "finished" : "aborted")
-        // 无论是正常完成还是执行层中断，这个场景对应的目标都已经结束。
-        // 保留目标会让下一帧继续拿同一目标启动新场景，形成重复决策和孤立链路。
-        currentGoal = nil
-        goalActivity = nil
-        brainState.clearGoal()
-        goalCooldown = max(goalCooldown, 1.5)
-        sceneRunner = nil
-        sceneCooldown = 2
-        sceneMoveDone = nil
-        sceneMoveTarget = nil
-        scenePerformDone = nil
-    }
-
     private func abortScene(reason: String = "interrupted") {
         needle.invalidatePendingDecision()
         if !usesSharedGameplayKernel, settings.scenesEnabled,
@@ -1325,34 +1199,17 @@ final class PetController {
             preparedSemanticProvider.reset()
             semanticSceneStartedAt = nil
             semanticDecisionRequest = nil
-            submitProp(PropCommand(.despawn))
-            return
-        }
-        guard let runner = sceneRunner else {
-            // 没场景也可能有挂起的场景移动（Needle 的 move_to 语义）。
             sceneMoveDone = nil
             sceneMoveTarget = nil
             scenePerformDone = nil
+            model.stopWalk()
+            actions.cancelPerformance()
+            submitProp(PropCommand(.despawn))
             return
         }
-        runner.abort()
-        brainState.lastActivity = runner.recipe.id
-        logSceneOutcome(runner: runner, stayed: stayedSeconds(since: runner.startedAt),
-                        completed: false, reason: reason)
-        sceneRunner = nil
         sceneMoveDone = nil
         sceneMoveTarget = nil
         scenePerformDone = nil
-        sceneCooldown = 1.5
-        // 中断收场：道具淡出（不瞬间消失，视觉不跳变）。
-        submitProp(PropCommand(.despawn))
-    }
-
-    /// game.md §16：goal/场景的轨迹 + 结局是训练数据的关键 label，
-    /// 与规划决策同文件（brain_trace.jsonl，kind=outcome，完整保留本地业务上下文）。
-    private func logSceneOutcome(runner: SceneBodyDriver, stayed: Double, completed: Bool, reason: String) {
-        logGoalOutcome(goal: currentGoal, scene: runner.recipe.id, stayed: stayed,
-                       completed: completed, reason: reason)
     }
 
     private func logGoalOutcome(goal: Goal?, scene: String?, stayed: Double,
@@ -1381,17 +1238,6 @@ final class PetController {
 
     // ---- Needle 语义动作 → 身体 ----
 
-    /// 语义动作先进入共享 Kernel；表现层不再直接接受模型结果。
-    private func apply(_ semantic: NeedleBrain.SemanticAction) {
-        let execution = semanticEngine.actionRuntime.execute(
-            semantic,
-            tick: gameplayRuntime.clock.tick,
-            actorID: runtimeActorID,
-            world: gameplayRuntime.world,
-            context: runtimeContext())
-        submitRuntimeAction(.semantic(semantic), execution: execution)
-    }
-
     private func runtimeContext() -> RuntimeContext {
         RuntimeContext(focus: world.foreground.map {
             RuntimeContext.Focus(
@@ -1405,7 +1251,7 @@ final class PetController {
             world: makeWorldState(),
             planEpoch: gameplayRuntime.world.planEpochs[runtimeActorID.raw, default: 0],
             goalTraceID: currentGoal?.traceID,
-            sceneID: sceneRunner?.recipe.id ?? semanticActiveSceneID)
+            sceneID: semanticActiveSceneID)
     }
 
     private var semanticActiveSceneID: String? {
@@ -1445,47 +1291,8 @@ final class PetController {
         pendingMenuAction = nil
         let pending = pendingRuntimeActions
         pendingRuntimeActions.removeAll()
-        for (id, action) in pending {
+        for (id, _) in pending {
             gameplayRuntime.cancelBodyBehavior(id)
-            if case .scene(_, let completion) = action { completion(false, nil) }
-        }
-    }
-
-    private func authorizeSceneAction(
-        _ action: SimulationNeedleAction,
-        completion: @escaping (Bool, SceneBodyDriver.BodyResultReporter?) -> Void
-    ) {
-        if !settings.propsEnabled {
-            switch action {
-            case .spawnProp, .putDown, .pickUp, .clearProps:
-                completion(true, nil)
-                return
-            default: break
-            }
-        }
-        if case .spawnProp(let id) = action, PropCatalog.def(id) == nil {
-            completion(true, nil)
-            return
-        }
-        let execution = semanticEngine.actionRuntime.execute(
-            action,
-            tick: gameplayRuntime.clock.tick,
-            actorID: runtimeActorID,
-            world: gameplayRuntime.world,
-            context: runtimeContext())
-        guard execution.accepted else { completion(false, nil); return }
-        guard let request = execution.request else {
-            // Missing optional content is a valid degradation, not a logic
-            // failure; the body driver will skip the unavailable clip.
-            completion(true, nil)
-            return
-        }
-        pendingRuntimeActions[request.id] = .scene(action, completion)
-        scenePendingBodyID = request.id
-        guard gameplayRuntime.submitAction(execution) != nil else {
-            pendingRuntimeActions[request.id] = nil
-            completion(false, nil)
-            return
         }
     }
 
@@ -1501,10 +1308,9 @@ final class PetController {
                     behaviorID: command.behaviorID,
                     executionToken: command.executionToken,
                     outcome: .cancelled))
-                if case .scene(_, let completion) = action { completion(false, nil) }
                 continue
             }
-            let report: SceneBodyDriver.BodyResultReporter = { [weak self] success in
+            let report: BodyResultReporter = { [weak self] success in
                 self?.gameplayRuntime.submitBodyResult(BodyResult(
                     behaviorID: command.behaviorID,
                     executionToken: command.executionToken,
@@ -1517,11 +1323,7 @@ final class PetController {
             return status == .cancelled || status == .rejected
         }
         for id in terminal {
-            if case .scene(_, let completion) = pendingRuntimeActions.removeValue(forKey: id) {
-                completion(false, nil)
-            } else {
-                pendingRuntimeActions[id] = nil
-            }
+            pendingRuntimeActions[id] = nil
         }
     }
 
@@ -1539,10 +1341,9 @@ final class PetController {
 
     private func executeCommitted(
         _ action: PendingRuntimeAction,
-        report: @escaping SceneBodyDriver.BodyResultReporter
+        report: @escaping BodyResultReporter
     ) {
         switch action {
-        case .semantic(let semantic): executeCommitted(semantic, report: report)
         case .random(let intent): executeCommitted(intent, report: report)
         case .menu(let intent, let clip):
             if intent == .rest {
@@ -1558,13 +1359,12 @@ final class PetController {
             } else {
                 report(false)
             }
-        case .scene(_, let completion): completion(true, report)
         }
     }
 
     private func executeCommitted(
         _ intent: PetIntent,
-        report: @escaping SceneBodyDriver.BodyResultReporter
+        report: @escaping BodyResultReporter
     ) {
         switch intent {
         case .stroll(let target):
@@ -1585,92 +1385,6 @@ final class PetController {
         }
     }
 
-    /// Kernel 承诺后的平台适配：从此开始才允许操作 AppKit/精灵身体。
-    private func executeCommitted(
-        _ semantic: NeedleBrain.SemanticAction,
-        report: @escaping SceneBodyDriver.BodyResultReporter
-    ) {
-        switch semantic {
-        case .chooseScene(let id):
-            guard let recipe = SceneCatalog.recipe(id: id) else { report(false); return }
-            beginScene(recipe)
-            report(true)
-        case .moveTo(let text):
-            guard let resolved = resolveAnchor(text) else { report(false); return }
-            sceneMove(toX: resolved.x, top: resolved.top, window: resolved.window) { report(true) }
-        case .spawnProp(let id):
-            guard settings.propsEnabled else { report(false); return }
-            guard PropCatalog.def(id) != nil else { report(false); return }
-            model.wake()
-            report(true)
-        case .putDown:
-            report(semanticPutDown(commitImmediately: false))
-        case .pickUp:
-            report(semanticPickUp(commitImmediately: false))
-        case .perform(let name):
-            guard let key = library.action(named: name) else { report(false); return }
-            scenePerform([key]) { report(true) }
-        case .performCandidates(let names):
-            guard let key = names.lazy.compactMap({ self.library.action(named: $0) }).first else {
-                report(false)
-                return
-            }
-            scenePerform([key]) { report(true) }
-        case .clearProps:
-            report(true)
-        case .say(let intent):
-            if let intent = SpeechIntent(rawValue: intent) { speak(intent: intent) }
-            report(true)
-        case .leaveScene:
-            cancelGoalAndScene(reason: "action brain left scene")
-            report(true)
-        case .sleep:
-            actions.inject(.sleep)
-            report(true)
-        case .wait:
-            report(true)
-        case .body:
-            report(false)
-        }
-    }
-
-    /// 放下（行动脑语义/场景共用）：手部 → 身前地面滑落 + 点头节拍。
-    /// 包里有真 pick_up/put_down clip 的角色将来自动换成专用动画。
-    @discardableResult
-    private func semanticPutDown(commitImmediately: Bool = true) -> Bool {
-        guard settings.propsEnabled, soloProp?.phase == .held else { return false }
-        let heldID = soloProp?.propID
-        model.wake()
-        model.stopWalk()
-        let front = model.x + (model.facingRight ? 1 : -1) * settings.displayHeight * 0.30
-        let placed = !commitImmediately || submitProp(PropCommand(
-            .putDown, x: Double(front), y: Double(model.yFeet)))
-        if placed, let nod = library.action(named: "put_down") ?? library.action(named: "nod") {
-            actions.inject(.perform(nod))
-        }
-        if placed { pushRecentEvent("put down \(heldID ?? "prop")") }
-        return placed
-    }
-
-    /// 拿起（行动脑语义/场景共用）：附近自己的 placed 道具滑进手部 + 高兴节拍。
-    @discardableResult
-    private func semanticPickUp(commitImmediately: Bool = true) -> Bool {
-        guard settings.propsEnabled else { return false }
-        guard soloProp?.isPlacedNear(
-            x: Double(model.x), y: Double(model.yFeet), within: 90) == true else {
-            return false
-        }
-        model.wake()
-        model.stopWalk()
-        let picked = !commitImmediately || submitProp(PropCommand(
-            .pickUp, x: Double(model.x), y: Double(model.yFeet), within: 90))
-        if picked, let beat = library.action(named: "pick_up") ?? library.action(named: "happy") {
-            actions.inject(.perform(beat))
-        }
-        if picked { pushRecentEvent("picked up prop") }
-        return picked
-    }
-
     /// Needle 世界快照。实体 v2 = 锚点（带 app/activity/affordance）；
     /// 场景集由当前目标过滤；表演名单来自包的 actions/。
     private func makeWorldFacts() -> NeedleBrain.WorldFacts {
@@ -1683,7 +1397,7 @@ final class PetController {
             actor: runtimeActorID.raw,
             userIdleSeconds: Int(systemWorld.idleSeconds()))
         facts.traceID = currentGoal?.traceID
-        facts.sceneID = sceneRunner?.recipe.id ?? semanticActiveSceneID
+        facts.sceneID = semanticActiveSceneID
         facts.goal = currentGoal.map {
             (kind: $0.kind.rawValue, activity: $0.activity?.rawValue, style: $0.style)
         }
@@ -1741,9 +1455,8 @@ final class PetController {
     private var sceneMoveTarget: (x: CGFloat, top: Bool, window: WindowEntity?)?
     private var sceneMoveDeadline: Double = 0
     private var scenePerformDone: (() -> Void)?
-    private var scenePendingBodyID: String?
     /// 完成令牌：sceneMove/scenePerform 每次调用 +1，过期回调（场景已步进、
-    /// 看门狗已先行）自动作废 —— 与 SceneBodyDriver 的 stepGeneration 双向幂等。
+    /// 看门狗已先行）自动作废；Core session 另以 BodyResult token 门禁。
     private var sceneMoveToken = 0
     private var scenePerformToken = 0
 
@@ -1795,32 +1508,24 @@ final class PetController {
         done?()
     }
 
-    var sceneBodyCommitState: SceneBodyCommitState {
-        guard let id = scenePendingBodyID else { return .failed }
-        switch gameplayRuntime.world.behaviors[id]?.status {
-        case .completed: return .completed
-        case .cancelled, .rejected: return .failed
-        case .running, nil: return .pending
-        }
-    }
-
-    func sceneFadeProps() {
-        submitProp(PropCommand(.despawn))
-    }
-
-    func sceneFinishProps() {
-        guard soloProp?.phase == .held else { return }
-        submitProp(PropCommand(.putDown, x: Double(model.x), y: Double(model.yFeet)))
-    }
-
     @discardableResult
     func scenePutDown() -> Bool {
-        semanticPutDown(commitImmediately: false)
+        guard settings.propsEnabled, soloProp?.phase == .held else { return false }
+        model.wake()
+        model.stopWalk()
+        pushRecentEvent("put down \(soloProp?.propID ?? "prop")")
+        return true
     }
 
     @discardableResult
     func scenePickUp() -> Bool {
-        semanticPickUp(commitImmediately: false)
+        guard settings.propsEnabled,
+              soloProp?.isPlacedNear(
+                  x: Double(model.x), y: Double(model.yFeet), within: 90) == true else { return false }
+        model.wake()
+        model.stopWalk()
+        pushRecentEvent("picked up prop")
+        return true
     }
 
     func scenePerform(_ candidates: [String], onDone: @escaping () -> Void) {
@@ -1856,32 +1561,6 @@ final class PetController {
 
     func sceneSleep() {
         actions.inject(.sleep)
-    }
-
-    /// 决策点：行动脑优先（不吃冷却），不可用/失败 → 内置策略即时回答。
-    func sceneDecisionPoint(_ scene: SceneRecipe, stepIndex: Int,
-                            resume: @escaping (SceneDecision) -> Void) {
-        if settings.actionBrainEnabled, needle.isAvailable {
-            var facts = makeWorldFacts()
-            facts.mode = .inScene
-            let scope = decisionScope()
-            let runner = sceneRunner
-            let dispatched = needle.decideNow(facts: facts) { [weak self] semantic, _ in
-                guard let self, !self.isStopped, self.sceneRunner === runner else { return }
-                guard self.matchesDecisionScope(scope) else {
-                    resume(self.policySceneDecision(scene))
-                    return
-                }
-                var currentFacts = self.makeWorldFacts()
-                currentFacts.mode = .inScene
-                let valid = semantic.flatMap {
-                    NeedleBrain.validate($0, facts: currentFacts) ? $0 : nil
-                }
-                resume(self.mapSceneDecision(valid) ?? self.policySceneDecision(scene))
-            }
-            if dispatched { return }
-        }
-        resume(policySceneDecision(scene))
     }
 
     /// 内置决策点策略：人格塑形的继续/插播/离开。
@@ -1980,7 +1659,7 @@ final class PetController {
         pushRecentEvent("pet spoke")
         // game.md §14：语言和动画结合 —— 情绪驱动一个短表演
         // （候选按包内素材降级；场景运行中不插手，场景有自己的节奏）。
-        if sceneRunner == nil, semanticActiveSceneID == nil {
+        if semanticActiveSceneID == nil {
             for name in EmotionGesture.clips(for: emotion) {
                 if let key = library.action(named: name) {
                     actions.inject(.perform(key))
@@ -2270,11 +1949,7 @@ final class PetController {
 
     // MARK: SceneStaging / AnchorLookup 小件
 
-    func hasClip(_ name: String) -> Bool {
-        library.action(named: name) != nil
-    }
-
-    /// 锚点文本 → 世界落点（SceneBodyDriver 与 Needle 语义共用）。
+    /// 锚点文本 → 世界落点（AppKit BodyCommand adapter 使用）。
     func resolveAnchor(_ text: String) -> (x: CGFloat, top: Bool, window: WindowEntity?)? {
         guard let spec = AnchorSpec.parse(text),
               let resolved = AnchorResolver.resolve(spec, windows: world.windows) else { return nil }
@@ -2534,7 +2209,7 @@ final class PetController {
             startle.reset()
             return
         }
-        guard sceneRunner == nil, semanticActiveSceneID == nil,
+        guard semanticActiveSceneID == nil,
               model.state == .grounded || model.state == .perched else {
             startle.reset()
             return
@@ -2631,8 +2306,7 @@ final class PetController {
         } else {
             r.goal = "（规划中）"
         }
-        r.scene = sceneRunner.map { "\($0.recipe.label)" }
-            ?? semanticActiveSceneID.flatMap { SceneCatalog.recipe(id: $0)?.label }
+        r.scene = semanticActiveSceneID.flatMap { SceneCatalog.recipe(id: $0)?.label }
             ?? "—"
         let pct = { (v: Double) -> String in String(Int((v * 100).rounded())) }
         r.needs = "能量 \(pct(brainState.energy)) · 无聊 \(pct(brainState.boredom)) · 社交 \(pct(brainState.socialNeed)) · 应激 \(pct(brainState.stress))"
@@ -2650,6 +2324,4 @@ final class PetController {
 
 /// PetController 的场景舞台身份（协议在 Game/Scene.swift）。
 extension PetController: SceneStaging {
-    var petX: CGFloat { model.x }
-    var petYFeet: CGFloat { model.yFeet }
 }
