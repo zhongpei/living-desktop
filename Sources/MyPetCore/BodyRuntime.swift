@@ -194,7 +194,11 @@ final class BodyRuntime {
                 nextExecutionToken += 1
                 active[id] = Active(
                     command: command,
-                    completesAtTick: behavior.startedAtTick + behavior.request.durationTicks - 1)
+                    // The command becomes observable only after this tick.
+                    // Preserve authored multi-tick timing, but never finish
+                    // a one-tick body before an external adapter could reply.
+                    completesAtTick: behavior.startedAtTick
+                        + max(1, behavior.request.durationTicks - 1))
                 if mode == .headless { beginHeadless(command) }
                 if mode == .external { commands.append(command) }
                 appendEffect(PresentationEffect(

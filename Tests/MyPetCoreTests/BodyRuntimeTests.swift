@@ -2,6 +2,23 @@ import XCTest
 @testable import MyPetCore
 
 final class BodyRuntimeTests: XCTestCase {
+    func testHeadlessOneTickBodyWaitsForAnObservableCommandBoundary() {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let runtime = GameRuntime(bodyExecutionMode: .headless)
+        let request = BehaviorRequest(
+            id: "one-tick", actorID: actor.id, intent: "perform:wave",
+            priority: .brainReactive, completionMode: .body,
+            durationTicks: 1, timeoutTicks: 20)
+
+        _ = runtime.stepReplayOrFault(events: [
+            GameEvent(kind: .registerEntity, entity: actor),
+            GameEvent(kind: .behaviorRequest, request: request),
+        ])
+        XCTAssertEqual(runtime.world.behaviors[request.id]?.status, .running)
+        _ = runtime.step()
+        XCTAssertEqual(runtime.world.behaviors[request.id]?.status, .completed)
+    }
+
     func testBodyPoseDecodesOldSnapshotWithoutHorizontalSpeed() throws {
         let old = """
         {"actorID":{"raw":"pet"},"x":10,"yFeet":20,"facingRight":true,"motion":"airborne","action":null}

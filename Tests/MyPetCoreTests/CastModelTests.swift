@@ -33,7 +33,7 @@ final class CastModelTests: XCTestCase {
         let report = runtime.tick()
 
         XCTAssertEqual(report.tick, 0)
-        XCTAssertEqual(runtime.world.behaviors[requestID]?.status, .completed)
+        XCTAssertEqual(runtime.world.behaviors[requestID]?.status, .running)
         XCTAssertEqual(runtime.consumeStoryActions().map(\.beatID), ["greet"])
     }
 
@@ -1241,6 +1241,8 @@ final class CastModelTests: XCTestCase {
         XCTAssertEqual(capped.startNext(in: cappedKernel), "long")
         _ = cappedKernel.tick()
         capped.tick(in: cappedKernel)
+        _ = cappedKernel.tick()
+        capped.tick(in: cappedKernel)
 
         XCTAssertEqual(capped.interruptedEpisodeID, "long")
         XCTAssertNil(capped.currentEpisodeID)
@@ -1262,6 +1264,7 @@ final class CastModelTests: XCTestCase {
                 maxDurationTicks: 1))
 
         XCTAssertEqual(runtime.startStory(director), "boundary")
+        _ = runtime.step(storyDirector: director)
         _ = runtime.step(storyDirector: director)
         _ = runtime.step(storyDirector: director)
 

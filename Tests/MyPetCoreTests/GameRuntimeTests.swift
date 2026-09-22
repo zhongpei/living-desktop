@@ -561,6 +561,64 @@ final class GameRuntimeTests: XCTestCase {
         XCTAssertEqual(pipeline.trace, virtual.pipeline?.trace)
     }
 
+    func testHeadlessAndExternalBodiesAdvanceOneSemanticPipelineAtTheSameTickBoundaries() {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let configuration = SemanticPipelineConfiguration(
+            actorID: actor.id,
+            assetCatalog: AssetCatalog(exactActions: ["think", "read", "sit_idle", "nod", "look"]),
+            initialGoal: SimulationGoalDecision(goal: .wander))
+        let scenario = HarnessScenario(id: "same-semantic-session", entities: [actor])
+        let headless = GameRuntime(kernel: GameKernel(scenario: scenario), bodyExecutionMode: .headless)
+        let external = GameRuntime(kernel: GameKernel(scenario: scenario), bodyExecutionMode: .external)
+        let headlessPipeline = SemanticPipeline(configuration: configuration)
+        let externalPipeline = SemanticPipeline(configuration: configuration)
+        var commandIDs: [String] = []
+
+        for _ in 0..<10 {
+            _ = headless.step(pipeline: headlessPipeline, context: RuntimeContext())
+            _ = external.step(pipeline: externalPipeline, context: RuntimeContext())
+            for command in external.drainBodyCommands() {
+                commandIDs.append(command.behaviorID)
+                XCTAssertTrue(external.submitBodyResult(BodyResult(
+                    behaviorID: command.behaviorID,
+                    executionToken: command.executionToken,
+                    outcome: .completed)))
+            }
+            XCTAssertEqual(external.world.stableDigest(), headless.world.stableDigest())
+            XCTAssertEqual(externalPipeline.trace, headlessPipeline.trace)
+            XCTAssertEqual(externalPipeline.sceneRunner.snapshot(), headlessPipeline.sceneRunner.snapshot())
+        }
+        XCTAssertGreaterThanOrEqual(commandIDs.count, 3)
+        XCTAssertEqual(commandIDs.count, Set(commandIDs).count)
+    }
+
+    func testHeadlessAndExternalSemanticBodiesRejectTheSamePreemptedCommand() {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let configuration = SemanticPipelineConfiguration(
+            actorID: actor.id, initialGoal: SimulationGoalDecision(goal: .wander))
+        let scenario = HarnessScenario(id: "preempted-semantic-session", entities: [actor])
+        let headless = GameRuntime(kernel: GameKernel(scenario: scenario), bodyExecutionMode: .headless)
+        let external = GameRuntime(kernel: GameKernel(scenario: scenario), bodyExecutionMode: .external)
+        let headlessPipeline = SemanticPipeline(configuration: configuration)
+        let externalPipeline = SemanticPipeline(configuration: configuration)
+
+        _ = headless.step(pipeline: headlessPipeline, context: RuntimeContext())
+        _ = external.step(pipeline: externalPipeline, context: RuntimeContext())
+        let oldCommand = try! XCTUnwrap(external.drainBodyCommands().first)
+        let preempt = GameEvent(kind: .userInteraction, actorID: actor.id, userAction: "grab")
+        _ = headless.step(events: [preempt], pipeline: headlessPipeline, context: RuntimeContext())
+        _ = external.step(events: [preempt], pipeline: externalPipeline, context: RuntimeContext())
+
+        XCTAssertEqual(headless.world.stableDigest(), external.world.stableDigest())
+        XCTAssertEqual(headlessPipeline.trace, externalPipeline.trace)
+        XCTAssertEqual(headlessPipeline.sceneRunner.status, .cancelled)
+        XCTAssertEqual(externalPipeline.sceneRunner.status, .cancelled)
+        XCTAssertFalse(external.submitBodyResult(BodyResult(
+            behaviorID: oldCommand.behaviorID,
+            executionToken: oldCommand.executionToken,
+            outcome: .completed)))
+    }
+
     func testSemanticSceneRunnerLoopsFromDeclaredStepInsteadOfCompleting() {
         let recipe = SimulationSceneRecipe(
             id: "looping", label: "Looping", goals: [.teaseUser], needsUser: true,
@@ -741,6 +799,7 @@ final class GameRuntimeTests: XCTestCase {
             id: "story-scope-beats", entities: [actor])))
 
         XCTAssertEqual(runtime.startStory(director), "same-intent")
+        _ = runtime.step(storyDirector: director)
         _ = runtime.step(storyDirector: director)
         _ = runtime.step(storyDirector: director)
 

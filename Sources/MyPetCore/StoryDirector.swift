@@ -558,7 +558,7 @@ public final class StoryDirector {
         }
         if states.contains(where: { $0.status == .running }) {
             if let startedAt = currentStartedAtTick,
-               kernel.clock.tick - startedAt >= configuration.maxDurationTicks {
+               kernel.clock.tick - startedAt > configuration.maxDurationTicks {
                 abort(episode: episode, in: kernel)
             }
             return
