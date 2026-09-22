@@ -57,6 +57,8 @@ public struct VirtualWindowContent: Codable, Equatable, Sendable {
 public struct VirtualWindow: Codable, Equatable, Sendable {
     public var id: EntityID
     public var app: String
+    /// Optional process identity for replaying same-ID window replacement.
+    public var pid: Int?
     public var bundleID: String?
     public var title: String
     public var frame: LayoutRect
@@ -68,7 +70,7 @@ public struct VirtualWindow: Codable, Equatable, Sendable {
     public var revision: Int
 
     private enum CodingKeys: String, CodingKey {
-        case id, app, bundleID, title, frame, state, focused, occluded, zIndex, content, revision
+        case id, app, pid, bundleID, title, frame, state, focused, occluded, zIndex, content, revision
     }
 
     public init(
@@ -82,10 +84,12 @@ public struct VirtualWindow: Codable, Equatable, Sendable {
         zIndex: Int = 10,
         content: VirtualWindowContent = VirtualWindowContent(),
         bundleID: String? = nil,
+        pid: Int? = nil,
         revision: Int = 0
     ) {
         self.id = id
         self.app = app
+        self.pid = pid
         self.bundleID = bundleID
         self.title = title
         self.frame = frame
@@ -111,10 +115,13 @@ public struct VirtualWindow: Codable, Equatable, Sendable {
             content: try values.decodeIfPresent(VirtualWindowContent.self, forKey: .content)
                 ?? VirtualWindowContent(),
             bundleID: try values.decodeIfPresent(String.self, forKey: .bundleID),
+            pid: try values.decodeIfPresent(Int.self, forKey: .pid),
             revision: try values.decodeIfPresent(Int.self, forKey: .revision) ?? 0)
     }
 
-    public var alive: Bool { state != .closed }
+    /// Active Core platform: minimized windows remain in the virtual catalog
+    /// but disappear from the on-screen window source until restored.
+    public var alive: Bool { state != .closed && state != .minimized }
 }
 
 public struct VirtualScreen: Codable, Equatable, Sendable {
@@ -634,26 +641,29 @@ public struct VirtualDesktop: Codable, Equatable, Sendable {
         case .setWindowState(let id, let state):
             guard var window = windows[id.raw] else { return [] }
             window.state = state
-            window.focused = state != .closed && window.focused
+            window.focused = window.alive && window.focused
             window.revision += 1
             windows[id.raw] = window
             appendTrace(outputTick, "window", "state:\(id.raw):\(state.rawValue)")
-            if state == .closed {
+            if !window.alive {
+                let wasFocused = user.focusedWindowID == id
                 return [GameEvent(kind: .destroyEntity, entityID: id)]
+                    + (wasFocused ? focus(nil, tick: outputTick) : [])
             }
             return [GameEvent(kind: .windowChanged, entity: EntityState(
                 id: id, kind: .window, revision: window.revision), entityID: id)]
         case .focusWindow(let id):
             return focus(id, tick: outputTick)
         case .closeWindow(let id):
-            guard var window = windows[id.raw], window.alive else { return [] }
+            guard var window = windows[id.raw], window.state != .closed else { return [] }
             window.state = .closed
             window.focused = false
             window.revision += 1
             windows[id.raw] = window
-            if user.focusedWindowID == id { user.focusedWindowID = nil }
+            let wasFocused = user.focusedWindowID == id
             appendTrace(outputTick, "window", "close:\(id.raw)")
             return [GameEvent(kind: .destroyEntity, entityID: id)]
+                + (wasFocused ? focus(nil, tick: outputTick) : [])
         case .setPermission(let domain, let granted):
             switch domain {
             case .accessibility: sensors.permissions.accessibility = granted
@@ -674,19 +684,29 @@ public struct VirtualDesktop: Codable, Equatable, Sendable {
 
     private mutating func upsert(_ incoming: VirtualWindow, tick: Int64) -> [GameEvent] {
         var window = incoming
-        let existed = windows[incoming.id.raw] != nil
-        if let old = windows[incoming.id.raw] {
+        let old = windows[incoming.id.raw]
+        let existed = old != nil
+        let replaced = old.map {
+            $0.app != incoming.app || $0.bundleID != incoming.bundleID || $0.pid != incoming.pid
+        } ?? false
+        if let old {
             window.revision = max(window.revision, old.revision + 1)
         }
         windows[incoming.id.raw] = window
         appendTrace(tick, "window", "\(existed ? "update" : "open"):\(window.id.raw)")
         let entity = EntityState(id: window.id, kind: .window, revision: window.revision, alive: window.alive)
-        var events: [GameEvent] = [GameEvent(
+        var events: [GameEvent] = []
+        if replaced, old?.alive == true {
+            events.append(GameEvent(kind: .destroyEntity, entityID: window.id))
+        }
+        events.append(GameEvent(
             kind: existed ? .windowChanged : .registerEntity,
             entity: entity,
-            entityID: window.id)]
+            entityID: window.id))
         if window.focused {
             events.append(contentsOf: focus(window.id, tick: tick))
+        } else if replaced, user.focusedWindowID == window.id {
+            events.append(contentsOf: focus(nil, tick: tick))
         }
         return events
     }

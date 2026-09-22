@@ -302,7 +302,7 @@ public final class GameKernel {
         for slot in scenario.slots {
             world.slots[slot.key] = slot
         }
-        for window in scenario.desktop.windows.values where window.alive {
+        for window in world.entities.values where window.kind == .window && window.alive {
             for slotID in ["top.left", "top.right"] {
                 let key = "\(window.id.raw)/\(slotID)"
                 if world.slots[key] == nil {
@@ -444,9 +444,13 @@ public final class GameKernel {
             }
             world.entities[entity.id.raw] = entity
             world.planEpochs[entity.id.raw] = 0
+            if entity.kind == .window, entity.alive {
+                ensureWindowSlots(for: entity.id)
+            }
         case .windowChanged:
             guard let id = event.entityID ?? event.entity?.id else { return }
             let incoming = event.entity ?? world.entities[id.raw] ?? EntityState(id: id, kind: .window)
+            let wasAlive = world.entities[id.raw]?.alive == true
             if var current = world.entities[id.raw] {
                 current.revision = max(current.revision, incoming.revision)
                 current.alive = incoming.alive
@@ -454,6 +458,9 @@ public final class GameKernel {
                 world.entities[id.raw] = current
             } else {
                 world.entities[id.raw] = incoming
+            }
+            if incoming.kind == .window, incoming.alive, !wasAlive {
+                ensureWindowSlots(for: id)
             }
             world.planEpochs[id.raw, default: 0] += 1
             // A moved/resized window changes every derived slot reference. The
@@ -614,6 +621,19 @@ public final class GameKernel {
         }
     }
 
+    private func ensureWindowSlots(for id: EntityID) {
+        for slotID in ["top.left", "top.right"] {
+            let key = "\(id.raw)/\(slotID)"
+            if var slot = world.slots[key] {
+                slot.status = .free
+                slot.clearClaims()
+                world.slots[key] = slot
+            } else {
+                world.slots[key] = InteractionSlot(entityID: id, slotID: slotID)
+            }
+        }
+    }
+
     private func applyProp(_ command: PropCommand, actorID: EntityID, tick: Int64) {
         let key = actorID.raw
         let current = world.soloProps[key]
@@ -701,7 +721,8 @@ public final class GameKernel {
         removeSpatialAttachments(forEntity: id)
         for key in activeBehaviorIDs.sorted() {
             guard let behavior = world.behaviors[key], behavior.status == .running else { continue }
-            if behavior.request.actorID == id || behavior.request.target?.entityID == id {
+            if behavior.request.actorID == id || behavior.request.target?.entityID == id
+                || behavior.request.slot?.entityID == id {
                 cancelBehavior(key, tick: tick, reason: reason)
             }
         }

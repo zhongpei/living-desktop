@@ -10,6 +10,64 @@ import MyPetPlatform
 /// 场景配方执行（假舞台）、记忆、内置台词、设置兼容、OCR profile。
 @MainActor
 final class GameTests: XCTestCase {
+    func testWindowLifecycleProjectionEmitsOnlyMeaningfulChanges() {
+        let projection = WindowLifecycleProjection()
+        let first = WindowEntity(id: 42, pid: 7, owner: "Code",
+                                 bounds: CGRect(x: 10, y: 20, width: 500, height: 400))
+        let registered = projection.events(for: [first])
+        XCTAssertEqual(registered.map(\.kind), [.registerEntity])
+        XCTAssertTrue(projection.events(for: [first]).isEmpty)
+
+        var retitled = first
+        retitled.windowTitle = "Changing editor title"
+        XCTAssertTrue(projection.events(for: [retitled]).isEmpty)
+
+        var moved = retitled
+        moved = WindowEntity(id: 42, pid: 7, owner: "Code",
+                             bounds: CGRect(x: 20, y: 20, width: 500, height: 400))
+        XCTAssertEqual(projection.events(for: [moved]).map(\.kind), [.windowChanged])
+        XCTAssertEqual(projection.events(for: []).map(\.kind), [.destroyEntity])
+        XCTAssertEqual(projection.events(for: [first]).map(\.kind), [.windowChanged])
+
+        let handoff = WindowLifecycleProjection(knownEntities: [
+            EntityState(id: EntityID("42"), kind: .window, revision: 3),
+            EntityState(id: EntityID("43"), kind: .window, revision: 1),
+        ])
+        XCTAssertEqual(handoff.events(for: [first]).map(\.kind), [.destroyEntity, .windowChanged])
+
+        let reused = WindowLifecycleProjection()
+        XCTAssertEqual(reused.events(for: [first]).map(\.kind), [.registerEntity])
+        let otherProcess = WindowEntity(id: 42, pid: 99, owner: "Browser",
+                                        bounds: first.bounds)
+        XCTAssertEqual(reused.events(for: [otherProcess]).map(\.kind),
+                       [.destroyEntity, .windowChanged])
+    }
+
+    func testSharedForegroundRevisionIsPublishedOnceAcrossOwnerTransfer() {
+        let hub = PerceptionHub()
+        hub.world.onForegroundChanged?(nil)
+        XCTAssertTrue(hub.claimForegroundRevision())
+        XCTAssertFalse(hub.claimForegroundRevision())
+        hub.resetWindowLifecycle()
+        XCTAssertFalse(hub.claimForegroundRevision())
+        hub.world.onForegroundChanged?(nil)
+        XCTAssertTrue(hub.claimForegroundRevision())
+    }
+
+    func testForegroundIdentityChangeWithSameWindowIDStillNotifies() {
+        let world = WindowWorld()
+        var changes = 0
+        world.onForegroundChanged = { _ in changes += 1 }
+        let first = WindowEntity(id: 42, pid: 7, owner: "Code",
+                                 bounds: CGRect(x: 0, y: 0, width: 500, height: 400))
+        let reused = WindowEntity(id: 42, pid: 99, owner: "Browser", bounds: first.bounds)
+        world.observeForeground(first)
+        world.observeForeground(first)
+        world.observeForeground(reused)
+        world.observeForeground(nil)
+        XCTAssertEqual(changes, 3)
+    }
+
 
     func testPreparedSoloSceneUsesSameCoreSessionForExternalAndHeadlessBodies() throws {
         let actor = EntityState(id: EntityID("pet"), kind: .actor)
@@ -133,6 +191,36 @@ final class GameTests: XCTestCase {
         _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
         XCTAssertEqual(runtime.world.soloProps[actor.id.raw]?.phase, .placed)
         XCTAssertEqual(pipeline.sceneRunner.status, .completed)
+    }
+
+    func testRejectedPhysicalPutDownDoesNotCommitCoreProp() throws {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let recipe = SimulationSceneRecipe(id: "put-down-rejected", goals: [.wander], steps: [
+            SimulationSceneStep(.spawnProp("tea")), SimulationSceneStep(.putDown),
+        ])
+        let runtime = GameRuntime(kernel: GameKernel(scenario: HarnessScenario(
+            id: "put-down-rejected", entities: [actor])), bodyExecutionMode: .external)
+        let pipeline = SemanticPipeline(configuration: SemanticPipelineConfiguration(
+            actorID: actor.id, initialGoal: SimulationGoalDecision(goal: .wander)),
+            recipes: [recipe])
+        let stage = FakeStage()
+        let adapter = SemanticBodyAdapter(stage: stage) { _ = runtime.submitBodyResult($0) }
+
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        let spawnID = try XCTUnwrap(pipeline.pendingActionID)
+        adapter.consume(try XCTUnwrap(runtime.takeBodyCommand(behaviorID: spawnID)),
+                        startedAtTick: runtime.world.behaviors[spawnID]?.startedAtTick ?? 0)
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        let putDownID = try XCTUnwrap(pipeline.pendingActionID)
+        stage.allowPutDown = false
+        adapter.consume(try XCTUnwrap(runtime.takeBodyCommand(behaviorID: putDownID)),
+                        startedAtTick: runtime.world.behaviors[putDownID]?.startedAtTick ?? 0)
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+
+        XCTAssertEqual(runtime.world.soloProps[actor.id.raw]?.phase, .held)
+        XCTAssertEqual(runtime.world.behaviors[putDownID]?.status, .cancelled)
+        XCTAssertEqual(pipeline.sceneRunner.status, .cancelled)
     }
 
     func testSemanticBodyAdapterReportsResultWithoutMovingCoreSceneCursor() throws {
@@ -1035,9 +1123,10 @@ private final class FakeStage: SceneStaging {
 
     var putDowns = 0
     var pickUps = 0
+    var allowPutDown = true
 
     @discardableResult
-    func scenePutDown() -> Bool { putDowns += 1; return true }
+    func scenePutDown() -> Bool { putDowns += 1; return allowPutDown }
 
     @discardableResult
     func scenePickUp() -> Bool { pickUps += 1; return true }

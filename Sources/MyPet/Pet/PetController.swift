@@ -124,7 +124,6 @@ final class PetController {
     private let perception: PerceptionHub
     private var perceptionEventCursor: Int64 = 0
     private var lastWindowTitleFingerprint: String?
-    private var handledForegroundRevision = 0
     private let puller = WindowPuller()
     /// 世界事件环（进 BrainContextSnapshot.recentEvents）。
     private var recentEvents: [(t: Double, text: String)] = []
@@ -242,7 +241,13 @@ final class PetController {
         isDeparting = false
         lastTick = ProcessInfo.processInfo.systemUptime
         runtimeFrameClock = FixedStepClock(stepMilliseconds: gameplayRuntime.clock.stepMilliseconds)
-        if isPerceptionOwner { perception.world.poll() }
+        if !usesSharedGameplayKernel {
+            perception.resetWindowLifecycle(knownEntities: Array(gameplayRuntime.world.entities.values))
+        }
+        if isPerceptionOwner {
+            perception.world.poll()
+            publishWindowLifecycle()
+        }
         consumePerceptionEvents()
         // Cast 的 Runtime 与所有角色帧由 AppDelegate 的单一 driver 推进；
         // 角色不再各自创建 Timer。单宠物仍由自己的 panel driver 推进。
@@ -533,7 +538,11 @@ final class PetController {
         if pollAccumulator >= 0.3 {
             pollAccumulator = 0
             let fingerprintBefore = lastWorldFingerprint
-            if isPerceptionOwner { perception.world.poll() }
+            if isPerceptionOwner {
+                perception.world.poll()
+                publishWindowLifecycle()
+                consumePerceptionEvents()
+            }
             refreshSenses()
             refreshWorldState()
             let changed = lastWorldFingerprint != fingerprintBefore
@@ -1681,6 +1690,12 @@ final class PetController {
     /// 菜单/设置窗改设置后热更新。displayHeight 也已支持实时预览：
     /// 物理尺寸（bodyRadius 等）与面板大小下一帧即按新值运转。
     func updateSettings(_ s: Settings) {
+        if !usesSharedGameplayKernel, settings.propsEnabled && !s.propsEnabled {
+            if currentGoal != nil || semanticActiveSceneID != nil {
+                cancelGoalAndScene(reason: "prop setting changed")
+            }
+            submitProp(PropCommand(.clear))
+        }
         if !usesSharedGameplayKernel, settings.scenesEnabled != s.scenesEnabled,
            currentGoal != nil {
             clearGoal(reason: "scene setting changed")
@@ -1741,6 +1756,12 @@ final class PetController {
         perception.ownerID == runtimeActorID
     }
 
+    private func publishWindowLifecycle() {
+        for event in perception.windowLifecycle.events(for: perception.world.windows) {
+            gameplayRuntime.submitPlatform(PlatformEvent(event))
+        }
+    }
+
     /// 把桌面级感知总线的结果投递到游戏 kernel。单宠物模式使用自己的
     /// kernel；角色组只由 owner 投递到 CastRuntime 的共享 kernel，避免
     /// 多个面板重复消费同一事件或重复推进同一时钟。
@@ -1762,9 +1783,8 @@ final class PetController {
         }
         perceptionEventCursor = input.latestSequence
 
-        guard handledForegroundRevision < perception.foregroundRevision else { return }
-        handledForegroundRevision = perception.foregroundRevision
         guard mayPublishSharedEvent else { return }
+        guard perception.claimForegroundRevision() else { return }
         handleForegroundChanged(perception.world.foreground)
     }
 
@@ -2092,19 +2112,19 @@ final class PetController {
     // ---- 前台跟随 ----
 
     private func handleForegroundChanged(_ window: WindowEntity?) {
-        guard let window else { return }
         gameplayRuntime.submitPlatform(PlatformEvent(GameEvent(
             kind: .foregroundChanged,
             actorID: usesSharedGameplayKernel ? nil : runtimeActorID,
-            entityID: EntityID(String(window.id))
+            entityID: window.map { EntityID(String($0.id)) }
         )))
         // 感知失效通知：前台换了，旧的聚焦上下文不可信。
         perception.senses.markDirty(now: clock)
         perception.ocrLines = []
-        pushRecentEvent("user switched to \(window.owner)")
+        pushRecentEvent(window.map { "user switched to \($0.owner)" } ?? "user left foreground window")
         // 重要窗口出现（game.md §5/§4 触发器）：行动脑下个边界立即反应。
         goalBrainCoordinator.expedite()
         needle.expedite()
+        guard let window else { return }
         guard settings.foregroundFollow else { return }
         guard foregroundCooldown <= 0 else { return }
         guard model.state != .dragged, model.state != .tossed else { return }

@@ -68,7 +68,7 @@ final class SemanticBodyAdapter {
                     self?.finish(token, success: true)
                 }
             } else {
-                finish(token, success: true)
+                finish(token, success: false)
             }
         } else if intent == "pick_up" {
             if stage.scenePickUp() {
@@ -76,7 +76,7 @@ final class SemanticBodyAdapter {
                     self?.finish(token, success: true)
                 }
             } else {
-                finish(token, success: true)
+                finish(token, success: false)
             }
         } else if intent.hasPrefix("spawn_prop:") || intent == "clear_props" {
             finish(token, success: true)

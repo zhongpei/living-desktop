@@ -95,6 +95,7 @@ final class CastSession: NSObject {
                 storyConfiguration: settings.storySettings.coreConfiguration)
         }
         castRuntime = runtime
+        perceptionHub.resetWindowLifecycle(knownEntities: Array(runtime.runtime.world.entities.values))
         _ = runtime.start()
         _ = runtime.tick()
         syncCastControllers()

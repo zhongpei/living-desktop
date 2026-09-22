@@ -15,7 +15,12 @@ final class WindowWorld {
     var onForegroundChanged: ((WindowEntity?) -> Void)?
 
     private let source: MacWindowSource
-    private var lastForegroundID: CGWindowID = 0
+    private struct ForegroundIdentity: Equatable {
+        let id: CGWindowID
+        let pid: pid_t
+        let owner: String
+    }
+    private var lastForegroundIdentity: ForegroundIdentity?
 
     init(source: MacWindowSource = MacWindowSource()) {
         self.source = source
@@ -30,13 +35,15 @@ final class WindowWorld {
     func poll() {
         source.poll()
         windows = source.windows.map(Self.project)
-        foreground = source.foreground.map(Self.project)
+        observeForeground(source.foreground.map(Self.project))
+    }
 
-        let fgID = foreground?.id ?? 0
-        if fgID != lastForegroundID {
-            lastForegroundID = fgID
-            onForegroundChanged?(foreground)
-        }
+    func observeForeground(_ window: WindowEntity?) {
+        foreground = window
+        let identity = window.map { ForegroundIdentity(id: $0.id, pid: $0.pid, owner: $0.owner) }
+        guard identity != lastForegroundIdentity else { return }
+        lastForegroundIdentity = identity
+        onForegroundChanged?(window)
     }
 
     /// 零权限语义注入：bundleID 来自运行中进程（免授权），owner 来自 CGWindowList。

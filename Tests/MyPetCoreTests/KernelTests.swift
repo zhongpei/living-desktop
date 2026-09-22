@@ -2,6 +2,67 @@ import XCTest
 @testable import MyPetCore
 
 final class KernelTests: XCTestCase {
+    func testScenarioWindowEntityGetsSameDefaultSlotsAsDynamicRegistration() {
+        let window = EntityState(id: EntityID("42"), kind: .window)
+        let scenario = HarnessScenario(id: "entity-window", entities: [window])
+        let kernel = GameKernel(scenario: scenario)
+        XCTAssertEqual(kernel.world.slots["42/top.left"]?.status, .free)
+        XCTAssertEqual(kernel.world.slots["42/top.right"]?.status, .free)
+    }
+
+    func testRegisteredWindowGetsPerchSlotsAndLifecycleInvalidatesThem() {
+        let window = EntityState(id: EntityID("42"), kind: .window)
+        let kernel = GameKernel()
+        kernel.enqueue(GameEvent(kind: .registerEntity, entity: window), atTick: 0)
+        _ = kernel.tick()
+        XCTAssertEqual(kernel.world.slots["42/top.left"]?.status, .free)
+        XCTAssertEqual(kernel.world.slots["42/top.right"]?.status, .free)
+
+        let request = BehaviorRequest(
+            id: "visit-window", actorID: EntityID("pet"), intent: "move",
+            priority: .ambient, slot: kernel.world.slots["42/top.left"]?.ref,
+            durationTicks: 100)
+        kernel.enqueue(GameEvent(kind: .registerEntity,
+                                 entity: EntityState(id: request.actorID, kind: .actor)), atTick: 1)
+        kernel.enqueue(GameEvent(kind: .behaviorRequest, request: request), atTick: 1)
+        _ = kernel.tick()
+        XCTAssertEqual(kernel.world.behaviors[request.id]?.status, .running)
+
+        kernel.enqueue(GameEvent(kind: .windowChanged, entity: EntityState(
+            id: window.id, kind: .window, revision: 1)), atTick: 2)
+        _ = kernel.tick()
+        XCTAssertEqual(kernel.world.behaviors[request.id]?.status, .cancelled)
+
+        kernel.enqueue(GameEvent(kind: .destroyEntity, entityID: window.id), atTick: 3)
+        _ = kernel.tick()
+        XCTAssertEqual(kernel.world.slots["42/top.left"]?.status, .disabled)
+
+        kernel.enqueue(GameEvent(kind: .windowChanged, entity: EntityState(
+            id: window.id, kind: .window, revision: 2)), atTick: 4)
+        _ = kernel.tick()
+        XCTAssertEqual(kernel.world.slots["42/top.left"]?.status, .free)
+        XCTAssertEqual(kernel.world.slots["42/top.right"]?.status, .free)
+        XCTAssertTrue(kernel.manualViolations.isEmpty)
+    }
+
+    func testDestroyWindowCancelsSlotOnlyBehavior() {
+        let window = EntityState(id: EntityID("42"), kind: .window)
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let kernel = GameKernel()
+        kernel.enqueue(GameEvent(kind: .registerEntity, entity: window), atTick: 0)
+        kernel.enqueue(GameEvent(kind: .registerEntity, entity: actor), atTick: 0)
+        _ = kernel.tick()
+        let request = BehaviorRequest(
+            id: "perch", actorID: actor.id, intent: "perch", priority: .ambient,
+            slot: kernel.world.slots["42/top.left"]?.ref, durationTicks: 100)
+        kernel.enqueue(GameEvent(kind: .behaviorRequest, request: request), atTick: 1)
+        _ = kernel.tick()
+        XCTAssertEqual(kernel.world.behaviors[request.id]?.status, .running)
+        kernel.enqueue(GameEvent(kind: .destroyEntity, entityID: window.id), atTick: 2)
+        _ = kernel.tick()
+        XCTAssertEqual(kernel.world.behaviors[request.id]?.status, .cancelled)
+    }
+
     func testInvariantCheckerReportsSpatialAttachmentCycles() {
         let a = EntityState(id: EntityID("a"), kind: .actor)
         let b = EntityState(id: EntityID("b"), kind: .actor)

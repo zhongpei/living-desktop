@@ -9,6 +9,7 @@ import MyPetPlatform
 /// 共享 kernel。`ownerID` 只决定谁负责轮询和发起传感器请求。
 final class PerceptionHub {
     let world: WindowWorld
+    private(set) var windowLifecycle = WindowLifecycleProjection()
     let sensor: AXSensor
     let ocrSensor: OCRSensor
     let senses: SensesStore
@@ -19,6 +20,7 @@ final class PerceptionHub {
     var ocrLinesAt: Double?
 
     private(set) var foregroundRevision = 0
+    private var publishedForegroundRevision = 0
     private let eventBuffer = PlatformEventBuffer(capacity: 256)
 
     /// 启动时由 AppDelegate 指定；角色退场后可即时换 owner。
@@ -33,6 +35,17 @@ final class PerceptionHub {
         world.onForegroundChanged = { [weak self] _ in
             self?.foregroundRevision += 1
         }
+    }
+
+    func resetWindowLifecycle(knownEntities: [EntityState] = []) {
+        windowLifecycle = WindowLifecycleProjection(knownEntities: knownEntities)
+        publishedForegroundRevision = foregroundRevision
+    }
+
+    func claimForegroundRevision() -> Bool {
+        guard publishedForegroundRevision < foregroundRevision else { return false }
+        publishedForegroundRevision = foregroundRevision
+        return true
     }
 
     /// Shared Cast controllers all observe the same foreground revision, but
