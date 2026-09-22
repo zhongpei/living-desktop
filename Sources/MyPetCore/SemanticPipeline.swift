@@ -500,6 +500,11 @@ public final class SceneRunner {
         status = .cancelled
     }
 
+    public func finishEarly() {
+        guard status == .running else { return }
+        status = .completed
+    }
+
     public func reset() {
         status = .idle
         currentGoal = nil
@@ -632,6 +637,14 @@ public enum SimulationSceneSelection: Equatable, Sendable {
     case waitForPrefetch
 }
 
+public enum SimulationDecisionPointChoice: Equatable, Sendable {
+    case continueScene
+    case leaveScene
+    case say(String)
+    case performCandidates([String])
+    case waitForPrefetch
+}
+
 /// Small seam for replacing the deterministic NeedleBrain with a real C/API
 /// provider. Providers return a semantic action only; ActionRuntime remains the
 /// sole producer of BehaviorRequest values.
@@ -648,6 +661,15 @@ public protocol SimulationNeedleProvider: AnyObject {
         world: WorldState,
         actorID: EntityID
     ) -> SimulationSceneSelection
+
+    func decideAtPoint(
+        step: SimulationSceneStep,
+        goal: SimulationGoalDecision,
+        tick: Int64,
+        context: RuntimeContext,
+        world: WorldState,
+        actorID: EntityID
+    ) -> SimulationDecisionPointChoice
 
     func decide(
         step: SimulationSceneStep,
@@ -666,6 +688,11 @@ public extension SimulationNeedleProvider {
         goal: SimulationGoalDecision, tick: Int64, context: RuntimeContext,
         world: WorldState, actorID: EntityID
     ) -> SimulationSceneSelection { .automatic }
+    func decideAtPoint(
+        step: SimulationSceneStep, goal: SimulationGoalDecision,
+        tick: Int64, context: RuntimeContext, world: WorldState,
+        actorID: EntityID
+    ) -> SimulationDecisionPointChoice { .continueScene }
 }
 
 public struct SimulationNeedleBrainSnapshot: Codable, Equatable, Sendable {
@@ -1078,6 +1105,10 @@ public struct SemanticPipelineSnapshot: Codable, Equatable, Sendable {
     public var pendingSceneGoal: SimulationGoalDecision?
     public var pendingSceneEpoch: Int64?
     public var pendingSceneContext: RuntimeContext?
+    public var sceneEpoch: Int64?
+    public var sleepingEpoch: Int64?
+    public var pendingDecisionSinceTick: Int64?
+    public var pendingDecisionAction: SimulationNeedleAction?
     public var trace: [PipelineTraceEntry]
     public var findings: [SimulationContentFinding]
     public var logicFailures: [String]
@@ -1091,6 +1122,10 @@ public struct SemanticPipelineSnapshot: Codable, Equatable, Sendable {
         pendingSceneGoal: SimulationGoalDecision? = nil,
         pendingSceneEpoch: Int64? = nil,
         pendingSceneContext: RuntimeContext? = nil,
+        sceneEpoch: Int64? = nil,
+        sleepingEpoch: Int64? = nil,
+        pendingDecisionSinceTick: Int64? = nil,
+        pendingDecisionAction: SimulationNeedleAction? = nil,
         trace: [PipelineTraceEntry],
         findings: [SimulationContentFinding],
         logicFailures: [String],
@@ -1103,6 +1138,10 @@ public struct SemanticPipelineSnapshot: Codable, Equatable, Sendable {
         self.pendingSceneGoal = pendingSceneGoal
         self.pendingSceneEpoch = pendingSceneEpoch
         self.pendingSceneContext = pendingSceneContext
+        self.sceneEpoch = sceneEpoch
+        self.sleepingEpoch = sleepingEpoch
+        self.pendingDecisionSinceTick = pendingDecisionSinceTick
+        self.pendingDecisionAction = pendingDecisionAction
         self.trace = trace
         self.findings = findings
         self.logicFailures = logicFailures
@@ -1144,9 +1183,14 @@ public final class SemanticPipeline {
     public private(set) var findings: [SimulationContentFinding] = []
     public private(set) var logicFailures: [String] = []
     public private(set) var pendingActionID: String?
+    public var isAwaitingDecision: Bool { pendingDecisionSinceTick != nil }
     private var pendingSceneGoal: SimulationGoalDecision?
     private var pendingSceneEpoch: Int64?
     private var pendingSceneContext: RuntimeContext?
+    private var sceneEpoch: Int64?
+    private var sleepingEpoch: Int64?
+    private var pendingDecisionSinceTick: Int64?
+    private var pendingDecisionAction: SimulationNeedleAction?
     private var currentAction: SimulationNeedleAction?
     private let goalProvider: (any SimulationGoalProvider)?
     private let needleProvider: (any SimulationNeedleProvider)?
@@ -1154,7 +1198,8 @@ public final class SemanticPipeline {
     public init(
         configuration: SemanticPipelineConfiguration,
         goalProvider: (any SimulationGoalProvider)? = nil,
-        needleProvider: (any SimulationNeedleProvider)? = nil
+        needleProvider: (any SimulationNeedleProvider)? = nil,
+        recipes: [SimulationSceneRecipe] = SceneRunner.defaultRecipes
     ) {
         self.configuration = configuration
         self.goalProvider = goalProvider
@@ -1163,7 +1208,7 @@ public final class SemanticPipeline {
             mode: configuration.goalMode,
             replayCommands: configuration.goalCommands,
             initialGoal: configuration.initialGoal)
-        self.engine = SemanticEngine(assetCatalog: configuration.assetCatalog)
+        self.engine = SemanticEngine(recipes: recipes, assetCatalog: configuration.assetCatalog)
         self.needleBrain = NeedleBrain(
             mode: configuration.needleMode,
             replayCommands: configuration.needleCommands)
@@ -1173,9 +1218,19 @@ public final class SemanticPipeline {
     /// been applied and before behavior advancement. Only the final
     /// ActionRuntime output crosses the GameEvent boundary.
     func beforeTick(kernel: GameKernel, context: RuntimeContext) {
-        guard configuration.enabled, pendingActionID == nil,
-              kernel.world.isAlive(configuration.actorID) else { return }
+        guard configuration.enabled, kernel.world.isAlive(configuration.actorID) else { return }
         let tick = kernel.clock.tick
+        let epoch = kernel.world.planEpochs[configuration.actorID.raw, default: 0]
+        if sceneRunner.status == .running, let sceneEpoch, sceneEpoch != epoch {
+            sceneRunner.cancel()
+            pendingDecisionSinceTick = nil
+            pendingDecisionAction = nil
+            sleepingEpoch = nil
+            trace.append(PipelineTraceEntry(tick: tick, stage: "scene", detail: "preempted"))
+            return
+        }
+        guard pendingActionID == nil else { return }
+        if sleepingEpoch != nil { return }
         if sceneRunner.status != .running {
             if pendingSceneEpoch != kernel.world.planEpochs[configuration.actorID.raw, default: 0]
                 || pendingSceneContext != context {
@@ -1228,8 +1283,63 @@ public final class SemanticPipeline {
             pendingSceneGoal = nil
             pendingSceneEpoch = nil
             pendingSceneContext = nil
+            sceneEpoch = epoch
             trace.append(PipelineTraceEntry(tick: tick, stage: "scene", detail: sceneRunner.recipeID ?? "-"))
         }
+        if let since = pendingDecisionSinceTick {
+            let provider = needleProvider ?? needleBrain
+            guard provider.execution == .runtimeImmediate else {
+                logicFailures.append("blocking_decision_provider_requires_prefetch")
+                return
+            }
+            guard let step = sceneRunner.currentStep,
+                  let goal = sceneRunner.currentGoal else {
+                sceneRunner.cancel()
+                pendingDecisionSinceTick = nil
+                return
+            }
+            var choice = provider.decideAtPoint(
+                step: step, goal: goal, tick: tick, context: context,
+                world: kernel.world, actorID: configuration.actorID)
+            if choice == .waitForPrefetch {
+                guard tick - since >= 400 else { return }
+                choice = .continueScene
+                trace.append(PipelineTraceEntry(tick: tick, stage: "decision", detail: "timeout_continue"))
+            }
+            pendingDecisionSinceTick = nil
+            switch choice {
+            case .continueScene:
+                trace.append(PipelineTraceEntry(tick: tick, stage: "decision", detail: "continue"))
+                completeCurrentStep(tick: tick)
+            case .leaveScene, .say, .performCandidates:
+                let action: SimulationNeedleAction
+                switch choice {
+                case .leaveScene: action = .leaveScene
+                case .say(let intent): action = .say(intent)
+                case .performCandidates(let candidates): action = .performCandidates(candidates)
+                default: return
+                }
+                let execution = actionRuntime.execute(
+                    action, tick: tick, actorID: configuration.actorID,
+                    world: kernel.world, context: context)
+                guard execution.accepted else {
+                    sceneRunner.cancel()
+                    return
+                }
+                trace.append(PipelineTraceEntry(
+                    tick: tick, stage: "decision", detail: describe(action)))
+                guard let request = execution.request else {
+                    completeCurrentStep(tick: tick)
+                    return
+                }
+                pendingDecisionAction = action
+                pendingActionID = request.id
+                kernel.enqueue(GameEvent(kind: .behaviorRequest, request: request), atTick: tick)
+                return
+            case .waitForPrefetch: return
+            }
+        }
+        guard sceneRunner.status == .running else { return }
         guard let step = sceneRunner.currentStep else {
             logicFailures.append("scene_step_missing")
             sceneRunner.cancel()
@@ -1289,11 +1399,33 @@ public final class SemanticPipeline {
         case .completed:
             trace.append(PipelineTraceEntry(tick: kernel.clock.tick - 1, stage: "action", detail: "completed"))
             pendingActionID = nil
-            completeCurrentStep(tick: kernel.clock.tick - 1)
+            if let decisionAction = pendingDecisionAction {
+                pendingDecisionAction = nil
+                if case .leaveScene = decisionAction {
+                    sceneRunner.finishEarly()
+                    trace.append(PipelineTraceEntry(
+                        tick: kernel.clock.tick - 1, stage: "scene", detail: "completed"))
+                } else {
+                    completeCurrentStep(tick: kernel.clock.tick - 1)
+                }
+            } else if case .sleep = sceneRunner.currentStep?.operation {
+                sleepingEpoch = sceneEpoch
+                trace.append(PipelineTraceEntry(
+                    tick: kernel.clock.tick - 1, stage: "scene", detail: "sleeping"))
+            } else if sceneRunner.currentStep?.decisionPoint == true {
+                pendingDecisionSinceTick = kernel.clock.tick - 1
+                trace.append(PipelineTraceEntry(
+                    tick: kernel.clock.tick - 1, stage: "decision", detail: "pending"))
+            } else {
+                completeCurrentStep(tick: kernel.clock.tick - 1)
+            }
         case .cancelled, .rejected:
             trace.append(PipelineTraceEntry(tick: kernel.clock.tick - 1, stage: "action", detail: "aborted:\(state.status.rawValue)"))
             logicFailures.append("action_\(state.status.rawValue):\(actionID)")
             pendingActionID = nil
+            pendingDecisionAction = nil
+            pendingDecisionSinceTick = nil
+            sleepingEpoch = nil
             sceneRunner.cancel()
         case .running:
             break
@@ -1309,6 +1441,10 @@ public final class SemanticPipeline {
             pendingSceneGoal: pendingSceneGoal,
             pendingSceneEpoch: pendingSceneEpoch,
             pendingSceneContext: pendingSceneContext,
+            sceneEpoch: sceneEpoch,
+            sleepingEpoch: sleepingEpoch,
+            pendingDecisionSinceTick: pendingDecisionSinceTick,
+            pendingDecisionAction: pendingDecisionAction,
             trace: trace,
             findings: findings,
             logicFailures: logicFailures,
@@ -1323,6 +1459,10 @@ public final class SemanticPipeline {
         pendingSceneGoal = snapshot.pendingSceneGoal
         pendingSceneEpoch = snapshot.pendingSceneEpoch
         pendingSceneContext = snapshot.pendingSceneContext
+        sceneEpoch = snapshot.sceneEpoch
+        sleepingEpoch = snapshot.sleepingEpoch
+        pendingDecisionSinceTick = snapshot.pendingDecisionSinceTick
+        pendingDecisionAction = snapshot.pendingDecisionAction
         trace = snapshot.trace
         findings = snapshot.findings
         logicFailures = snapshot.logicFailures

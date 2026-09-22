@@ -2,6 +2,171 @@ import XCTest
 @testable import MyPetCore
 
 final class GameRuntimeTests: XCTestCase {
+    private final class DeferredDecisionNeedle: SimulationNeedleProvider {
+        let providerID = "deferred-decision"
+        var choice: SimulationDecisionPointChoice = .waitForPrefetch
+        func decideAtPoint(
+            step: SimulationSceneStep, goal: SimulationGoalDecision,
+            tick: Int64, context: RuntimeContext, world: WorldState,
+            actorID: EntityID
+        ) -> SimulationDecisionPointChoice { choice }
+        func decide(
+            step: SimulationSceneStep, tick: Int64, context: RuntimeContext,
+            world: WorldState, actorID: EntityID
+        ) -> SimulationNeedleAction? {
+            NeedleBrain().decide(
+                step: step, tick: tick, context: context,
+                world: world, actorID: actorID)
+        }
+    }
+
+    func testDeferredDecisionPointWaitsThenAuthorizesLeaveThroughBodyResult() {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let recipe = SimulationSceneRecipe(
+            id: "decision-leave", goals: [.wander],
+            steps: [SimulationSceneStep(.wait(1), decisionPoint: true),
+                    SimulationSceneStep(.say("should_not_run"))])
+        let runtime = GameRuntime(kernel: GameKernel(scenario: HarnessScenario(
+            id: "decision-leave", entities: [actor])))
+        let provider = DeferredDecisionNeedle()
+        let pipeline = SemanticPipeline(
+            configuration: SemanticPipelineConfiguration(
+                actorID: actor.id, initialGoal: SimulationGoalDecision(goal: .wander)),
+            needleProvider: provider, recipes: [recipe])
+
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        let snapshot = pipeline.snapshot()
+        XCTAssertNotNil(snapshot.pendingDecisionSinceTick)
+        pipeline.restore(snapshot)
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        XCTAssertEqual(pipeline.sceneRunner.stepIndex, 0)
+        XCTAssertNil(pipeline.pendingActionID)
+        provider.choice = .leaveScene
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        XCTAssertNotNil(pipeline.pendingActionID)
+        XCTAssertEqual(pipeline.sceneRunner.status, .running)
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        XCTAssertEqual(pipeline.sceneRunner.status, .completed)
+        XCTAssertFalse(runtime.world.behaviors.values.contains {
+            $0.request.intent == "say:should_not_run"
+        })
+    }
+
+    func testMissingDecisionAnswerFallsBackAfterTwentySecondsOfRuntimeTicks() {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let recipe = SimulationSceneRecipe(
+            id: "timeout-decision", goals: [.wander],
+            steps: [SimulationSceneStep(.wait(1), decisionPoint: true)])
+        let runtime = GameRuntime(kernel: GameKernel(scenario: HarnessScenario(
+            id: "timeout-decision", entities: [actor])))
+        let provider = DeferredDecisionNeedle()
+        let pipeline = SemanticPipeline(
+            configuration: SemanticPipelineConfiguration(
+                actorID: actor.id, initialGoal: SimulationGoalDecision(goal: .wander)),
+            needleProvider: provider, recipes: [recipe])
+
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        for _ in 0..<400 {
+            _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        }
+
+        XCTAssertEqual(pipeline.sceneRunner.status, .completed)
+        XCTAssertTrue(pipeline.trace.contains {
+            $0.stage == "decision" && $0.detail == "timeout_continue"
+        })
+    }
+
+    func testDecisionPointHoldsSceneCursorUntilNextDecisionBoundary() {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let recipe = SimulationSceneRecipe(
+            id: "decision", goals: [.wander],
+            steps: [SimulationSceneStep(.wait(1), decisionPoint: true),
+                    SimulationSceneStep(.say("greet"))])
+        let runtime = GameRuntime(kernel: GameKernel(scenario: HarnessScenario(
+            id: "decision-boundary", entities: [actor])))
+        let pipeline = SemanticPipeline(
+            configuration: SemanticPipelineConfiguration(
+                actorID: actor.id, initialGoal: SimulationGoalDecision(goal: .wander)),
+            recipes: [recipe])
+
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+
+        XCTAssertEqual(pipeline.sceneRunner.stepIndex, 0)
+        XCTAssertEqual(pipeline.sceneRunner.status, .running)
+        XCTAssertNil(pipeline.pendingActionID)
+    }
+
+    func testFinalDecisionContinuationCompletesWithoutMissingStepFailure() {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let recipe = SimulationSceneRecipe(
+            id: "final-decision", goals: [.wander],
+            steps: [SimulationSceneStep(.wait(1), decisionPoint: true)])
+        let runtime = GameRuntime(kernel: GameKernel(scenario: HarnessScenario(
+            id: "final-decision", entities: [actor])))
+        let pipeline = SemanticPipeline(
+            configuration: SemanticPipelineConfiguration(
+                actorID: actor.id, initialGoal: SimulationGoalDecision(goal: .wander)),
+            recipes: [recipe])
+
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+
+        XCTAssertEqual(pipeline.sceneRunner.status, .completed)
+        XCTAssertFalse(pipeline.logicFailures.contains("scene_step_missing"))
+    }
+
+    func testSleepKeepsSceneResidentUntilPreempted() {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let recipe = SimulationSceneRecipe(
+            id: "sleep", goals: [.rest], steps: [SimulationSceneStep(.sleep)])
+        let runtime = GameRuntime(kernel: GameKernel(scenario: HarnessScenario(
+            id: "resident-sleep", entities: [actor])))
+        let pipeline = SemanticPipeline(
+            configuration: SemanticPipelineConfiguration(
+                actorID: actor.id, initialGoal: SimulationGoalDecision(goal: .rest)),
+            recipes: [recipe])
+
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+
+        XCTAssertEqual(pipeline.sceneRunner.status, .running)
+        XCTAssertEqual(pipeline.sceneRunner.stepIndex, 0)
+        XCTAssertNil(pipeline.pendingActionID)
+        _ = runtime.step(
+            events: [GameEvent(kind: .userInteraction, actorID: actor.id, userAction: "wake")],
+            pipeline: pipeline, context: RuntimeContext())
+        XCTAssertEqual(pipeline.sceneRunner.status, .cancelled)
+    }
+
+    func testPreemptionBetweenStepsCancelsOldSceneBeforeNewAction() {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let recipe = SimulationSceneRecipe(
+            id: "preempt", goals: [.wander],
+            steps: [SimulationSceneStep(.wait(1)), SimulationSceneStep(.say("greet"))])
+        let runtime = GameRuntime(kernel: GameKernel(scenario: HarnessScenario(
+            id: "between-step-preempt", entities: [actor])))
+        let pipeline = SemanticPipeline(
+            configuration: SemanticPipelineConfiguration(
+                actorID: actor.id, initialGoal: SimulationGoalDecision(goal: .wander)),
+            recipes: [recipe])
+
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        XCTAssertEqual(pipeline.sceneRunner.stepIndex, 1)
+        _ = runtime.step(
+            events: [GameEvent(kind: .userInteraction, actorID: actor.id, userAction: "grab")],
+            pipeline: pipeline, context: RuntimeContext())
+
+        XCTAssertEqual(pipeline.sceneRunner.status, .cancelled)
+        XCTAssertNil(pipeline.pendingActionID)
+        XCTAssertFalse(runtime.world.behaviors.values.contains { $0.request.intent == "say:greet" })
+    }
+
     private final class ExplicitSceneNeedle: SimulationNeedleProvider {
         let providerID = "explicit-scene"
         func chooseScene(
