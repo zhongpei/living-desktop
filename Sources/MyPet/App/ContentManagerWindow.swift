@@ -1,4 +1,5 @@
 import AppKit
+import ImageIO
 import MyPetContent
 import UniformTypeIdentifiers
 
@@ -7,11 +8,13 @@ import UniformTypeIdentifiers
 final class ContentManagerWindowController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate {
     var records: () -> [ContentRegistry.Record] = { [] }
     var diagnostics: () -> [String] = { [] }
-    var onImport: ((URL, Bool) throws -> Void)?
+    var onImport: (([URL], Bool) throws -> ContentRegistry.ImportResult)?
     var onSetEnabled: ((Bool, ContentPackageKind, String) throws -> Void)?
     var onRemove: ((ContentRegistry.Record) throws -> Void)?
 
     private var rows: [ContentRegistry.Record] = []
+    private var previews: [URL: NSImage] = [:]
+    private var missingPreviews = Set<URL>()
     private let table = NSTableView()
     private let status = NSTextField(wrappingLabelWithString: "")
     private let toggle = NSButton(title: "停用", target: nil, action: nil)
@@ -40,13 +43,15 @@ final class ContentManagerWindowController: NSWindowController, NSTableViewDataS
 
     func reload() {
         rows = records()
+        previews.removeAll()
+        missingPreviews.removeAll()
         table.reloadData()
         updateControls()
     }
 
     private func buildContent() {
         for (id, title, width) in [
-            ("kind", "类型", 65.0), ("name", "名称 / ID", 230.0),
+            ("kind", "类型", 65.0), ("name", "形象 / 名称 / ID", 310.0),
             ("revision", "修订", 55.0), ("source", "来源", 70.0),
             ("state", "状态", 90.0),
         ] {
@@ -58,6 +63,7 @@ final class ContentManagerWindowController: NSWindowController, NSTableViewDataS
         table.dataSource = self
         table.delegate = self
         table.usesAlternatingRowBackgroundColors = true
+        table.rowHeight = 56
         table.allowsMultipleSelection = false
         table.target = self
         table.action = #selector(selectionChanged)
@@ -116,7 +122,41 @@ final class ContentManagerWindowController: NSWindowController, NSTableViewDataS
             }
         default: value = ""
         }
-        return NSTextField(labelWithString: value)
+        let label = NSTextField(labelWithString: value)
+        guard id == "name" else { return label }
+        label.lineBreakMode = .byTruncatingMiddle
+        let image = NSImageView()
+        image.image = preview(for: record)
+        image.imageScaling = .scaleProportionallyUpOrDown
+        image.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            image.widthAnchor.constraint(equalToConstant: 48),
+            image.heightAnchor.constraint(equalToConstant: 48),
+        ])
+        let cell = NSStackView(views: [image, label])
+        cell.orientation = .horizontal
+        cell.alignment = .centerY
+        cell.spacing = 8
+        return cell
+    }
+
+    private func preview(for record: ContentRegistry.Record) -> NSImage? {
+        if let cached = previews[record.url] { return cached }
+        guard !missingPreviews.contains(record.url), let manifest = record.manifest,
+              let data = try? ContentPackageReader.previewFrameData(
+                at: record.url, manifest: manifest),
+              let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let frame = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceThumbnailMaxPixelSize: 96,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+              ] as CFDictionary) else {
+            missingPreviews.insert(record.url)
+            return nil
+        }
+        let thumbnail = NSImage(cgImage: frame, size: NSSize(width: 48, height: 48))
+        previews[record.url] = thumbnail
+        return thumbnail
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) { updateControls() }
@@ -170,13 +210,24 @@ final class ContentManagerWindowController: NSWindowController, NSTableViewDataS
         panel.allowedContentTypes = [UTType(filenameExtension: "mypetpack") ?? .data]
         panel.allowsOtherFileTypes = false
         panel.canChooseDirectories = false
-        guard panel.runModal() == .OK, let url = panel.url, let onImport else { return }
+        panel.allowsMultipleSelection = true
+        guard panel.runModal() == .OK, !panel.urls.isEmpty, let onImport else { return }
+        let urls = panel.urls.sorted { $0.lastPathComponent < $1.lastPathComponent }
+        guard confirm("导入 \(urls.count) 个内容包？同 ID 的较高修订也会更新。") else { return }
         do {
-            try onImport(url, false)
+            let result = try onImport(urls, true)
             reload()
-        } catch ContentRegistry.RegistryError.updateNeedsConfirmation {
-            guard confirm("更新同 ID 内容包？") else { return }
-            do { try onImport(url, true); reload() } catch { report(error) }
+            let alert = NSAlert()
+            alert.alertStyle = result.failures.isEmpty ? .informational : .warning
+            alert.messageText = "已导入 \(result.imported.count) 个内容包"
+            if !result.failures.isEmpty {
+                let details = result.failures.prefix(12).map {
+                    "\($0.url.lastPathComponent)：\($0.error)"
+                }.joined(separator: "\n")
+                alert.informativeText = "\(result.failures.count) 个未导入：\n\(details)" +
+                    (result.failures.count > 12 ? "\n其余 \(result.failures.count - 12) 个失败。" : "")
+            }
+            alert.runModal()
         } catch { report(error) }
     }
 

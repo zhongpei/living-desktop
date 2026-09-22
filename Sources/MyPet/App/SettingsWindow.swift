@@ -6,10 +6,10 @@ import MyPetEngine
 
 /// 设置窗：完整配置的唯一入口（菜单只留快捷开关）。
 ///
-/// 七页：通用 / 玩法 / 角色 / 剧情与关系 / 大脑 / 感知 / 诊断；「玩法」和「大脑」页再按职责分成二级 Tab。
+/// 六页：通用 / 玩法 / 角色 / 大脑 / 感知 / 诊断；玩法、大脑、感知再分二级 Tab。
 /// 「大脑」页承载模型配置：端点 / 模型（可探测）/ 密钥 / 连通性测试，
 /// 探测与测试直接打当前表单里的端点（不必先保存）。
-/// 授权状态页内实时刷新；「保存并关闭」才落盘生效。
+/// 授权状态页内实时刷新；「保存」不关闭窗口，「保存并关闭」应用后关闭。
 final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     /// 应用草稿（保存时回调给 AppDelegate 落盘 + 热更新）。
@@ -17,14 +17,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     /// 拖动滑杆时的实时预览：不落盘，直接喂给控制器热更新（宠物/道具当场变大变小）。
     var onPreview: ((Settings) -> Void)?
     var onOpenContentManager: (() -> Void)?
+    var onOpenStoryLibrary: (() -> Void)?
     /// 本地决策脑真实聊天测试；由 AppDelegate 复用当前 PetController 的 actor。
     var localChatTester: (() async -> LocalBrain.ChatTestResult)?
 
     private var draft: Settings
-    /// 打开窗口时的设置快照（取消关闭时还原预览造成的变化）。
-    private let initial: Settings
+    /// 最近一次保存的设置；关闭时仅撤销尚未保存的滑杆预览。
+    private var lastSaved: Settings
     private let gameplayCatalog: GameplayCatalog?
-    private var applied = false
+    private var hasUnsavedPreview = false
 
     // ---- 字段引用 ----
     private var launchAtLoginBox: NSButton!
@@ -97,6 +98,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let castPacks: [CastPack]
     private var castModePopup: NSPopUpButton!
     private var castMemberBoxes: [(id: String, box: NSButton)] = []
+    private var castGroupBoxes: [(group: NSButton, members: [NSButton])] = []
     private var castRandomCountField: NSTextField!
     private var castMaxActiveField: NSTextField!
     private var castInvitationsBox: NSButton!
@@ -112,14 +114,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     init(settings: Settings, castPacks: [CastPack] = []) {
         self.draft = settings
-        self.initial = settings
+        self.lastSaved = settings
         self.castPacks = castPacks
         self.gameplayCatalog = ContentResourceLocator.gameplayCatalog()
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 580, height: 620),
+            contentRect: NSRect(x: 0, y: 0, width: 700, height: 640),
             styleMask: [.titled, .closable],
             backing: .buffered, defer: false)
-        window.title = "MyPet 设置"
+        window.title = "Living Desktop 设置"
+        window.contentMinSize = NSSize(width: 700, height: 640)
+        window.contentMaxSize = NSSize(width: 700, height: 640)
         window.isReleasedWhenClosed = false
         window.center()
         super.init(window: window)
@@ -140,27 +144,29 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     // MARK: 布局
 
     private func buildContent() -> NSView {
-        let tabs = NSTabView(frame: NSRect(x: 0, y: 0, width: 580, height: 560))
+        let tabs = NSTabView()
+        tabs.translatesAutoresizingMaskIntoConstraints = false
         tabs.addTabViewItem(tab("通用", buildGeneralTab()))
         tabs.addTabViewItem(tab("玩法", buildGameplayTab()))
         tabs.addTabViewItem(tab("角色", buildCastTab()))
-        tabs.addTabViewItem(tab("内容包", buildContentPackagesTab()))
-        tabs.addTabViewItem(tab("剧情与关系", buildStoryTab()))
         tabs.addTabViewItem(tab("大脑", buildBrainTab()))
         tabs.addTabViewItem(tab("感知", buildSensesTab()))
         tabs.addTabViewItem(tab("诊断", buildDiagnosticsTab()))
 
-        let save = NSButton(title: "保存并关闭", target: self, action: #selector(saveAndClose))
+        let save = NSButton(title: "保存", target: self, action: #selector(saveSettings))
         save.bezelStyle = .rounded
-        save.keyEquivalent = "\r"
+        let saveAndClose = NSButton(title: "保存并关闭", target: self,
+                                    action: #selector(saveAndCloseSettings))
+        saveAndClose.bezelStyle = .rounded
+        saveAndClose.keyEquivalent = "\r"
         let cancel = NSButton(title: "取消", target: self, action: #selector(closeWithoutSaving))
         cancel.bezelStyle = .rounded
         cancel.keyEquivalent = "\u{1b}"
 
-        let buttonRow = NSStackView(views: [cancel, save])
+        let buttonRow = NSStackView(views: [cancel, save, saveAndClose])
         buttonRow.orientation = .horizontal
         buttonRow.spacing = 10
-        buttonRow.setCustomSpacing(120, after: cancel)
+        buttonRow.setCustomSpacing(70, after: cancel)
 
         let root = NSStackView(views: [tabs, buttonRow])
         root.orientation = .vertical
@@ -174,6 +180,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             root.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             root.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             root.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            tabs.widthAnchor.constraint(equalToConstant: 668),
+            tabs.heightAnchor.constraint(equalToConstant: 550),
         ])
         return container
     }
@@ -185,17 +193,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         return item
     }
 
-    private func buildContentPackagesTab() -> NSView {
-        let open = NSButton(title: "打开内容包管理…", target: self,
-                            action: #selector(openContentManager))
-        return formStack([
-            note("角色、角色组和剧情是彼此独立的单文件包。这里可查看来源与状态、导入、启停及安全移除。"),
-            open,
-            note("活动内容的变更会先结束当前会话再重新启动；内置包只能停用，不能物理删除。"),
-        ])
-    }
-
     @objc private func openContentManager() { onOpenContentManager?() }
+    @objc private func openStoryLibrary() { onOpenStoryLibrary?() }
 
     private func formStack(_ views: [NSView]) -> NSView {
         let stack = NSStackView(views: views)
@@ -236,9 +235,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         return box
     }
 
-    private func row(_ title: String, _ field: NSView, width: CGFloat = 330) -> NSView {
+    private func row(_ title: String, _ field: NSView, width: CGFloat = 330,
+                     labelWidth: CGFloat = 72) -> NSView {
         let label = NSTextField(labelWithString: title)
-        label.widthAnchor.constraint(equalToConstant: 72).isActive = true
+        label.widthAnchor.constraint(equalToConstant: labelWidth).isActive = true
         field.widthAnchor.constraint(lessThanOrEqualToConstant: width).isActive = true
         let stack = NSStackView(views: [label, field])
         stack.orientation = .horizontal
@@ -255,7 +255,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         return field
     }
 
-    /// 大脑的每个二级 Tab 参数较多，允许在小屏幕上滚动；其他页继续使用普通表单。
+    /// 长表单共用同一可滚动容器；短表单仍从顶部开始。
     private func scrollFormStack(_ views: [NSView]) -> NSView {
         let stack = NSStackView(views: views)
         stack.orientation = .vertical
@@ -263,23 +263,33 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         stack.spacing = 10
         stack.edgeInsets = NSEdgeInsets(top: 14, left: 16, bottom: 14, right: 16)
         stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.setContentCompressionResistancePriority(.required, for: .vertical)
 
-        let document = NSView()
+        let document = TopAlignedSettingsDocumentView()
         document.translatesAutoresizingMaskIntoConstraints = false
         document.addSubview(stack)
         NSLayoutConstraint.activate([
             stack.topAnchor.constraint(equalTo: document.topAnchor),
             stack.leadingAnchor.constraint(equalTo: document.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: document.trailingAnchor),
-            stack.bottomAnchor.constraint(equalTo: document.bottomAnchor),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: document.bottomAnchor),
         ])
 
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.borderType = .noBorder
+        scroll.drawsBackground = false
+        scroll.contentView.drawsBackground = false
         scroll.documentView = document
         document.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor).isActive = true
+        // The document must grow with long forms; the clip view is only a minimum
+        // for short forms. Otherwise the last label is clipped with no scroll range.
+        document.heightAnchor.constraint(greaterThanOrEqualTo: stack.heightAnchor).isActive = true
+        document.heightAnchor.constraint(greaterThanOrEqualTo: scroll.contentView.heightAnchor).isActive = true
+        let preferredContentHeight = document.heightAnchor.constraint(equalTo: stack.heightAnchor)
+        preferredContentHeight.priority = .defaultLow
+        preferredContentHeight.isActive = true
         return scroll
     }
 
@@ -305,62 +315,49 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
         let openData = NSButton(title: "打开数据目录", target: self, action: #selector(openDataFolder))
         openData.bezelStyle = .rounded
+        let openPackages = NSButton(title: "打开内容包管理…", target: self,
+                                    action: #selector(openContentManager))
+        openPackages.bezelStyle = .rounded
 
         return formStack([launchAtLoginBox, heightRow, propRow, openData,
-                          note("宠物/道具大小：拖动滑杆即时预览（宠物和道具当场变大变小），「保存并关闭」才记住；直接关窗还原。")])
+                          separator(), openPackages,
+                          note("在这里导入、启停和移除角色、角色组与剧情包。"),
+                          note("宠物/道具大小可即时预览；点击「保存」后生效，未保存的预览会在关闭时还原。")])
     }
 
     // MARK: 玩法
 
     private func buildGameplayTab() -> NSView {
+        let tabs = NSTabView()
+        tabs.addTabViewItem(tab("基础玩法", buildBaseGameplayTab()))
+        tabs.addTabViewItem(tab("剧情与关系", buildStoryTab()))
+        return tabs
+    }
+
+    private func buildBaseGameplayTab() -> NSView {
         scenesBox = checkbox(gameplayLabel("scenes", fallback: "场景玩法"), draft.scenesEnabled, #selector(toggleDraft(_:)))
         propsBox = checkbox(gameplayLabel("props", fallback: "道具"), draft.propsEnabled, #selector(toggleDraft(_:)))
         perchingBox = checkbox(gameplayLabel("perching", fallback: "栖息在窗口上"), draft.perchingEnabled, #selector(toggleDraft(_:)))
         foregroundBox = checkbox(gameplayLabel("foreground-follow", fallback: "跟随前台应用"), draft.foregroundFollow, #selector(toggleDraft(_:)))
         windowPullBox = checkbox(gameplayLabel("window-pull", fallback: "拉扯窗口"), draft.windowPullEnabled, #selector(toggleDraft(_:)))
         pullStatusLabel = note("")
-
-        let tabs = NSTabView()
-        tabs.translatesAutoresizingMaskIntoConstraints = false
-        tabs.addTabViewItem(tab("总览", scrollFormStack([
+        let basics = NSTextField(labelWithString: "基础玩法")
+        basics.font = .boldSystemFont(ofSize: 13)
+        let windows = NSTextField(labelWithString: "窗口互动")
+        windows.font = .boldSystemFont(ofSize: 13)
+        return formStack([
+            basics,
             scenesBox,
             propsBox,
             perchingBox,
-            note("关闭「场景玩法」= 经典模式（随机闲逛）。目标与人格驱动的行为只在场景玩法开启时出现。"),
-            note("角色、剧情与关系、外界输入插件分别在对应一级页配置；这里仅保留基础玩法总闸。"),
-        ])))
-        tabs.addTabViewItem(tab("抢占响应", scrollFormStack([
+            note("关闭场景玩法后，角色仍会随机闲逛；角色、剧情和外界输入分别在对应页面设置。"),
+            separator(),
+            windows,
             foregroundBox,
             windowPullBox,
             pullStatusLabel,
-            note("前台切换属于 P1 反应：不等待本地脑、AX 或 OCR；鼠标和直接互动始终属于更高优先级的 P0。"),
-            note("窗口拉扯只改变窗口交互能力，不会关闭宠物的基础移动、场景或剧情。"),
-        ])))
-        tabs.addTabViewItem(tab("快速反应", scrollFormStack([
-            note("窗口标题和应用活动先进入本地决策脑；本地脑关闭、缺模型或超时后由 GoalPolicy / Autopilot 接管。"),
-            note("本地决策脑的启用、短回合节奏、聊天采样和模型测试在“大脑 → 本地决策脑”配置；这里说明它如何参与玩法，不复制同一字段。"),
-            note("快速反应可以被鼠标、前台变化和新的计划代次替换；它不能直接执行坐标或系统调用。"),
-        ])))
-        tabs.addTabViewItem(tab("内容通道", scrollFormStack([
-            note("聊天、编码、浏览器、AX 和 OCR 都是可关闭的外界输入插件，只提供有界内容观察，不直接执行动作。"),
-            note("插件逐项启停、TTL、字符预算、应用白名单和内容抢占开关在“感知”页的“外界输入插件”区域配置；系统权限也只在感知页展示。"),
-            note("插件关闭、无权限或内容过期时，窗口标题、前台抢占和无 LLM 玩法仍继续运行。"),
-        ])))
-        tabs.addTabViewItem(tab("回合与节奏", scrollFormStack([
-            note("一个短回合必须有开始原因、至少一次可观察变化，并在有限时间内结束、进入决策点或被抢占。"),
-            note("剧情循环、单段最长时间、前台/内容抢占和关系效果在“剧情与关系”页配置；默认单段上限约 60 秒。"),
-            note("行动脑的动作间隔在“大脑 → 行动脑”配置；三档大脑关闭时仍回退到规则策略和随机闲逛。"),
-        ])))
-
-        let container = NSView()
-        container.addSubview(tabs)
-        NSLayoutConstraint.activate([
-            tabs.topAnchor.constraint(equalTo: container.topAnchor),
-            tabs.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            tabs.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            tabs.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            note("前台反应不依赖 AX/OCR；拉扯窗口需要辅助功能授权。"),
         ])
-        return container
     }
 
     private func gameplayLabel(_ id: String, fallback: String) -> String {
@@ -392,39 +389,58 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         castRotationIntervalField = numberField(
             "\(max(1, draft.castSelection.rotationIntervalTicks / 20))", placeholder: "例如 60")
 
-        var views: [NSView] = [
-            note("这里设置哪些角色可以参与，以及应用启动后的自动入场策略。角色的入场和退出请直接使用菜单栏“角色”。"),
+        let strategy = formStack([
+            note("设置启动入场与自动轮换；手动入退场仍在菜单栏“角色”中操作。"),
             row("入场方式", castModePopup),
-            row("随机人数（仅随机入场）", castRandomCountField),
-            row("桌面最多角色", castMaxActiveField),
+            row("随机人数（仅随机入场）", castRandomCountField, labelWidth: 170),
+            row("桌面最多角色", castMaxActiveField, labelWidth: 170),
             castInvitationsBox,
             castRotationBox,
-            row("轮换间隔（秒）", castRotationIntervalField),
+            row("轮换间隔（秒）", castRotationIntervalField, labelWidth: 170),
             note("手动安排：启动时不自动增加角色；启动时自动入场：按候选顺序进入；随机入场：从候选角色中随机选择指定人数。"),
-        ]
+        ])
 
         let selectedMembers = Set(draft.castSelection.enabledMemberIDs)
+        var candidates: [NSView] = [note("勾选允许参与的角色；按角色组排列，每组最多三列。")]
         if castPacks.isEmpty {
-            views.append(note("尚未发现角色配置；当前仍可使用基础单角色模式。"))
+            candidates.append(note("尚未发现角色配置；当前仍可使用基础单角色模式。"))
         } else {
-            views.append(separator())
-            views.append(NSTextField(labelWithString: "候选角色"))
             for pack in castPacks.sorted(by: { $0.displayName < $1.displayName }) {
-                let heading = NSTextField(labelWithString: pack.displayName)
-                heading.font = .systemFont(ofSize: 13, weight: .semibold)
-                views.append(heading)
-                for member in pack.members
-                    where member.kind == .character && member.visualPackID != nil {
+                let members = pack.members.filter {
+                    $0.kind == .character && $0.visualPackID != nil
+                }
+                let boxes = members.map { member in
                     let box = checkbox(
                         member.displayName,
                         draft.castSelection.allMembersEnabled || selectedMembers.contains(member.id),
-                        #selector(toggleDraft(_:)))
+                        #selector(toggleCastMember(_:)))
+                    box.widthAnchor.constraint(equalToConstant: 185).isActive = true
                     castMemberBoxes.append((member.id, box))
-                    views.append(box)
+                    return box
+                }
+                guard !boxes.isEmpty else { continue }
+                let group = checkbox("全选本组 · \(pack.displayName)",
+                                     boxes.allSatisfy { $0.state == .on },
+                                     #selector(toggleCastGroup(_:)))
+                castGroupBoxes.append((group, boxes))
+                candidates += [separator(), group]
+                let rows: [[NSView]] = stride(from: 0, to: boxes.count, by: 3).map { start in
+                    (0..<3).map { offset in
+                        start + offset < boxes.count ? boxes[start + offset] : NSView()
+                    }
+                }
+                if !rows.isEmpty {
+                    let grid = NSGridView(views: rows)
+                    grid.rowSpacing = 8
+                    grid.columnSpacing = 12
+                    candidates.append(grid)
                 }
             }
         }
-        return scrollFormStack(views)
+        let tabs = NSTabView()
+        tabs.addTabViewItem(tab("入场策略", strategy))
+        tabs.addTabViewItem(tab("候选角色", scrollFormStack(candidates)))
+        return tabs
     }
 
     private func buildStoryTab() -> NSView {
@@ -456,7 +472,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let packSummary = castPacks.isEmpty
             ? "尚未发现角色组；单角色玩法仍可运行。"
             : "当前可用角色组：\(castPacks.map(\.displayName).sorted().joined(separator: "、"))"
+        let browse = NSButton(title: "查看剧情内容…", target: self,
+                              action: #selector(openStoryLibrary))
+        browse.bezelStyle = .rounded
         return scrollFormStack([
+            browse,
+            note("查看当前已启用剧情包的剧集、参与者、节拍和分支；本页开关不会影响查看。"),
+            separator(),
             storyEnabledBox,
             storyRepeatBox,
             row("剧情间隔（核心 tick）", storyIntervalField),
@@ -512,7 +534,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             brainTabs.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             brainTabs.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             brainTabs.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            brainTabs.heightAnchor.constraint(greaterThanOrEqualToConstant: 390),
+            brainTabs.heightAnchor.constraint(greaterThanOrEqualToConstant: 300),
         ])
         return container
     }
@@ -638,12 +660,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private func buildSensesTab() -> NSView {
         inputPluginControls.removeAll()
-        let pluginIDs = ["window-title", "accessibility", "ocr", "chat-content", "code-content", "browser-content"]
-        var pluginViews: [NSView] = [
-            note("每一项都是独立输入插件。关闭后不会采集、不会进入大脑；启用后的内容按 TTL 进入本地决策和训练记录。每个插件可单独配置字符预算、应用白名单和是否允许抢占。")
+        var windowViews: [NSView] = [
+            note("窗口标题、辅助功能和 OCR 可分别开关；权限状态在本页底部。")
         ]
-        for id in pluginIDs {
+        var contentViews: [NSView] = [
+            note("聊天、编码与浏览器内容只提供有界观察，不直接执行动作。")
+        ]
+        for id in ["window-title", "accessibility", "ocr",
+                   "chat-content", "code-content", "browser-content"] {
             guard let config = draft.inputPlugins.configuration(for: id) else { continue }
+            var views = [NSView]()
             let enabled = checkbox(config.displayName, config.enabled, #selector(toggleDraft(_:)))
             let preemptive = checkbox("内容变化允许抢占当前低优先级计划", config.preemptive,
                                       #selector(toggleDraft(_:)))
@@ -655,12 +681,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             inputPluginControls.append(InputPluginControls(
                 id: id, enabled: enabled, preemptive: preemptive, ttl: ttl,
                 maxCharacters: maxCharacters, applications: applications))
-            pluginViews.append(separator())
-            pluginViews.append(enabled)
-            pluginViews.append(row("TTL ticks", ttl))
-            pluginViews.append(row("最大字符", maxCharacters))
-            pluginViews.append(row("应用白名单", applications, width: 380))
-            pluginViews.append(preemptive)
+            views += [separator(), enabled, row("TTL ticks", ttl),
+                      row("最大字符", maxCharacters),
+                      row("应用白名单", applications, width: 380), preemptive]
+            if ["window-title", "accessibility", "ocr"].contains(id) {
+                windowViews += views
+            } else {
+                contentViews += views
+            }
             if id == "accessibility" { sensesBox = enabled }
             if id == "ocr" { ocrBox = enabled }
         }
@@ -672,12 +700,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let ocrButton = NSButton(title: "请求屏幕录制授权", target: self, action: #selector(requestScreenPermission))
         ocrButton.bezelStyle = .rounded
 
-        pluginViews += [separator(), axStatusLabel, axButton,
-                        separator(), ocrStatusLabel, ocrButton,
-                        note("聊天、编码、浏览器插件复用 AX/OCR 的结构化结果，按当前前台活动分类；" +
-                             "OCR 目前只对 profile 表内应用截图（微信聊天区右侧 44%，accurate）。" +
-                             "内容不会直接执行动作；只有显式打开‘允许抢占’的插件会让旧计划失效。")]
-        return scrollFormStack(pluginViews)
+        windowViews += [separator(), axStatusLabel, axButton,
+                        separator(), ocrStatusLabel, ocrButton]
+        contentViews.append(note("只有显式允许抢占的插件会让旧计划失效；关闭插件后不会继续采集。"))
+        let tabs = NSTabView()
+        tabs.addTabViewItem(tab("窗口与权限", scrollFormStack(windowViews)))
+        tabs.addTabViewItem(tab("内容输入", scrollFormStack(contentViews)))
+        return tabs
     }
 
     // MARK: 诊断
@@ -918,11 +947,26 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     // MARK: 动作
 
-    @objc private func saveAndClose() {
+    @objc private func saveSettings() {
         collectDraft()
-        applied = true
         onApply?(draft)
+        lastSaved = draft
+        hasUnsavedPreview = false
+    }
+
+    @objc private func saveAndCloseSettings() {
+        saveSettings()
         window?.performClose(nil)
+    }
+
+    @objc private func toggleCastGroup(_ sender: NSButton) {
+        guard let entry = castGroupBoxes.first(where: { $0.group === sender }) else { return }
+        for member in entry.members { member.state = sender.state }
+    }
+
+    @objc private func toggleCastMember(_ sender: NSButton) {
+        guard let entry = castGroupBoxes.first(where: { $0.members.contains { $0 === sender } }) else { return }
+        entry.group.state = entry.members.allSatisfy { $0.state == .on } ? .on : .off
     }
 
     @objc private func closeWithoutSaving() {
@@ -945,6 +989,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     /// 宠物/道具当场按新尺寸运转；取消关闭时还原回打开时的设置。
     private func previewLive() {
         collectDraft()
+        hasUnsavedPreview = true
         onPreview?(draft)
     }
 
@@ -1045,10 +1090,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        // 取消语义：没保存过就还原实时预览期间的变化（宠物/道具大小回到打开时）。
-        if !applied {
-            onPreview?(initial)
+        // 仅撤销最后一次保存后发生的实时预览；已保存的更改继续生效。
+        if hasUnsavedPreview {
+            onPreview?(lastSaved)
         }
         return true
     }
+}
+
+private final class TopAlignedSettingsDocumentView: NSView {
+    override var isFlipped: Bool { true }
 }

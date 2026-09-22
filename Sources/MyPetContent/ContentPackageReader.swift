@@ -160,6 +160,29 @@ public enum ContentPackageReader {
         }
     }
 
+    /// Read one declared idle frame for the manager thumbnail without unpacking a whole role/group.
+    public static func previewFrameData(at archiveURL: URL,
+                                        manifest: ContentPackageManifest) throws -> Data? {
+        guard manifest.kind != .story else { return nil }
+        try manifest.validate()
+        guard let file = manifest.files.sorted(by: { $0.path < $1.path }).first(where: {
+            $0.path.hasPrefix("petpack/") &&
+            ($0.path.hasSuffix("/base/idle/frame_00.webp") ||
+             $0.path.hasSuffix("/base/idle/frame_00.png"))
+        }) else { return nil }
+        let archive = try Archive(url: archiveURL, accessMode: .read)
+        guard let entry = archive[file.path], entry.type == .file,
+              entry.uncompressedSize <= 8_388_608 else {
+            throw ContentPackageError.invalidContent("missing or oversized preview frame")
+        }
+        let data = try readMedia(entry, from: archive)
+        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        guard digest == file.sha256 else {
+            throw ContentPackageError.invalidArchive("preview frame hash differs")
+        }
+        return data
+    }
+
     /// Cached extractions are disposable. Verify them again before reuse: a
     /// previous crash or local modification must not bypass the ZIP preflight.
     static func validateExtracted(at root: URL, matching manifest: ContentPackageManifest) throws {

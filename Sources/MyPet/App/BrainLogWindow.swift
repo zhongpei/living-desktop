@@ -29,7 +29,7 @@ final class BrainLogWindowController: NSWindowController, NSWindowDelegate,
             contentRect: NSRect(x: 0, y: 0, width: 1120, height: 760),
             styleMask: [.titled, .closable, .resizable, .miniaturizable],
             backing: .buffered, defer: false)
-        window.title = "MyPet 脑路与日志"
+        window.title = "Living Desktop 脑路与日志"
         window.minSize = NSSize(width: 860, height: 560)
         window.isReleasedWhenClosed = false
         window.center()

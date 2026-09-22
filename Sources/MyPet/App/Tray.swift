@@ -204,22 +204,33 @@ final class Tray: NSObject {
         let menu = NSMenu()
         menu.delegate = self
 
+        let roles = NSMenuItem(title: "角色", action: nil, keyEquivalent: "")
+        let roleMenu: NSMenu
         if !castPacks.isEmpty {
-            let roles = NSMenuItem(title: "角色", action: nil, keyEquivalent: "")
-            roles.submenu = buildCurrentRolesMenu()
-            menu.addItem(roles)
-        } else if !currentPetID.isEmpty {
-            let roles = NSMenuItem(title: "角色", action: nil, keyEquivalent: "")
+            roleMenu = buildCurrentRolesMenu()
+        } else {
             let submenu = NSMenu(title: "角色")
-            let current = NSMenuItem(title: currentPetID, action: nil, keyEquivalent: "")
-            current.isEnabled = false
-            submenu.addItem(current)
-            let exit = NSMenuItem(title: "退出桌面", action: #selector(exitSingleRole), keyEquivalent: "")
-            exit.target = self
-            submenu.addItem(exit)
-            roles.submenu = submenu
-            menu.addItem(roles)
+            if !currentPetID.isEmpty {
+                let current = NSMenuItem(title: currentPetID, action: nil, keyEquivalent: "")
+                current.isEnabled = false
+                submenu.addItem(current)
+                let exit = NSMenuItem(title: "退出桌面", action: #selector(exitSingleRole), keyEquivalent: "")
+                exit.target = self
+                submenu.addItem(exit)
+            } else {
+                let empty = NSMenuItem(title: "尚无角色", action: nil, keyEquivalent: "")
+                empty.isEnabled = false
+                submenu.addItem(empty)
+            }
+            roleMenu = submenu
         }
+        let importItem = NSMenuItem(title: "导入 / 管理内容包…",
+                                    action: #selector(openContentManager), keyEquivalent: "")
+        importItem.target = self
+        roleMenu.insertItem(importItem, at: 0)
+        roleMenu.insertItem(.separator(), at: 1)
+        roles.submenu = roleMenu
+        menu.addItem(roles)
 
         // 召唤道具：手上（宠物拿着，场景收尾自然放下）/ 面前（落地待着后淡出）。
         let propList = Self.summonableProps(catalog: gameplayCatalog)
@@ -267,8 +278,7 @@ final class Tray: NSObject {
         menu.addItem(.separator())
         menu.addItem(withTitle: "查看日志…", action: #selector(openLogs), keyEquivalent: "").target = self
         menu.addItem(withTitle: "设置…", action: #selector(openSettings), keyEquivalent: ",").target = self
-        menu.addItem(withTitle: "内容包管理…", action: #selector(openContentManager), keyEquivalent: "").target = self
-        menu.addItem(withTitle: "退出 MyPet", action: #selector(quit), keyEquivalent: "q").target = self
+        menu.addItem(withTitle: "退出 Living Desktop", action: #selector(quit), keyEquivalent: "q").target = self
         statusItem.menu = menu
         attachedMenu = menu
     }
@@ -600,7 +610,7 @@ final class Tray: NSObject {
         alert.messageText = "开启「拉扯窗口」需要辅助功能权限"
         alert.informativeText = """
         宠物拉扯真实窗口用的是 macOS 辅助功能 API（Accessibility）。
-        点击「打开系统设置」后，把 MyPet 加入「辅助功能」允许列表，\
+        点击「打开系统设置」后，把 Living Desktop 加入「辅助功能」允许列表，\
         再回来重新勾选即可。不授权也不影响宠物的基础玩法。
         """
         alert.addButton(withTitle: "打开系统设置")
@@ -627,7 +637,7 @@ final class Tray: NSObject {
         alert.informativeText = """
         OCR 感知只会截取 profile 表内应用（当前：微信）的窗口画面做文字识别，\
         识别结果会随完整脑路快照保存在本机，供查看日志还原当次输入。
-        点击「打开系统设置」后把 MyPet 加入「屏幕录制」允许列表，\
+        点击「打开系统设置」后把 Living Desktop 加入「屏幕录制」允许列表，\
         勾选后无需重启，下一次读取立即生效。
         """
         alert.addButton(withTitle: "打开系统设置")

@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var tray: Tray?
     private var settingsWindow: SettingsWindowController?
     private var contentManagerWindow: ContentManagerWindowController?
+    private var storyLibraryWindow: StoryLibraryWindowController?
     private var contentDiagnostics: [String] = []
     private var brainLogWindow: BrainLogWindowController?
     /// 所有同时可见角色共用，防止各自面板独立摆放造成重叠。
@@ -114,13 +115,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// All package writes cross this App-owned barrier. The old Runtime and
     /// presentations are retired before Content may remove bytes. A failed
     /// operation rebuilds the old selection from still-installed packages.
-    private func changeContent(_ operation: (ContentRegistry) throws -> Void,
+    private func changeContent(_ operation: (ContentRegistry) throws -> Bool,
                                afterRetirement: ((ContentRegistry) -> Void)? = nil) throws {
         guard let registry = contentRegistry else { throw ContentRegistry.RegistryError.unavailable }
         // Import, enable/disable and logical removal are transactional while
         // the old extracted content is still alive. Failure leaves this world
         // untouched; only a successful mutation crosses the retirement barrier.
-        try operation(registry)
+        guard try operation(registry) else { return }
         castSession?.retireForPackageChange()
         castSession = nil
         controller?.stop()
@@ -152,15 +153,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func importContentPackage(at url: URL, confirmUpdate: Bool) throws {
+    func importContentPackages(at urls: [URL], confirmUpdate: Bool) throws -> ContentRegistry.ImportResult {
+        var result: ContentRegistry.ImportResult?
         try changeContent { registry in
-            try registry.importPackage(at: url, confirmUpdate: confirmUpdate)
+            result = registry.importPackages(at: urls, confirmUpdate: confirmUpdate)
+            return !(result?.imported.isEmpty ?? true)
         }
+        guard let result else { throw ContentRegistry.RegistryError.unavailable }
+        return result
     }
 
     func setContentPackageEnabled(_ enabled: Bool, kind: ContentPackageKind, id: String) throws {
         try changeContent { registry in
             try registry.setEnabled(enabled, kind: kind, id: id)
+            return true
         }
     }
 
@@ -168,6 +174,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var retired: URL?
         try changeContent { registry in
             retired = try registry.removeUserPackage(kind: kind, id: id)
+            return true
         } afterRetirement: { registry in
             do {
                 try registry.purgeCache(kind: kind, id: id, source: .user)
@@ -182,6 +189,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var retired: URL?
         try changeContent { registry in
             retired = try registry.removeCorruptUserPackage(at: url)
+            return true
         } afterRetirement: { registry in
             if let retired {
                 do { try registry.finalizeRemoval(at: retired) }
@@ -239,12 +247,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showSettings() {
         guard let settings else { return }
-        if settingsWindow == nil {
+        // A closed settings window retains its old draft; reopen from the latest saved settings.
+        if settingsWindow?.window?.isVisible != true {
             let win = SettingsWindowController(settings: settings, castPacks: castPacks)
             win.onApply = { [weak self] applied in
                 self?.applySettings(applied)
             }
             win.onOpenContentManager = { [weak self] in self?.showContentManager() }
+            win.onOpenStoryLibrary = { [weak self] in self?.showStoryLibrary() }
             // 拖动滑杆的实时预览：热更新所有可见控制器，不落盘、不刷菜单。
             win.onPreview = { [weak self] preview in
                 self?.updateVisibleControllers(preview)
@@ -262,14 +272,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindow?.show()
     }
 
+    private func showStoryLibrary() {
+        // Rebuild from the current catalog; package changes never mutate an open viewer.
+        storyLibraryWindow?.close()
+        let viewer = StoryLibraryWindowController(stories: storyPacks, groups: castPacks)
+        storyLibraryWindow = viewer
+        viewer.show()
+    }
+
     private func showContentManager() {
         if contentManagerWindow == nil {
             let manager = ContentManagerWindowController()
             manager.records = { [weak self] in self?.contentRegistry?.list() ?? [] }
             manager.diagnostics = { [weak self] in self?.contentDiagnostics ?? [] }
-            manager.onImport = { [weak self] url, confirm in
+            manager.onImport = { [weak self] urls, confirm in
                 guard let self else { throw ContentRegistry.RegistryError.unavailable }
-                try self.importContentPackage(at: url, confirmUpdate: confirm)
+                return try self.importContentPackages(at: urls, confirmUpdate: confirm)
             }
             manager.onSetEnabled = { [weak self] enabled, kind, id in
                 guard let self else { throw ContentRegistry.RegistryError.unavailable }
