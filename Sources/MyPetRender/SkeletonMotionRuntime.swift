@@ -298,7 +298,7 @@ public final class SkeletonMotionPlayer {
             case let (.none, .some(right)):
                 result[key] = right
             case (.none, .none):
-                result[key] = nil
+                result[key] = .some(nil)
             }
         }
         return result
