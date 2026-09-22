@@ -162,7 +162,7 @@ public struct UniversalMotionFrame: Codable, Equatable, Sendable {
         var result: [String: MotionVector3?] = [:]
         for name in nested.allKeys {
             if try nested.decodeNil(forKey: name) {
-                result[name.stringValue] = nil
+                result[name.stringValue] = .some(nil)
             } else {
                 result[name.stringValue] = try nested.decode(MotionVector3.self, forKey: name)
             }
