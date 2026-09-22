@@ -79,57 +79,79 @@ public enum MotionRetargeter {
         to rig: SkeletonRig2D
     ) throws -> RetargetedSkeletonPose {
         let root = CGPoint.zero
-        let chest = root + try vector(frame.bones["spine"] ?? nil, named: "spine")
-            * try length("spine", rig)
-        let head = chest + try vector(frame.bones["head"] ?? nil, named: "head")
-            * try length("head", rig)
+        let chest = add(root, scaled(try vector(sample(frame.bones, "spine"), named: "spine"), by: try length("spine", rig)))
+        let head = add(chest, scaled(try vector(sample(frame.bones, "head"), named: "head"), by: try length("head", rig)))
 
-        let leftShoulder = chest
-            + try vector(frame.bones["left_shoulder"] ?? nil, named: "left_shoulder")
-            * try length("left_shoulder", rig)
-        let rightShoulder = chest
-            + try vector(frame.bones["right_shoulder"] ?? nil, named: "right_shoulder")
-            * try length("right_shoulder", rig)
+        let leftShoulder = add(
+            chest,
+            scaled(
+                try vector(sample(frame.bones, "left_shoulder"), named: "left_shoulder"),
+                by: try length("left_shoulder", rig)))
+        let rightShoulder = add(
+            chest,
+            scaled(
+                try vector(sample(frame.bones, "right_shoulder"), named: "right_shoulder"),
+                by: try length("right_shoulder", rig)))
 
-        let leftElbow = leftShoulder
-            + try vector(frame.bones["left_upper_arm"] ?? nil, named: "left_upper_arm")
-            * try length("left_upper_arm", rig)
-        let rightElbow = rightShoulder
-            + try vector(frame.bones["right_upper_arm"] ?? nil, named: "right_upper_arm")
-            * try length("right_upper_arm", rig)
-        let leftWrist = leftElbow
-            + try vector(frame.bones["left_forearm"] ?? nil, named: "left_forearm")
-            * try length("left_forearm", rig)
-        let rightWrist = rightElbow
-            + try vector(frame.bones["right_forearm"] ?? nil, named: "right_forearm")
-            * try length("right_forearm", rig)
+        let leftElbow = add(
+            leftShoulder,
+            scaled(
+                try vector(sample(frame.bones, "left_upper_arm"), named: "left_upper_arm"),
+                by: try length("left_upper_arm", rig)))
+        let rightElbow = add(
+            rightShoulder,
+            scaled(
+                try vector(sample(frame.bones, "right_upper_arm"), named: "right_upper_arm"),
+                by: try length("right_upper_arm", rig)))
+        let leftWrist = add(
+            leftElbow,
+            scaled(
+                try vector(sample(frame.bones, "left_forearm"), named: "left_forearm"),
+                by: try length("left_forearm", rig)))
+        let rightWrist = add(
+            rightElbow,
+            scaled(
+                try vector(sample(frame.bones, "right_forearm"), named: "right_forearm"),
+                by: try length("right_forearm", rig)))
 
         // Hip anchors are represented by normalized joints in mypet-motion-v1.
         // Only their direction from the hip midpoint is reused; target spacing
         // comes from the character rig.
-        let leftHip = root
-            + try vector(frame.joints["left_hip"] ?? nil, named: "left_hip")
-            * try length("left_hip", rig)
-        let rightHip = root
-            + try vector(frame.joints["right_hip"] ?? nil, named: "right_hip")
-            * try length("right_hip", rig)
+        let leftHip = add(
+            root,
+            scaled(
+                try vector(sample(frame.joints, "left_hip"), named: "left_hip"),
+                by: try length("left_hip", rig)))
+        let rightHip = add(
+            root,
+            scaled(
+                try vector(sample(frame.joints, "right_hip"), named: "right_hip"),
+                by: try length("right_hip", rig)))
 
-        let leftKnee = leftHip
-            + try vector(frame.bones["left_thigh"] ?? nil, named: "left_thigh")
-            * try length("left_thigh", rig)
-        let rightKnee = rightHip
-            + try vector(frame.bones["right_thigh"] ?? nil, named: "right_thigh")
-            * try length("right_thigh", rig)
-        let leftAnkle = leftKnee
-            + try vector(frame.bones["left_calf"] ?? nil, named: "left_calf")
-            * try length("left_calf", rig)
-        let rightAnkle = rightKnee
-            + try vector(frame.bones["right_calf"] ?? nil, named: "right_calf")
-            * try length("right_calf", rig)
+        let leftKnee = add(
+            leftHip,
+            scaled(
+                try vector(sample(frame.bones, "left_thigh"), named: "left_thigh"),
+                by: try length("left_thigh", rig)))
+        let rightKnee = add(
+            rightHip,
+            scaled(
+                try vector(sample(frame.bones, "right_thigh"), named: "right_thigh"),
+                by: try length("right_thigh", rig)))
+        let leftAnkle = add(
+            leftKnee,
+            scaled(
+                try vector(sample(frame.bones, "left_calf"), named: "left_calf"),
+                by: try length("left_calf", rig)))
+        let rightAnkle = add(
+            rightKnee,
+            scaled(
+                try vector(sample(frame.bones, "right_calf"), named: "right_calf"),
+                by: try length("right_calf", rig)))
 
         return RetargetedSkeletonPose(
             time: frame.time,
-            rootScreen: CGPoint(x: frame.rootScreen.x, y: frame.rootScreen.y),
+            rootScreen: CGPoint(x: CGFloat(frame.rootScreen.x), y: CGFloat(frame.rootScreen.y)),
             joints: [
                 "root": root,
                 "chest": chest,
@@ -147,6 +169,21 @@ public enum MotionRetargeter {
                 "left_ankle": leftAnkle,
                 "right_ankle": rightAnkle,
             ])
+    }
+
+    private static func sample(
+        _ map: [String: MotionVector3?],
+        _ name: String
+    ) -> MotionVector3? {
+        map[name] ?? nil
+    }
+
+    private static func add(_ lhs: CGPoint, _ rhs: CGPoint) -> CGPoint {
+        CGPoint(x: lhs.x + rhs.x, y: lhs.y + rhs.y)
+    }
+
+    private static func scaled(_ point: CGPoint, by scalar: Double) -> CGPoint {
+        CGPoint(x: point.x * CGFloat(scalar), y: point.y * CGFloat(scalar))
     }
 
     private static func length(_ name: String, _ rig: SkeletonRig2D) throws -> Double {
@@ -167,7 +204,9 @@ public enum MotionRetargeter {
         guard magnitude.isFinite, magnitude > 1e-8 else {
             throw SkeletonMotionRuntimeError.degenerateMotionVector(name)
         }
-        return CGPoint(x: value.x / magnitude, y: value.y / magnitude)
+        return CGPoint(
+            x: CGFloat(value.x / magnitude),
+            y: CGFloat(value.y / magnitude))
     }
 }
 
@@ -283,12 +322,3 @@ public enum SkeletonMotionRuntimeError: LocalizedError, Equatable {
     }
 }
 
-private extension CGPoint {
-    static func + (lhs: CGPoint, rhs: CGPoint) -> CGPoint {
-        CGPoint(x: lhs.x + rhs.x, y: lhs.y + rhs.y)
-    }
-
-    static func * (lhs: CGPoint, rhs: Double) -> CGPoint {
-        CGPoint(x: lhs.x * rhs, y: lhs.y * rhs)
-    }
-}
