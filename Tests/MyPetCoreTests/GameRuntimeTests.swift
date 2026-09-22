@@ -2,6 +2,55 @@ import XCTest
 @testable import MyPetCore
 
 final class GameRuntimeTests: XCTestCase {
+    func testPreparedSceneWithoutRequiredFocusRejectsDeterministicStep() {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let goal = SimulationGoalDecision(goal: .rest)
+        let recipe = SimulationSceneRecipe(
+            id: "window-rest", goals: [.rest],
+            steps: [SimulationSceneStep(.moveTo("@activity.topCenter"))])
+        let provider = PreparedSemanticProvider(actorID: actor.id)
+        let runtime = GameRuntime(kernel: GameKernel(scenario: HarnessScenario(
+            id: "no-focus", entities: [actor])), bodyExecutionMode: .external)
+        let pipeline = SemanticPipeline(
+            configuration: SemanticPipelineConfiguration(actorID: actor.id),
+            goalProvider: provider, needleProvider: provider, recipes: [recipe])
+        provider.prepareGoal(goal, planEpoch: 0, context: RuntimeContext())
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        provider.prepareSceneSelection(
+            .selected(recipe.id), goal: goal, planEpoch: 0, context: RuntimeContext())
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        XCTAssertEqual(pipeline.sceneRunner.status, .cancelled)
+        XCTAssertNil(pipeline.pendingActionID)
+        XCTAssertTrue(pipeline.logicFailures.contains("needle_no_legal_action"))
+    }
+
+    func testOneShotGoalCanBeReofferedAfterContextInvalidatesSceneSelection() {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let goal = SimulationGoalDecision(goal: .wander)
+        let recipe = SimulationSceneRecipe(
+            id: "wander", goals: [.wander], steps: [SimulationSceneStep(.wait(1))])
+        let provider = PreparedSemanticProvider(actorID: actor.id)
+        let runtime = GameRuntime(kernel: GameKernel(scenario: HarnessScenario(
+            id: "context-change", entities: [actor])), bodyExecutionMode: .external)
+        let pipeline = SemanticPipeline(
+            configuration: SemanticPipelineConfiguration(actorID: actor.id),
+            goalProvider: provider, needleProvider: provider, recipes: [recipe])
+        let before = RuntimeContext()
+        let after = RuntimeContext(focus: .init(id: EntityID("window"), activity: "coding"))
+        provider.prepareGoal(goal, planEpoch: 0, context: before)
+        _ = runtime.step(pipeline: pipeline, context: before)
+        XCTAssertEqual(pipeline.sceneSelectionGoal, goal)
+
+        _ = runtime.step(pipeline: pipeline, context: after)
+        XCTAssertNil(pipeline.sceneSelectionGoal)
+        provider.prepareGoal(goal, planEpoch: 0, context: after)
+        provider.prepareSceneSelection(.selected(recipe.id), goal: goal, planEpoch: 0, context: after)
+        _ = runtime.step(pipeline: pipeline, context: after)
+        XCTAssertEqual(pipeline.sceneRunner.status, .running)
+        XCTAssertNotNil(pipeline.pendingActionID)
+    }
+
+
     func testPreparedProviderDropsPropStepWhenPropsDisabled() {
         let provider = PreparedSemanticProvider(actorID: EntityID("pet"))
         provider.setPropsEnabled(false)

@@ -803,8 +803,17 @@ final class PetController {
             planGoal()
             return
         }
+        // A focus/epoch change can invalidate the Core pending scene before a
+        // model has selected it. Re-offer the same live Goal in the new scope;
+        // otherwise the one-shot provider would leave this Goal stranded.
+        if semanticPipeline.sceneSelectionGoal == nil, let semanticGoal {
+            preparedSemanticProvider.prepareGoal(
+                semanticGoal,
+                planEpoch: gameplayRuntime.previewWorld().planEpochs[runtimeActorID.raw, default: 0],
+                context: runtimeContext())
+        }
         guard sceneCooldown <= 0,
-              let goal = semanticPipeline.snapshot().pendingSceneGoal ?? semanticGoal else { return }
+              let goal = semanticPipeline.sceneSelectionGoal ?? semanticGoal else { return }
         prepareSemanticSceneSelection(for: goal)
     }
 
@@ -859,7 +868,7 @@ final class PetController {
         guard let recipeID = runner.recipeID,
               let recipe = SceneCatalog.recipe(id: recipeID),
               let step = runner.currentStep, let goal = runner.currentGoal,
-              let sinceTick = semanticPipeline.snapshot().pendingDecisionSinceTick else { return }
+              let sinceTick = semanticPipeline.decisionPendingSinceTick else { return }
         let key = (recipeID: recipeID, stepIndex: runner.stepIndex, sinceTick: sinceTick)
         if let pending = semanticDecisionRequest,
            pending.recipeID == key.recipeID, pending.stepIndex == key.stepIndex,
@@ -879,7 +888,7 @@ final class PetController {
             guard self.matchesDecisionScope(scope),
                   self.semanticPipeline.sceneRunner.recipeID == recipeID,
                   self.semanticPipeline.sceneRunner.stepIndex == key.stepIndex,
-                  self.semanticPipeline.snapshot().pendingDecisionSinceTick == key.sinceTick,
+                  self.semanticPipeline.decisionPendingSinceTick == key.sinceTick,
                   self.semanticPipeline.isAwaitingDecision else { return }
             let choice: SimulationDecisionPointChoice
             switch answer {
@@ -1368,7 +1377,7 @@ final class PetController {
     ) {
         switch intent {
         case .stroll(let target):
-            sceneMove(toX: target, top: false, window: nil) { report(true) }
+            sceneMove(toX: target, top: false, window: nil) { report($0) }
         case .walkAlong:
             model.startWalk(CGFloat.random(in: 0..<1) < 0.5 ? -1 : 1)
             report(true)
@@ -1376,7 +1385,7 @@ final class PetController {
             scenePerform([clip]) { report(true) }
         case .leap(let window):
             guard settings.perchingEnabled else { report(false); return }
-            sceneMove(toX: window.bounds.midX, top: true, window: window) { report(true) }
+            sceneMove(toX: window.bounds.midX, top: true, window: window) { report($0) }
         case .hop, .dropOff:
             model.hop()
             report(true)
@@ -1451,7 +1460,7 @@ final class PetController {
 
     // ============ SceneStaging（场景对身体的接口） ============
 
-    private var sceneMoveDone: (() -> Void)?
+    private var sceneMoveDone: ((Bool) -> Void)?
     private var sceneMoveTarget: (x: CGFloat, top: Bool, window: WindowEntity?)?
     private var sceneMoveDeadline: Double = 0
     private var scenePerformDone: (() -> Void)?
@@ -1461,17 +1470,17 @@ final class PetController {
     private var scenePerformToken = 0
 
     /// 走向锚点：地面 = stroll；窗台 = 先走近再起跳（落定为完成）。
-    func sceneMove(toX: CGFloat, top: Bool, window: WindowEntity?, onDone: @escaping () -> Void) {
+    func sceneMove(toX: CGFloat, top: Bool, window: WindowEntity?, onDone: @escaping (Bool) -> Void) {
         sceneMoveToken += 1
         let token = sceneMoveToken
         guard model.state == .grounded || model.state == .perched else {
-            onDone()
+            onDone(false)
             return
         }
         model.wake()
-        sceneMoveDone = { [weak self] in
+        sceneMoveDone = { [weak self] success in
             guard let self, token == self.sceneMoveToken else { return }
-            onDone()
+            onDone(success)
         }
         sceneMoveTarget = (toX, top, window)
         sceneMoveDeadline = clock + 14
@@ -1489,7 +1498,7 @@ final class PetController {
     /// 每帧检查场景移动的到位/超时（move 的完成由身体状态回答）。
     private func tickSceneMove() {
         guard let target = sceneMoveTarget else { return }
-        if clock > sceneMoveDeadline { completeSceneMove(); return }
+        if clock > sceneMoveDeadline { completeSceneMove(success: false); return }
         if target.top, let window = target.window {
             if model.perch?.id == window.id { completeSceneMove(); return }
             if model.state == .grounded, !model.walking,
@@ -1501,11 +1510,11 @@ final class PetController {
         }
     }
 
-    private func completeSceneMove() {
+    private func completeSceneMove(success: Bool = true) {
         sceneMoveTarget = nil
         let done = sceneMoveDone
         sceneMoveDone = nil
-        done?()
+        done?(success)
     }
 
     @discardableResult

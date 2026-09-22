@@ -62,7 +62,7 @@ enum SceneDecision: Equatable {
 protocol SceneStaging: AnyObject {
     func resolveAnchor(_ text: String) -> (x: CGFloat, top: Bool, window: WindowEntity?)?
     func floorNearPoint() -> CGFloat
-    func sceneMove(toX: CGFloat, top: Bool, window: WindowEntity?, onDone: @escaping () -> Void)
+    func sceneMove(toX: CGFloat, top: Bool, window: WindowEntity?, onDone: @escaping (Bool) -> Void)
     @discardableResult func scenePutDown() -> Bool
     @discardableResult func scenePickUp() -> Bool
     func scenePerform(_ candidates: [String], onDone: @escaping () -> Void)

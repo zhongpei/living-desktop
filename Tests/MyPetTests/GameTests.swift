@@ -78,6 +78,29 @@ final class GameTests: XCTestCase {
         XCTAssertFalse(runtime.world.behaviors.values.contains { $0.request.intent == "say:greet" })
     }
 
+    func testFailedPhysicalMoveCancelsCoreScene() throws {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let recipe = SimulationSceneRecipe(
+            id: "failed-move", goals: [.wander],
+            steps: [SimulationSceneStep(.moveTo("floor_near"))])
+        let runtime = GameRuntime(kernel: GameKernel(scenario: HarnessScenario(
+            id: "failed-move", entities: [actor])), bodyExecutionMode: .external)
+        let pipeline = SemanticPipeline(configuration: SemanticPipelineConfiguration(
+            actorID: actor.id, initialGoal: SimulationGoalDecision(goal: .wander)),
+            recipes: [recipe])
+        let stage = FakeStage()
+        stage.failMove = true
+        let adapter = SemanticBodyAdapter(stage: stage) { _ = runtime.submitBodyResult($0) }
+
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        let id = try XCTUnwrap(pipeline.pendingActionID)
+        let command = try XCTUnwrap(runtime.takeBodyCommand(behaviorID: id))
+        adapter.consume(command, startedAtTick: runtime.world.behaviors[id]?.startedAtTick ?? 0)
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        XCTAssertEqual(pipeline.sceneRunner.status, .cancelled)
+        XCTAssertEqual(runtime.world.behaviors[id]?.status, .cancelled)
+    }
+
     func testCorePropFactCommitsBeforeDependentPhysicalStep() throws {
         let actor = EntityState(id: EntityID("pet"), kind: .actor)
         let recipe = SimulationSceneRecipe(id: "prop-order", goals: [.wander], steps: [
@@ -987,7 +1010,8 @@ private final class FakeStage: SceneStaging {
     var resolveAnchorSucceeds = true
     var performedClips: [String] = []
     var completeMovesImmediately = true
-    var pendingMove: (() -> Void)?
+    var failMove = false
+    var pendingMove: ((Bool) -> Void)?
 
     init(resolveAnchor: Bool = true) {
         resolveAnchorSucceeds = resolveAnchor
@@ -999,14 +1023,14 @@ private final class FakeStage: SceneStaging {
 
     func floorNearPoint() -> CGFloat { petX + 60 }
 
-    func sceneMove(toX: CGFloat, top: Bool, window: WindowEntity?, onDone: @escaping () -> Void) {
-        if completeMovesImmediately { onDone() } else { pendingMove = onDone }
+    func sceneMove(toX: CGFloat, top: Bool, window: WindowEntity?, onDone: @escaping (Bool) -> Void) {
+        if completeMovesImmediately { onDone(!failMove) } else { pendingMove = onDone }
     }
 
     func completeMove() {
         let callback = pendingMove
         pendingMove = nil
-        callback?()
+        callback?(!failMove)
     }
 
     var putDowns = 0

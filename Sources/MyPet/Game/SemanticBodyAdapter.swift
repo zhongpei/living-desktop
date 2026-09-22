@@ -52,8 +52,8 @@ final class SemanticBodyAdapter {
                 resolved = stage.resolveAnchor(anchor)
             }
             guard let resolved else { finish(token, success: false); return }
-            stage.sceneMove(toX: resolved.x, top: resolved.top, window: resolved.window) { [weak self] in
-                self?.finish(token, success: true)
+            stage.sceneMove(toX: resolved.x, top: resolved.top, window: resolved.window) { [weak self] success in
+                self?.finish(token, success: success)
             }
         } else if intent.hasPrefix("perform:") {
             let action = String(intent.dropFirst("perform:".count))

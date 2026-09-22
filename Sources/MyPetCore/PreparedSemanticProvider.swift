@@ -6,7 +6,10 @@ public final class PreparedSemanticProvider: SimulationGoalProvider, SimulationN
     public let actorID: EntityID
     public let providerID = "prepared-semantic"
     public let execution: SimulationProviderExecution = .runtimeImmediate
-    public let missPolicy: SimulationNeedleMissPolicy = .waitForPrefetch
+    // Only scene selection and decision points are asynchronous; both return
+    // explicit waitForPrefetch. Ordinary recipe steps are deterministic and a
+    // missing legal action must fail, not leave the session waiting forever.
+    public let missPolicy: SimulationNeedleMissPolicy = .reject
 
     private struct Prepared<Value> {
         let epoch: Int64

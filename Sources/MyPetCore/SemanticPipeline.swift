@@ -1184,6 +1184,8 @@ public final class SemanticPipeline {
     public private(set) var logicFailures: [String] = []
     public private(set) var pendingActionID: String?
     public var isAwaitingDecision: Bool { pendingDecisionSinceTick != nil }
+    public var sceneSelectionGoal: SimulationGoalDecision? { pendingSceneGoal }
+    public var decisionPendingSinceTick: Int64? { pendingDecisionSinceTick }
     private var pendingSceneGoal: SimulationGoalDecision?
     private var pendingSceneEpoch: Int64?
     private var pendingSceneContext: RuntimeContext?
