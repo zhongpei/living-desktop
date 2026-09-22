@@ -2,6 +2,69 @@ import XCTest
 @testable import MyPetCore
 
 final class GameRuntimeTests: XCTestCase {
+    func testPreparedDecisionsAreOneShotAndRejectOldPlanEpoch() {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let provider = PreparedSemanticProvider(actorID: actor.id)
+        let goal = SimulationGoalDecision(goal: .wander)
+        let context = RuntimeContext()
+        let initial = WorldState(entities: [actor.id.raw: actor])
+        provider.prepareGoal(goal, planEpoch: 0, context: context)
+        provider.prepareSceneSelection(.selected("tea_break"), goal: goal,
+                                       planEpoch: 0, context: context)
+
+        XCTAssertEqual(provider.decide(
+            tick: 0, context: context, world: initial, actorID: actor.id), goal)
+        XCTAssertNil(provider.decide(
+            tick: 0, context: context, world: initial, actorID: actor.id))
+        XCTAssertEqual(provider.chooseScene(
+            goal: goal, tick: 0, context: context,
+            world: initial, actorID: actor.id), .selected("tea_break"))
+        XCTAssertEqual(provider.chooseScene(
+            goal: goal, tick: 0, context: context,
+            world: initial, actorID: actor.id), .waitForPrefetch)
+
+        provider.prepareGoal(goal, planEpoch: 0, context: context)
+        provider.prepareSceneSelection(.selected("tea_break"), goal: goal,
+                                       planEpoch: 0, context: context)
+        var newer = initial
+        newer.planEpochs[actor.id.raw] = 1
+        XCTAssertNil(provider.decide(
+            tick: 1, context: context, world: newer, actorID: actor.id))
+        XCTAssertEqual(provider.chooseScene(
+            goal: goal, tick: 1, context: context,
+            world: newer, actorID: actor.id), .waitForPrefetch)
+    }
+
+    func testPreparedDecisionPointCannotBeReusedByLaterLoop() {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let provider = PreparedSemanticProvider(actorID: actor.id)
+        let world = WorldState(entities: [actor.id.raw: actor])
+        let goal = SimulationGoalDecision(goal: .wander)
+        let step = SimulationSceneStep(.wait(2), decisionPoint: true)
+        let context = RuntimeContext()
+        provider.prepareDecision(
+            .say("greet"), goal: goal, step: step,
+            planEpoch: 0, context: context)
+
+        XCTAssertEqual(provider.decideAtPoint(
+            step: step, goal: goal, tick: 0, context: context,
+            world: world, actorID: actor.id), .say("greet"))
+        XCTAssertEqual(provider.decideAtPoint(
+            step: step, goal: goal, tick: 1, context: context,
+            world: world, actorID: actor.id), .waitForPrefetch)
+    }
+
+    func testPipelineCanReuseProductionSemanticEngineWithoutSecondActionSequence() {
+        let actor = EntityID("pet")
+        let engine = SemanticEngine()
+        let pipeline = SemanticPipeline(
+            configuration: SemanticPipelineConfiguration(actorID: actor),
+            engine: engine)
+        XCTAssertTrue(pipeline.engine === engine)
+        XCTAssertTrue(pipeline.actionRuntime === engine.actionRuntime)
+        XCTAssertTrue(pipeline.sceneRunner === engine.sceneRunner)
+    }
+
     private final class DeferredDecisionNeedle: SimulationNeedleProvider {
         let providerID = "deferred-decision"
         var choice: SimulationDecisionPointChoice = .waitForPrefetch

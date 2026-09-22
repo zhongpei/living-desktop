@@ -1199,6 +1199,7 @@ public final class SemanticPipeline {
         configuration: SemanticPipelineConfiguration,
         goalProvider: (any SimulationGoalProvider)? = nil,
         needleProvider: (any SimulationNeedleProvider)? = nil,
+        engine: SemanticEngine? = nil,
         recipes: [SimulationSceneRecipe] = SceneRunner.defaultRecipes
     ) {
         self.configuration = configuration
@@ -1208,7 +1209,8 @@ public final class SemanticPipeline {
             mode: configuration.goalMode,
             replayCommands: configuration.goalCommands,
             initialGoal: configuration.initialGoal)
-        self.engine = SemanticEngine(recipes: recipes, assetCatalog: configuration.assetCatalog)
+        self.engine = engine ?? SemanticEngine(
+            recipes: recipes, assetCatalog: configuration.assetCatalog)
         self.needleBrain = NeedleBrain(
             mode: configuration.needleMode,
             replayCommands: configuration.needleCommands)
