@@ -1267,7 +1267,7 @@ final class PetController {
         case .leap(let window): return .body(.perch(String(window.id)))
         case .hop: return .body(.hop)
         case .dropOff: return .body(.dropOff)
-        case .nothing: return .wait
+        case .nothing: return .wait(1)
         }
     }
 

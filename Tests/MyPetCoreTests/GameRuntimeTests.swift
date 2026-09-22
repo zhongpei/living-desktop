@@ -2,6 +2,106 @@ import XCTest
 @testable import MyPetCore
 
 final class GameRuntimeTests: XCTestCase {
+    private final class ExplicitSceneNeedle: SimulationNeedleProvider {
+        let providerID = "explicit-scene"
+        func chooseScene(
+            goal: SimulationGoalDecision, tick: Int64, context: RuntimeContext,
+            world: WorldState, actorID: EntityID
+        ) -> SimulationSceneSelection { .selected("tea_break") }
+
+        func decide(
+            step: SimulationSceneStep, tick: Int64, context: RuntimeContext,
+            world: WorldState, actorID: EntityID
+        ) -> SimulationNeedleAction? {
+            NeedleBrain().decide(
+                step: step, tick: tick, context: context,
+                world: world, actorID: actorID)
+        }
+    }
+
+    private final class DeferredSceneNeedle: SimulationNeedleProvider {
+        let providerID = "deferred-scene"
+        var isReady = false
+        func chooseScene(
+            goal: SimulationGoalDecision, tick: Int64, context: RuntimeContext,
+            world: WorldState, actorID: EntityID
+        ) -> SimulationSceneSelection {
+            isReady ? .selected("tea_break") : .waitForPrefetch
+        }
+        func decide(
+            step: SimulationSceneStep, tick: Int64, context: RuntimeContext,
+            world: WorldState, actorID: EntityID
+        ) -> SimulationNeedleAction? {
+            NeedleBrain().decide(
+                step: step, tick: tick, context: context,
+                world: world, actorID: actorID)
+        }
+    }
+
+    func testDeferredSceneSelectionKeepsOneGoalAcrossTicksAndCheckpoint() {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let runtime = GameRuntime(kernel: GameKernel(scenario: HarnessScenario(
+            id: "deferred-scene", entities: [actor])))
+        let provider = DeferredSceneNeedle()
+        let configuration = SemanticPipelineConfiguration(
+            actorID: actor.id,
+            initialGoal: SimulationGoalDecision(goal: .wander))
+        let pipeline = SemanticPipeline(configuration: configuration, needleProvider: provider)
+
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        let snapshot = pipeline.snapshot()
+        XCTAssertNotNil(snapshot.pendingSceneGoal)
+        XCTAssertNil(pipeline.sceneRunner.recipeID)
+        pipeline.restore(snapshot)
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        XCTAssertEqual(pipeline.trace.filter { $0.stage == "goal" }.count, 1)
+        provider.isReady = true
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        XCTAssertEqual(pipeline.sceneRunner.recipeID, "tea_break")
+        XCTAssertNil(pipeline.snapshot().pendingSceneGoal)
+        XCTAssertEqual(pipeline.trace.filter { $0.stage == "goal" }.count, 1)
+    }
+
+    func testExplicitSceneSelectionUsesNeedleChoiceInsteadOfFirstRecipe() {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let runtime = GameRuntime(kernel: GameKernel(scenario: HarnessScenario(
+            id: "explicit-scene", entities: [actor])))
+        let pipeline = SemanticPipeline(
+            configuration: SemanticPipelineConfiguration(
+                actorID: actor.id,
+                initialGoal: SimulationGoalDecision(goal: .wander)),
+            needleProvider: ExplicitSceneNeedle())
+
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+
+        XCTAssertEqual(pipeline.sceneRunner.recipeID, "tea_break")
+    }
+
+    func testAuthoredWaitDurationSurvivesNeedleAndActionRuntime() {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let world = WorldState(entities: [actor.id.raw: actor])
+        let step = SimulationSceneStep(.wait(3))
+        let action = NeedleBrain().decide(
+            step: step, tick: 0, context: RuntimeContext(),
+            world: world, actorID: actor.id)
+        let execution = action.flatMap {
+            ActionRuntime().execute(
+                $0, tick: 0, actorID: actor.id,
+                world: world, context: RuntimeContext())
+        }
+        XCTAssertEqual(execution?.request?.durationTicks, 3)
+    }
+
+    func testLegacyWaitActionWithoutDurationDecodesAsOneTick() throws {
+        let legacy = Data(#"{"kind":"wait"}"#.utf8)
+        let action = try JSONDecoder().decode(SimulationNeedleAction.self, from: legacy)
+        XCTAssertEqual(action, .wait(1))
+        let roundTrip = try JSONDecoder().decode(
+            SimulationNeedleAction.self,
+            from: JSONEncoder().encode(SimulationNeedleAction.wait(3)))
+        XCTAssertEqual(roundTrip, .wait(3))
+    }
+
     func testFixedStepClockSeparatesFortyHertzFramesFromFiftyMillisecondTicks() {
         var driver = FixedStepClock(stepMilliseconds: 50)
         XCTAssertEqual(driver.advance(elapsedSeconds: 0.025), 0)
@@ -43,7 +143,7 @@ final class GameRuntimeTests: XCTestCase {
             actorID: EntityID
         ) -> SimulationNeedleAction? {
             callCount += 1
-            return .wait
+            return .wait(1)
         }
     }
 
@@ -61,7 +161,7 @@ final class GameRuntimeTests: XCTestCase {
         ) -> SimulationNeedleAction? {
             guard prepared else { return nil }
             if case .perform(let name) = step.operation { return .perform(name) }
-            return .wait
+            return .wait(1)
         }
     }
 
@@ -71,7 +171,7 @@ final class GameRuntimeTests: XCTestCase {
         let runtime = ActionRuntime()
 
         let mismatch = runtime.executeStory(
-            .wait, tick: 0, actorID: actor.id, world: world,
+            .wait(1), tick: 0, actorID: actor.id, world: world,
             requestID: "story/mismatch", storyIntent: "wave",
             target: nil, slot: nil, claims: ["body"],
             durationTicks: 1, occupySlotOnSuccess: false)
@@ -110,7 +210,7 @@ final class GameRuntimeTests: XCTestCase {
         func decide(
             step: SimulationSceneStep, tick: Int64, context: RuntimeContext,
             world: WorldState, actorID: EntityID
-        ) -> SimulationNeedleAction? { .wait }
+        ) -> SimulationNeedleAction? { .wait(1) }
     }
 
     private final class DeferredGoalProvider: SimulationGoalProvider {
@@ -573,12 +673,21 @@ final class GameRuntimeTests: XCTestCase {
         let headlessPipeline = SemanticPipeline(configuration: configuration)
         let externalPipeline = SemanticPipeline(configuration: configuration)
         var commandIDs: [String] = []
+        var pendingCommands: [(BodyCommand, Int64)] = []
 
         for _ in 0..<10 {
             _ = headless.step(pipeline: headlessPipeline, context: RuntimeContext())
             _ = external.step(pipeline: externalPipeline, context: RuntimeContext())
             for command in external.drainBodyCommands() {
                 commandIDs.append(command.behaviorID)
+                let startedAt = external.clock.tick - 1
+                pendingCommands.append((
+                    command,
+                    startedAt + max(1, command.durationTicks - 1)))
+            }
+            let due = pendingCommands.filter { $0.1 <= external.clock.tick }
+            pendingCommands.removeAll { $0.1 <= external.clock.tick }
+            for (command, _) in due {
                 XCTAssertTrue(external.submitBodyResult(BodyResult(
                     behaviorID: command.behaviorID,
                     executionToken: command.executionToken,
@@ -693,7 +802,7 @@ final class GameRuntimeTests: XCTestCase {
         _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
 
         XCTAssertEqual(provider.callCount, 0)
-        XCTAssertEqual(pipeline.logicFailures, ["blocking_needle_provider_requires_prefetch"])
+        XCTAssertEqual(pipeline.logicFailures, ["blocking_scene_provider_requires_prefetch"])
     }
 
     func testStoryRefusesBlockingNeedleProviderUntilPrefetched() {

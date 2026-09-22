@@ -206,7 +206,7 @@ final class NeedleBrain {
                 return args["intent"].flatMap(SpeechIntent.init(rawValue:)).map { .say($0.rawValue) }
             case "leave_scene": return .leaveScene
             case "sleep": return .sleep
-            case "wait": return .wait
+            case "wait": return .wait(1)
             default: return nil
             }
         }
@@ -255,7 +255,7 @@ final class NeedleBrain {
         case .clearProps: return "clear_props()"
         case .leaveScene: return "leave_scene()"
         case .sleep: return "sleep()"
-        case .wait: return "wait()"
+        case .wait(let ticks): return "wait(\(ticks))"
         case .body(let value): return "body(\(String(describing: value)))"
         }
     }

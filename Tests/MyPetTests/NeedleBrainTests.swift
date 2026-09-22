@@ -123,7 +123,7 @@ final class NeedleBrainTests: XCTestCase {
         XCTAssertFalse(NeedleBrain.validate(.perform("bath"), facts: facts))
         XCTAssertTrue(NeedleBrain.validate(.perform("nod"), facts: facts))
         XCTAssertTrue(NeedleBrain.validate(.say("greet"), facts: facts))
-        XCTAssertTrue(NeedleBrain.validate(.wait, facts: facts))
+        XCTAssertTrue(NeedleBrain.validate(.wait(1), facts: facts))
         // leave_scene 只在场景决策点合法。
         XCTAssertFalse(NeedleBrain.validate(.leaveScene, facts: facts))
         var inScene = facts

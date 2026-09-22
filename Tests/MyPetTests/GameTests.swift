@@ -317,7 +317,7 @@ final class GameTests: XCTestCase {
         completions.removeFirst()(true)
         runner.tick(now: 0)
 
-        XCTAssertEqual(actions, [.wait, .performCandidates(["think"])])
+        XCTAssertEqual(actions, [.wait(0), .performCandidates(["think"])])
         XCTAssertTrue(stage.performedClips.isEmpty)
 
         completions.removeFirst()(true)

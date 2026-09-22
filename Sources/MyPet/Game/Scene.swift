@@ -337,7 +337,7 @@ final class SceneBodyDriver {
         case .clearProps: return .clearProps
         case .putDown: return .putDown
         case .pickUp: return .pickUp
-        case .wait: return .wait
+        case .wait(let ticks): return .wait(ticks)
         case .say(let value): return .say(value)
         case .sleep: return .sleep
         }

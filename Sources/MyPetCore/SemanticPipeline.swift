@@ -452,7 +452,9 @@ public final class SceneRunner {
     public func start(recipeID: String, goal: SimulationGoalDecision) -> Bool {
         guard status != .running,
               let recipe = recipes.first(where: { $0.id == recipeID }),
-              recipe.goals.contains(goal.goal) else {
+              recipe.goals.contains(goal.goal),
+              (recipe.activities.isEmpty || goal.activity == nil
+                  || recipe.activities.contains(goal.activity!)) else {
             status = .cancelled
             return false
         }
@@ -537,7 +539,7 @@ public enum SimulationNeedleAction: Equatable, Sendable {
     case putDown
     case pickUp
     case leaveScene
-    case wait
+    case wait(Int64)
     case say(String)
     case sleep
     case body(SimulationBodyAction)
@@ -571,8 +573,9 @@ extension SimulationNeedleAction: Codable {
             try container.encode(Kind.pickUp, forKey: .kind)
         case .leaveScene:
             try container.encode(Kind.leaveScene, forKey: .kind)
-        case .wait:
+        case .wait(let ticks):
             try container.encode(Kind.wait, forKey: .kind)
+            try container.encode(ticks, forKey: .value)
         case .say(let value):
             try container.encode(Kind.say, forKey: .kind); try container.encode(value, forKey: .value)
         case .sleep:
@@ -595,7 +598,7 @@ extension SimulationNeedleAction: Codable {
         case .putDown: self = .putDown
         case .pickUp: self = .pickUp
         case .leaveScene: self = .leaveScene
-        case .wait: self = .wait
+        case .wait: self = .wait(try container.decodeIfPresent(Int64.self, forKey: .value) ?? 1)
         case .say: self = .say(try container.decode(String.self, forKey: .value))
         case .sleep: self = .sleep
         case .body: self = .body(try container.decode(SimulationBodyAction.self, forKey: .value))
@@ -623,6 +626,12 @@ public enum SimulationNeedleMissPolicy: String, Codable, Sendable {
     case waitForPrefetch
 }
 
+public enum SimulationSceneSelection: Equatable, Sendable {
+    case automatic
+    case selected(String)
+    case waitForPrefetch
+}
+
 /// Small seam for replacing the deterministic NeedleBrain with a real C/API
 /// provider. Providers return a semantic action only; ActionRuntime remains the
 /// sole producer of BehaviorRequest values.
@@ -631,6 +640,14 @@ public protocol SimulationNeedleProvider: AnyObject {
     var execution: SimulationProviderExecution { get }
     var missPolicy: SimulationNeedleMissPolicy { get }
     func setStoryScope(_ scope: String?)
+
+    func chooseScene(
+        goal: SimulationGoalDecision,
+        tick: Int64,
+        context: RuntimeContext,
+        world: WorldState,
+        actorID: EntityID
+    ) -> SimulationSceneSelection
 
     func decide(
         step: SimulationSceneStep,
@@ -645,6 +662,10 @@ public extension SimulationNeedleProvider {
     var execution: SimulationProviderExecution { .runtimeImmediate }
     var missPolicy: SimulationNeedleMissPolicy { .reject }
     func setStoryScope(_ scope: String?) {}
+    func chooseScene(
+        goal: SimulationGoalDecision, tick: Int64, context: RuntimeContext,
+        world: WorldState, actorID: EntityID
+    ) -> SimulationSceneSelection { .automatic }
 }
 
 public struct SimulationNeedleBrainSnapshot: Codable, Equatable, Sendable {
@@ -693,7 +714,7 @@ public final class NeedleBrain {
         case .clearProps: return .clearProps
         case .putDown: return .putDown
         case .pickUp: return .pickUp
-        case .wait: return .wait
+        case .wait(let ticks): return .wait(ticks)
         case .say(let intent): return .say(intent)
         case .sleep: return .sleep
         }
@@ -925,10 +946,13 @@ public final class ActionRuntime {
             return ActionExecution(accepted: true, request: BehaviorRequest(
                 id: id, actorID: actorID, intent: "leave_scene", priority: .brainReactive,
                 planEpoch: epoch, completionMode: .body, durationTicks: 1, timeoutTicks: 400))
-        case .wait:
+        case .wait(let ticks):
+            let duration = max(1, ticks)
             return ActionExecution(accepted: true, request: BehaviorRequest(
                 id: id, actorID: actorID, intent: "wait", priority: .brainReactive,
-                planEpoch: epoch, completionMode: .body, durationTicks: 1, timeoutTicks: 400))
+                planEpoch: epoch, completionMode: .body,
+                durationTicks: duration,
+                timeoutTicks: max(400, duration == Int64.max ? duration : duration + 1)))
         case .say(let intent):
             return ActionExecution(accepted: true, request: BehaviorRequest(
                 id: id, actorID: actorID, intent: "say:\(intent)", priority: .brainReactive,
@@ -1051,6 +1075,9 @@ public struct SemanticPipelineSnapshot: Codable, Equatable, Sendable {
     public var sceneRunner: SimulationSceneRunnerSnapshot
     public var needleBrain: SimulationNeedleBrainSnapshot
     public var pendingActionID: String?
+    public var pendingSceneGoal: SimulationGoalDecision?
+    public var pendingSceneEpoch: Int64?
+    public var pendingSceneContext: RuntimeContext?
     public var trace: [PipelineTraceEntry]
     public var findings: [SimulationContentFinding]
     public var logicFailures: [String]
@@ -1061,6 +1088,9 @@ public struct SemanticPipelineSnapshot: Codable, Equatable, Sendable {
         sceneRunner: SimulationSceneRunnerSnapshot,
         needleBrain: SimulationNeedleBrainSnapshot,
         pendingActionID: String?,
+        pendingSceneGoal: SimulationGoalDecision? = nil,
+        pendingSceneEpoch: Int64? = nil,
+        pendingSceneContext: RuntimeContext? = nil,
         trace: [PipelineTraceEntry],
         findings: [SimulationContentFinding],
         logicFailures: [String],
@@ -1070,6 +1100,9 @@ public struct SemanticPipelineSnapshot: Codable, Equatable, Sendable {
         self.sceneRunner = sceneRunner
         self.needleBrain = needleBrain
         self.pendingActionID = pendingActionID
+        self.pendingSceneGoal = pendingSceneGoal
+        self.pendingSceneEpoch = pendingSceneEpoch
+        self.pendingSceneContext = pendingSceneContext
         self.trace = trace
         self.findings = findings
         self.logicFailures = logicFailures
@@ -1111,6 +1144,9 @@ public final class SemanticPipeline {
     public private(set) var findings: [SimulationContentFinding] = []
     public private(set) var logicFailures: [String] = []
     public private(set) var pendingActionID: String?
+    private var pendingSceneGoal: SimulationGoalDecision?
+    private var pendingSceneEpoch: Int64?
+    private var pendingSceneContext: RuntimeContext?
     private var currentAction: SimulationNeedleAction?
     private let goalProvider: (any SimulationGoalProvider)?
     private let needleProvider: (any SimulationNeedleProvider)?
@@ -1141,20 +1177,57 @@ public final class SemanticPipeline {
               kernel.world.isAlive(configuration.actorID) else { return }
         let tick = kernel.clock.tick
         if sceneRunner.status != .running {
+            if pendingSceneEpoch != kernel.world.planEpochs[configuration.actorID.raw, default: 0]
+                || pendingSceneContext != context {
+                pendingSceneGoal = nil
+                pendingSceneEpoch = nil
+                pendingSceneContext = nil
+            }
             let provider = goalProvider ?? goalBrain
             guard provider.execution == .runtimeImmediate else {
                 logicFailures.append("blocking_goal_provider_requires_prefetch")
                 return
             }
-            guard let goal = provider.decide(
-                tick: tick, context: context, world: kernel.world, actorID: configuration.actorID) else { return }
-            trace.append(PipelineTraceEntry(
-                tick: tick, stage: "goal", detail: "\(provider.providerID):\(goal.goal.rawValue)"))
-            guard sceneRunner.start(goal) else {
+            let goal: SimulationGoalDecision
+            if let pendingSceneGoal {
+                goal = pendingSceneGoal
+            } else {
+                guard let chosen = provider.decide(
+                    tick: tick, context: context, world: kernel.world,
+                    actorID: configuration.actorID) else { return }
+                goal = chosen
+                pendingSceneGoal = chosen
+                pendingSceneEpoch = kernel.world.planEpochs[configuration.actorID.raw, default: 0]
+                pendingSceneContext = context
+                trace.append(PipelineTraceEntry(
+                    tick: tick, stage: "goal", detail: "\(provider.providerID):\(goal.goal.rawValue)"))
+            }
+            let selector = needleProvider ?? needleBrain
+            guard selector.execution == .runtimeImmediate else {
+                logicFailures.append("blocking_scene_provider_requires_prefetch")
+                return
+            }
+            let selection = selector.chooseScene(
+                goal: goal, tick: tick, context: context,
+                world: kernel.world, actorID: configuration.actorID)
+            if selection == .waitForPrefetch { return }
+            let started: Bool
+            switch selection {
+            case .automatic: started = sceneRunner.start(goal)
+            case .selected(let id): started = sceneRunner.start(recipeID: id, goal: goal)
+            case .waitForPrefetch: return
+            }
+            guard started else {
+                pendingSceneGoal = nil
+                pendingSceneEpoch = nil
+                pendingSceneContext = nil
                 logicFailures.append("scene_missing:\(goal.goal.rawValue)")
                 trace.append(PipelineTraceEntry(tick: tick, stage: "scene", detail: "missing"))
                 return
             }
+            pendingSceneGoal = nil
+            pendingSceneEpoch = nil
+            pendingSceneContext = nil
             trace.append(PipelineTraceEntry(tick: tick, stage: "scene", detail: sceneRunner.recipeID ?? "-"))
         }
         guard let step = sceneRunner.currentStep else {
@@ -1233,6 +1306,9 @@ public final class SemanticPipeline {
             sceneRunner: sceneRunner.snapshot(),
             needleBrain: needleBrain.snapshot(),
             pendingActionID: pendingActionID,
+            pendingSceneGoal: pendingSceneGoal,
+            pendingSceneEpoch: pendingSceneEpoch,
+            pendingSceneContext: pendingSceneContext,
             trace: trace,
             findings: findings,
             logicFailures: logicFailures,
@@ -1244,6 +1320,9 @@ public final class SemanticPipeline {
         sceneRunner.restore(snapshot.sceneRunner)
         needleBrain.restore(snapshot.needleBrain)
         pendingActionID = snapshot.pendingActionID
+        pendingSceneGoal = snapshot.pendingSceneGoal
+        pendingSceneEpoch = snapshot.pendingSceneEpoch
+        pendingSceneContext = snapshot.pendingSceneContext
         trace = snapshot.trace
         findings = snapshot.findings
         logicFailures = snapshot.logicFailures
@@ -1278,7 +1357,7 @@ public final class SemanticPipeline {
         case .putDown: return "put_down"
         case .pickUp: return "pick_up"
         case .leaveScene: return "leave_scene"
-        case .wait: return "wait"
+        case .wait(let ticks): return "wait:\(ticks)"
         case .say(let value): return "say:\(value)"
         case .sleep: return "sleep"
         case .body(let value): return "body:\(String(describing: value))"
