@@ -53,8 +53,9 @@ final class UniversalMotionTests: XCTestCase {
         XCTAssertEqual(motion.source?.character, "alice")
         XCTAssertEqual(motion.source?.action, "run")
         XCTAssertEqual(motion.frames[0].rootScreen, MotionVector3(x: 0.5, y: 0.7, confidence: 0.95))
-        XCTAssertNil(motion.frames[0].joints["left_wrist"]!)
-        XCTAssertEqual(motion.frames[0].bones["spine"]??.y, -1)
+        XCTAssertNil(motion.frames[0].joints["left_wrist"] ?? nil)
+        let spine = try XCTUnwrap(motion.frames[0].bones["spine"] ?? nil)
+        XCTAssertEqual(spine.y, -1)
     }
 
     func testRejectsMismatchedFrameCount() throws {
