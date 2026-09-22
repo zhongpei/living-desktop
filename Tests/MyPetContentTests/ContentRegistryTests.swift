@@ -61,6 +61,28 @@ final class ContentRegistryTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: retired.path))
     }
 
+    func testBatchImportKeepsSuccessfulPackagesWhenOneFails() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mypet-batch-import-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let builtIn = root.appendingPathComponent("builtin")
+        try FileManager.default.createDirectory(at: builtIn, withIntermediateDirectories: true)
+        let first = root.appendingPathComponent("first.mypetpack")
+        let second = root.appendingPathComponent("second.mypetpack")
+        let bad = root.appendingPathComponent("bad.mypetpack")
+        try package(at: first, id: "first")
+        try package(at: second, id: "second")
+        try Data([0, 1, 2]).write(to: bad)
+        let registry = try ContentRegistry(builtInDirectory: builtIn,
+            appSupportDirectory: root.appendingPathComponent("support"))
+
+        let result = registry.importPackages(at: [first, bad, second, first])
+        XCTAssertEqual(result.imported.map(\.id), ["first", "second"])
+        XCTAssertEqual(result.failures.map { $0.url.lastPathComponent },
+                       ["bad.mypetpack", "first.mypetpack"])
+        XCTAssertEqual(Set(registry.list().compactMap { $0.manifest?.id }), ["first", "second"])
+    }
+
     func testTamperedCachedContentIsRebuiltFromThePackage() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("mypet-cache-integrity-\(UUID().uuidString)")

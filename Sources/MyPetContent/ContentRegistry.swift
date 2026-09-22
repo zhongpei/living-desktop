@@ -20,6 +20,11 @@ public final class ContentRegistry {
         case unavailable
     }
 
+    public struct ImportResult {
+        public let imported: [ContentPackageManifest]
+        public let failures: [(url: URL, error: Error)]
+    }
+
     private let builtInDirectory: URL
     private let packageDirectory: URL
     private let cacheDirectory: URL
@@ -82,6 +87,28 @@ public final class ContentRegistry {
 
     @discardableResult
     public func importPackage(at sourceURL: URL, confirmUpdate: Bool = false) throws -> ContentPackageManifest {
+        try installPackage(at: sourceURL, confirmUpdate: confirmUpdate, refreshAfterImport: true)
+    }
+
+    /// Each archive is independent; a bad one must not discard its valid siblings.
+    /// Defer the expensive directory re-scan until the entire selection is installed.
+    public func importPackages(at urls: [URL], confirmUpdate: Bool = false) -> ImportResult {
+        var imported: [ContentPackageManifest] = []
+        var failures: [(url: URL, error: Error)] = []
+        defer { refresh() }
+        for url in urls {
+            do {
+                imported.append(try installPackage(at: url, confirmUpdate: confirmUpdate,
+                                                   refreshAfterImport: false))
+            } catch {
+                failures.append((url, error))
+            }
+        }
+        return ImportResult(imported: imported, failures: failures)
+    }
+
+    private func installPackage(at sourceURL: URL, confirmUpdate: Bool,
+                                refreshAfterImport: Bool) throws -> ContentPackageManifest {
         let candidate = try ContentPackageReader.inspect(at: sourceURL)
         let existing = records.first { $0.manifest?.kind == candidate.kind && $0.manifest?.id == candidate.id }
         if let existing = existing?.manifest {
@@ -98,7 +125,15 @@ public final class ContentRegistry {
                 throw ContentPackageError.invalidArchive("package changed while staging")
             }
             try fm.moveItem(at: staged, to: target)
-            refresh()
+            if refreshAfterImport {
+                refresh()
+            } else {
+                let key = Self.key(candidate.kind, candidate.id)
+                records.removeAll { $0.manifest.map { Self.key($0.kind, $0.id) == key } ?? false }
+                records.append(Record(manifest: candidate, source: .user,
+                    status: disabled.contains(key) ? .disabled : .enabled,
+                    url: target, reason: nil))
+            }
             return candidate
         } catch {
             try? fm.removeItem(at: staged)

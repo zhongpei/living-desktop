@@ -26,6 +26,12 @@ final class ContentPackageReaderTests: XCTestCase {
         for package in packages.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
             let candidate = try ContentPackageReader.inspect(at: package)
             kinds[candidate.kind, default: 0] += 1
+            let preview = try ContentPackageReader.previewFrameData(at: package, manifest: candidate)
+            if candidate.kind == .story {
+                XCTAssertNil(preview)
+            } else {
+                XCTAssertNotNil(preview, package.lastPathComponent)
+            }
             let destination = staging.appendingPathComponent(package.deletingPathExtension().lastPathComponent)
             XCTAssertEqual(try ContentPackageReader.extract(at: package, to: destination), candidate)
             if candidate.kind == .group {
@@ -148,8 +154,11 @@ final class ContentPackageReaderTests: XCTestCase {
                     to: archive)
             return archiveURL
         }
-        XCTAssertEqual(try ContentPackageReader.inspect(at:
-            makeArchive("valid", voicePath: "actions/taunt/voice.mp3")).id, "actor")
+        let valid = try makeArchive("valid", voicePath: "actions/taunt/voice.mp3")
+        let manifest = try ContentPackageReader.inspect(at: valid)
+        XCTAssertEqual(manifest.id, "actor")
+        XCTAssertEqual(try ContentPackageReader.previewFrameData(at: valid, manifest: manifest),
+                       validPNG)
         XCTAssertThrowsError(try ContentPackageReader.inspect(at:
             makeArchive("mismatch", voicePath: "actions/wave/voice.mp3")))
         XCTAssertThrowsError(try ContentPackageReader.inspect(at:
