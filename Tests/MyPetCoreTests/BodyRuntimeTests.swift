@@ -2,6 +2,28 @@ import XCTest
 @testable import MyPetCore
 
 final class BodyRuntimeTests: XCTestCase {
+    func testApprovedLeaveSceneCleansHeldPropOnlyAfterBodyResult() {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let runtime = GameRuntime(bodyExecutionMode: .external)
+        _ = runtime.stepReplayOrFault(events: [
+            GameEvent(kind: .registerEntity, entity: actor),
+            GameEvent(kind: .propCommand, actorID: actor.id,
+                      propCommand: PropCommand(.spawnHeld, propID: "book")),
+        ])
+        let request = BehaviorRequest(
+            id: "leave", actorID: actor.id, intent: "leave_scene",
+            priority: .brainReactive, completionMode: .body,
+            durationTicks: 1, timeoutTicks: 20)
+        _ = runtime.stepReplayOrFault(events: [GameEvent(kind: .behaviorRequest, request: request)])
+        XCTAssertEqual(runtime.world.soloProps[actor.id.raw]?.propID, "book")
+        let command = try! XCTUnwrap(runtime.takeBodyCommand(behaviorID: request.id))
+        _ = runtime.submitBodyResult(BodyResult(
+            behaviorID: command.behaviorID,
+            executionToken: command.executionToken, outcome: .completed))
+        _ = runtime.step()
+        XCTAssertNil(runtime.world.soloProps[actor.id.raw])
+    }
+
     func testHeadlessOneTickBodyWaitsForAnObservableCommandBoundary() {
         let actor = EntityState(id: EntityID("pet"), kind: .actor)
         let runtime = GameRuntime(bodyExecutionMode: .headless)

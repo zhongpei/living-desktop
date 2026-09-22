@@ -11,6 +11,63 @@ import MyPetPlatform
 @MainActor
 final class GameTests: XCTestCase {
 
+    func testSemanticBodyAdapterReportsResultWithoutMovingCoreSceneCursor() throws {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let recipe = SimulationSceneRecipe(
+            id: "observable-wait", goals: [.wander],
+            steps: [SimulationSceneStep(.wait(1))])
+        let runtime = GameRuntime(kernel: GameKernel(scenario: HarnessScenario(
+            id: "observable-wait", entities: [actor])), bodyExecutionMode: .external)
+        let pipeline = SemanticPipeline(
+            configuration: SemanticPipelineConfiguration(
+                actorID: actor.id, initialGoal: SimulationGoalDecision(goal: .wander)),
+            recipes: [recipe])
+        let stage = FakeStage()
+        let adapter = SemanticBodyAdapter(stage: stage) { result in
+            _ = runtime.submitBodyResult(result)
+        }
+
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        let id = try XCTUnwrap(pipeline.pendingActionID)
+        let command = try XCTUnwrap(runtime.takeBodyCommand(behaviorID: id))
+        let startedAt = try XCTUnwrap(runtime.world.behaviors[id]?.startedAtTick)
+        adapter.consume(command, startedAtTick: startedAt)
+        adapter.tick(nowTick: runtime.clock.tick)
+        XCTAssertEqual(pipeline.sceneRunner.stepIndex, 0)
+        XCTAssertEqual(pipeline.sceneRunner.status, .running)
+
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        XCTAssertEqual(pipeline.sceneRunner.status, .completed)
+    }
+
+    func testSemanticBodyAdapterDropsCallbackAfterCancellation() throws {
+        let actor = EntityState(id: EntityID("pet"), kind: .actor)
+        let recipe = SimulationSceneRecipe(
+            id: "move", goals: [.wander],
+            steps: [SimulationSceneStep(.moveTo("floor_near"))])
+        let runtime = GameRuntime(kernel: GameKernel(scenario: HarnessScenario(
+            id: "cancelled-move", entities: [actor])), bodyExecutionMode: .external)
+        let pipeline = SemanticPipeline(
+            configuration: SemanticPipelineConfiguration(
+                actorID: actor.id, initialGoal: SimulationGoalDecision(goal: .wander)),
+            recipes: [recipe])
+        let stage = FakeStage()
+        stage.completeMovesImmediately = false
+        var reported: [BodyResult] = []
+        let adapter = SemanticBodyAdapter(stage: stage) { reported.append($0) }
+
+        _ = runtime.step(pipeline: pipeline, context: RuntimeContext())
+        let id = try XCTUnwrap(pipeline.pendingActionID)
+        let command = try XCTUnwrap(runtime.takeBodyCommand(behaviorID: id))
+        let startedAt = try XCTUnwrap(runtime.world.behaviors[id]?.startedAtTick)
+        adapter.consume(command, startedAtTick: startedAt)
+        adapter.invalidate()
+        stage.completeMove()
+
+        XCTAssertTrue(reported.isEmpty)
+        XCTAssertEqual(pipeline.sceneRunner.stepIndex, 0)
+    }
+
     func testSharedPerceptionPublishesKernelEventOnlyFromOwner() {
         XCTAssertTrue(PerceptionHub.shouldPublishSharedKernelEvent(
             usesSharedGameplayKernel: false, isOwner: false))
@@ -1040,6 +1097,7 @@ private final class FakeStage: SceneStaging {
     var performedClips: [String] = []
     var hasClips = false
     var completeMovesImmediately = true
+    var pendingMove: (() -> Void)?
     var nextDecision: SceneDecision?
     var deferDecisions = false
     var pendingDecision: ((SceneDecision) -> Void)?
@@ -1063,7 +1121,13 @@ private final class FakeStage: SceneStaging {
     func floorNearPoint() -> CGFloat { petX + 60 }
 
     func sceneMove(toX: CGFloat, top: Bool, window: WindowEntity?, onDone: @escaping () -> Void) {
-        if completeMovesImmediately { onDone() }
+        if completeMovesImmediately { onDone() } else { pendingMove = onDone }
+    }
+
+    func completeMove() {
+        let callback = pendingMove
+        pendingMove = nil
+        callback?()
     }
 
     func sceneFadeProps() { propsCleared = true }

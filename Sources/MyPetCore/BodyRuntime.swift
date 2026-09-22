@@ -262,6 +262,7 @@ final class BodyRuntime {
                 y: pose?.yFeet ?? 0)
         case "pick_up":
             return PropCommand(.pickUp, x: pose?.x ?? 0, y: pose?.yFeet ?? 0, within: 90)
+        case "leave_scene": return PropCommand(.despawn)
         default: return nil
         }
     }
