@@ -23,17 +23,17 @@ final class SkeletonMotionRuntimeTests: XCTestCase {
         let tallPose = try player.sample(at: 0, rig: tall)
 
         // Same H3 motion direction, different target-character proportions.
-        XCTAssertEqual(smallPose["head"]?.y, -42, accuracy: 0.001)
-        XCTAssertEqual(normalPose["head"]?.y, -63, accuracy: 0.001)
-        XCTAssertEqual(tallPose["head"]?.y, -82, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(smallPose["head"]).y, -42, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(normalPose["head"]).y, -63, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(tallPose["head"]).y, -82, accuracy: 0.001)
 
-        XCTAssertEqual(smallPose["left_wrist"]?.x, -36, accuracy: 0.001)
-        XCTAssertEqual(normalPose["left_wrist"]?.x, -57, accuracy: 0.001)
-        XCTAssertEqual(tallPose["left_wrist"]?.x, -73, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(smallPose["left_wrist"]).x, -36, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(normalPose["left_wrist"]).x, -57, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(tallPose["left_wrist"]).x, -73, accuracy: 0.001)
 
-        XCTAssertEqual(smallPose["left_ankle"]?.y, 34, accuracy: 0.001)
-        XCTAssertEqual(normalPose["left_ankle"]?.y, 53, accuracy: 0.001)
-        XCTAssertEqual(tallPose["left_ankle"]?.y, 80, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(smallPose["left_ankle"]).y, 34, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(normalPose["left_ankle"]).y, 53, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(tallPose["left_ankle"]).y, 80, accuracy: 0.001)
     }
 
     func testPlayerInterpolatesDirectionsBeforeRetargeting() throws {
