@@ -669,7 +669,16 @@ final class PetController {
         if !usesSharedCombatWorld {
             consumeCombatEvents(combatCoordinator.advance(elapsedSeconds: dt, desktopWorld: world))
         }
-        model.update(dtIn: dt)
+        if let combatBody = combatCoordinator.body(actorID: runtimeActorID),
+           combatBody.authority != .scripted ||
+           combatBody.healthState != .active ||
+           combatBody.currentMoveID != nil ||
+           combatBody.phase == .hitStun ||
+           combatBody.phase == .blockStun {
+            model.applyCombatBodyState(combatBody)
+        } else {
+            model.update(dtIn: dt)
+        }
         actions.tick(now: clock)
         updatePresentationPose()
         renderFrame(dt: dt, effects: presentationEffects)
@@ -699,7 +708,13 @@ final class PetController {
             maxHP: combat.map { _ in combatProfile.maxHP },
             combatPhase: combat?.phase.rawValue,
             healthState: combat?.healthState.rawValue,
-            authoritativePlacement: combat?.authority != .scripted,
+            authoritativePlacement: combat.map {
+                $0.authority != .scripted ||
+                $0.healthState != .active ||
+                $0.currentMoveID != nil ||
+                $0.phase == .hitStun ||
+                $0.phase == .blockStun
+            } ?? false,
             displayHeight: Double(settings.displayHeight)))
     }
 
@@ -2218,17 +2233,8 @@ final class PetController {
 
     private func applyManualLocomotion() {
         guard manualControlPanel.isVisible else { return }
-        guard combatCoordinator.body(actorID: runtimeActorID)?.healthState == .active else {
-            model.stopWalk()
-            previousManualInput = manualInput
-            return
-        }
-        if manualInput.left != manualInput.right {
-            model.startWalk(manualInput.right ? 1 : -1, speed: PetModel.walkSpeed)
-        } else {
-            model.stopWalk()
-        }
-        if manualInput.up && !previousManualInput.up { model.hop() }
+        // Movement/jump are resolved by CombatWorld from the same input frame.
+        // PetModel is only the compatibility projection while combat owns the body.
         if manualInput.down && !previousManualInput.down,
            let crouch = ActionCatalog.resolve(.crouch, available: library.actionNames)
                 .flatMap(library.action(named:)) {
@@ -2370,6 +2376,11 @@ final class PetController {
             self.cancelGoalAndScene(reason: "user grabbed")   // 用户接管：场景意图作废
             self.pullCursorStart = cursor
             self.model.beginDrag(at: cursor)
+            if !self.model.isPulling() {
+                self.combatCoordinator.beginPointerDrag(
+                    actorID: self.runtimeActorID,
+                    x: Double(cursor.x), y: Double(cursor.y))
+            }
             if self.model.isPulling() {
                 self.beginPull()
             }
@@ -2377,6 +2388,12 @@ final class PetController {
         presentation.onMouseDragged = { [weak self] cursor in
             guard let self else { return }
             self.model.drag(to: cursor, dt: 1.0 / 40.0)
+            if !self.model.isPulling() {
+                self.combatCoordinator.updatePointerDrag(
+                    actorID: self.runtimeActorID,
+                    x: Double(cursor.x), y: Double(cursor.y),
+                    elapsedSeconds: 1.0 / 40.0)
+            }
             if self.model.isPulling() {
                 self.updatePull(cursor: cursor)
             }
@@ -2386,7 +2403,12 @@ final class PetController {
             if self.model.isPulling() {
                 self.puller.end()
             }
+            let wasPulling = self.model.isPulling()
             self.model.endDrag(wasClick: wasClick)
+            if !wasPulling {
+                self.combatCoordinator.endPointerDrag(
+                    actorID: self.runtimeActorID, wasClick: wasClick)
+            }
             self.pullCursorStart = nil
             if wasClick {
                 self.registerPat()
