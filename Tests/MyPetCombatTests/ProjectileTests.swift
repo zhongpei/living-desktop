@@ -27,6 +27,35 @@ final class ProjectileTests: XCTestCase {
         return world
     }
 
+    func testOneMoveCanThrowThreeIndependentBowls() {
+        let bowls = [0, 2, 4].enumerated().map { index, frame in
+            ProjectileDefinition(
+                id: "bowl_\(index)", spawnFrame: frame,
+                spawnOffset: Vec2(x: 20, y: -50),
+                velocity: Vec2(x: 10, y: 0), lifetimeFrames: 20,
+                hit: CombatHitDefinition(damage: 5, hitStopFrames: 0),
+                visualResourceID: "effects/wu_song/wu_bowl_projectile_loop")
+        }
+        let move = CombatMoveDefinition(
+            id: "three_bowls", command: .button(.d), startupFrames: 0,
+            activeFrames: 5, recoveryFrames: 1,
+            hit: CombatHitDefinition(damage: 0, attackBoxes: []),
+            visualAction: "super", projectiles: bowls)
+        let world = CombatWorld()
+        world.register(actorID: EntityID("caster"), profile: CombatProfile(moves: [move]), x: 200, yFeet: 700)
+        world.register(actorID: EntityID("target"), x: 900, yFeet: 700, facing: .left)
+        XCTAssertTrue(world.beginSession(id: "bowls", participants: [EntityID("caster"), EntityID("target")]))
+        world.setInput(FighterInputFrame(buttons: [.d]), for: EntityID("caster"))
+        var spawns: [CombatEvent] = []
+        for _ in 0..<5 {
+            spawns += world.step(environment: floor).filter { $0.kind == .projectileSpawned }
+            world.setInput(.neutral, for: EntityID("caster"))
+        }
+        XCTAssertEqual(spawns.count, 3)
+        XCTAssertEqual(Set(world.snapshot().projectiles.map(\.entityID.raw)).count, 3)
+        XCTAssertEqual(Set(world.snapshot().projectiles.map(\.definitionID)), ["bowl_0", "bowl_1", "bowl_2"])
+    }
+
     func testProjectileSpawnsOnAuthoredFrameAndMovesThroughBodyWorld() {
         let definition = ProjectileDefinition(
             id: "petal", spawnFrame: 0, spawnOffset: Vec2(x: 20, y: -50),

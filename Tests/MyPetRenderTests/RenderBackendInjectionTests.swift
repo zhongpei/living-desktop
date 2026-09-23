@@ -13,7 +13,9 @@ final class RenderBackendInjectionTests: XCTestCase {
             actorID: EntityID("actor"),
             frame: LayoutRect(x: 10, y: 20, width: 40, height: 50),
             image: makeImage(), mirrored: true, opacity: 0.75,
-            propImage: nil, propFrame: .zero, visible: true)
+            propImage: nil, propFrame: .zero, visible: true,
+            combatHUD: CombatHUDSnapshot(
+                hp: 700, maxHP: 1000, energy: 120, maxEnergy: 300, active: true))
 
         renderer.render(snapshot: snapshot, interpolation: 0.5)
 
@@ -22,6 +24,7 @@ final class RenderBackendInjectionTests: XCTestCase {
                        LayoutRect(x: 10, y: 20, width: 40, height: 50))
         XCTAssertEqual(renderer.lastInterpolation, 0.5)
         XCTAssertEqual(renderer.renderCount, 1)
+        XCTAssertEqual(renderer.lastSnapshot?.combatHUD?.energy, 120)
     }
 
     func testPresentationUsesInjectedBackendSurface() {
@@ -88,8 +91,10 @@ private final class FakeSurface: ActorRenderSurface {
     var onRightMouseDown: ((CGPoint) -> Void)?
     var shown = false
     var frame = CGRect.zero
+    var combatHUD: CombatHUDSnapshot?
     func display(image: CGImage, mirrored: Bool) {}
     func displayProp(image: CGImage?, rect: CGRect) {}
+    func displayCombatHUD(_ snapshot: CombatHUDSnapshot?) { combatHUD = snapshot }
     func setFrame(_ frame: CGRect) { self.frame = frame }
     func show() { shown = true }
     func hide() { shown = false }

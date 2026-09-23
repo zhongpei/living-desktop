@@ -84,6 +84,16 @@ final class DesktopCombatCoordinator {
 
     func body(actorID: EntityID) -> CombatBodyState? { world.body(for: actorID) }
 
+    func combatHUDBody(actorID: EntityID) -> CombatBodyState? {
+        guard world.session?.state == .active,
+              let body = world.body(for: actorID),
+              body.rosterRole != .bench else { return nil }
+        switch body.participation {
+        case .uninvolved, .withdrawing: return nil
+        case .alerted, .incidentalCombatant, .rosterParticipant: return body
+        }
+    }
+
     func checkpoint() -> GameRuntimeCheckpoint { runtime.checkpoint() }
 
 }

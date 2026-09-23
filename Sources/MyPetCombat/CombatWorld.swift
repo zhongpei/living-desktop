@@ -32,6 +32,8 @@ public final class CombatWorld {
     private var inputs: [String: FighterInputFrame] = [:]
     private var buffers: [String: CombatInputBuffer] = [:]
     private var projectiles: [String: CombatProjectileState] = [:]
+    private var teams: [String: TeamCombatState] = [:]
+    private var escalation = CombatEscalationState(policy: .flatArena)
     public private(set) var session: CombatSession?
 
     public init(bodyWorld: BodyWorld = BodyWorld()) {
@@ -47,6 +49,8 @@ public final class CombatWorld {
         self.buffers = checkpoint.buffers
         self.session = checkpoint.session
         self.projectiles = checkpoint.projectiles ?? [:]
+        self.teams = checkpoint.teams ?? [:]
+        self.escalation = checkpoint.escalation ?? CombatEscalationState(policy: .flatArena)
     }
 
     public func checkpoint() -> CombatWorldCheckpoint {
@@ -58,7 +62,9 @@ public final class CombatWorld {
             inputs: inputs,
             buffers: buffers,
             session: session,
-            projectiles: projectiles)
+            projectiles: projectiles,
+            teams: teams,
+            escalation: escalation)
     }
 
     @discardableResult
@@ -69,6 +75,11 @@ public final class CombatWorld {
         if let session, session.state == .active,
            session.id == id, session.participantIDs == unique { return true }
         session = CombatSession(id: id, participants: unique, startedAtFrame: frame)
+        for actorID in unique where teamID(for: actorID) == nil {
+            guard var rule = rules[actorID.raw] else { continue }
+            rule.participation = .rosterParticipant(teamID: "solo:\(actorID.raw)")
+            rules[actorID.raw] = rule
+        }
         return true
     }
 
@@ -80,8 +91,41 @@ public final class CombatWorld {
         for id in active.participantIDs {
             inputs[id.raw] = .neutral
             buffers[id.raw] = CombatInputBuffer()
+            if teamID(for: id) == nil, var rule = rules[id.raw] {
+                rule.participation = .uninvolved
+                rules[id.raw] = rule
+            }
         }
     }
+
+    public func configureTeam(
+        teamID: String, activeID: EntityID, benchID: EntityID,
+        rules teamRules: TeamCombatRules = .standard
+    ) {
+        guard rules[activeID.raw] != nil, rules[benchID.raw] != nil,
+              activeID != benchID else { return }
+        teams[teamID] = TeamCombatState(
+            teamID: teamID, activeID: activeID, benchID: benchID, rules: teamRules)
+        if var active = rules[activeID.raw] {
+            active.rosterRole = .active
+            active.participation = .rosterParticipant(teamID: teamID)
+            rules[activeID.raw] = active
+        }
+        if var bench = rules[benchID.raw] {
+            bench.rosterRole = .bench
+            bench.participation = .rosterParticipant(teamID: teamID)
+            rules[benchID.raw] = bench
+        }
+        setRosterRole(.active, actorID: activeID)
+        setRosterRole(.bench, actorID: benchID)
+    }
+
+    public func setEscalationPolicy(_ policy: NeutralEscalationPolicy) {
+        escalation = CombatEscalationState(policy: policy)
+    }
+
+    public func teamState(_ teamID: String) -> TeamCombatState? { teams[teamID] }
+    public var escalationState: CombatEscalationState { escalation }
 
     public func register(actorID: EntityID, profile: CombatProfile = CombatProfile(),
                          x: Double, yFeet: Double, facing: CombatFacing = .right,
@@ -152,6 +196,17 @@ public final class CombatWorld {
         rules[actorID.raw] = rule
     }
 
+    public func setGameplayEnergy(_ current: Int, for actorID: EntityID) {
+        guard var rule = rules[actorID.raw] else { return }
+        var energy = rule.gameplayEnergy ?? GameplayEnergyState()
+        energy = GameplayEnergyState(
+            current: current, maximum: energy.maximum,
+            regenPerFrame: energy.regenPerFrame,
+            regenDelayFrames: energy.regenDelayFrames)
+        rule.gameplayEnergy = energy
+        rules[actorID.raw] = rule
+    }
+
     public func snapshot() -> CombatWorldSnapshot {
         CombatWorldSnapshot(
             frame: frame,
@@ -173,6 +228,7 @@ public final class CombatWorld {
     @discardableResult
     public func step(environment: CombatEnvironment) -> [CombatEvent] {
         var events: [CombatEvent] = []
+        advanceTeams(events: &events)
         let ids = rules.keys.sorted()
         let frameSnapshot = Dictionary(uniqueKeysWithValues: snapshot().bodies.map {
             ($0.actorID.raw, $0)
@@ -187,6 +243,22 @@ public final class CombatWorld {
             buffers[id] = buffer
 
             if body.invulnerabilityFrames > 0 { body.invulnerabilityFrames -= 1 }
+            if body.powerUpFrames > 0 {
+                body.powerUpFrames -= 1
+                if body.powerUpFrames == 0 {
+                    events.append(CombatEvent(
+                        frame: frame, kind: .powerUpEnded, actorID: body.actorID))
+                }
+            }
+            var combo = body.combo
+            _ = combo.expireIfNeeded(frame: frame)
+            body.combo = combo
+            var energy = body.gameplayEnergy
+            energy.advance(
+                frame: frame,
+                regenerationAllowed: body.healthState == .active &&
+                    projectiles.values.contains(where: { $0.ownerID == actorID }) == false)
+            body.gameplayEnergy = energy
 
             if body.hitStopFrames > 0 {
                 body.hitStopFrames -= 1
@@ -200,10 +272,10 @@ public final class CombatWorld {
                 continue
             }
 
-            advanceHealth(&body, profile: profile, events: &events)
+            advanceHealth(&body, profile: profile, input: input, events: &events)
             advanceStun(&body)
             orientTowardNearestOpponent(&body, snapshot: frameSnapshot)
-            if body.healthState == .active {
+            if body.healthState == .active && body.rosterRole != .bench {
                 acceptControl(
                     &body, profile: profile, input: input, buffer: buffer,
                     environment: environment, events: &events)
@@ -218,13 +290,14 @@ public final class CombatWorld {
                 entityID: actorID,
                 pushRadius: profile.pushRadius,
                 visualScale: body.visualScale,
-                pushEnabled: body.healthState == .active,
-                simulationEnabled: true))
+                pushEnabled: body.healthState == .active && body.rosterRole != .bench,
+                simulationEnabled: body.rosterRole != .bench))
         }
 
         bodyWorld.advance(environment)
         resolveHits(events: &events)
         expireProjectiles(environment: environment, events: &events)
+        advanceEscalation(events: &events)
         // A KO becomes downed only after its physical knockback has actually landed.
         for id in ids {
             guard var body = body(for: EntityID(id)), let profile = profiles[id] else { continue }
@@ -239,6 +312,96 @@ public final class CombatWorld {
 
         frame += 1
         return events
+    }
+
+    private func advanceTeams(events: inout [CombatEvent]) {
+        for teamID in teams.keys.sorted() {
+            guard var team = teams[teamID] else { continue }
+            let activeInput = inputs[team.activeID.raw] ?? .neutral
+            let previousInput = buffers[team.activeID.raw]?.newest ?? .neutral
+            if activeInput.systemControls.contains(.assist),
+               !previousInput.systemControls.contains(.assist) {
+                _ = team.requestAssist(frame: frame)
+            }
+            if activeInput.systemControls.contains(.tag),
+               !previousInput.systemControls.contains(.tag),
+               body(for: team.activeID)?.canAcceptAction == true {
+                _ = team.requestTag(frame: frame)
+            }
+            let teamEvents = team.advance(frame: frame)
+            teams[teamID] = team
+            for event in teamEvents {
+                switch event.kind {
+                case .assistEntered:
+                    setRosterRole(.assist, actorID: event.actorID)
+                    if let active = body(for: team.activeID) {
+                        bodyWorld.update(event.actorID) {
+                            $0.position = Vec2(
+                                x: active.position.x - 36 * active.facing.sign,
+                                y: active.position.y)
+                            $0.facing = active.facing
+                        }
+                    }
+                    inputs[event.actorID.raw] = FighterInputFrame(
+                        systemControls: [.assist])
+                case .assistExited:
+                    inputs[event.actorID.raw] = .neutral
+                    setRosterRole(.bench, actorID: event.actorID)
+                case .tagHandoff:
+                    setRosterRole(.active, actorID: team.activeID)
+                    setRosterRole(.bench, actorID: team.benchID)
+                case .tagStarted, .tagCompleted: break
+                }
+                let kind: CombatEventKind
+                switch event.kind {
+                case .assistEntered: kind = .assistEntered
+                case .assistExited: kind = .assistExited
+                case .tagStarted: kind = .tagStarted
+                case .tagHandoff: kind = .tagHandoff
+                case .tagCompleted: kind = .tagCompleted
+                }
+                events.append(CombatEvent(
+                    frame: frame, kind: kind, actorID: event.actorID,
+                    moveID: event.teamID))
+            }
+        }
+    }
+
+    private func setRosterRole(_ role: CombatRosterRole, actorID: EntityID) {
+        guard var rule = rules[actorID.raw], let profile = profiles[actorID.raw] else { return }
+        rule.rosterRole = role
+        if role == .bench {
+            rule.phase = .neutral
+            rule.hitTargets.removeAll()
+            rule.hitLedger = [:]
+            bodyWorld.update(actorID) { $0.actionTimeline = nil }
+        }
+        rules[actorID.raw] = rule
+        bodyWorld.setDefinition(BodyDefinition(
+            entityID: actorID, pushRadius: profile.pushRadius,
+            visualScale: rule.visualScale,
+            pushEnabled: role == .active || role == .incidental,
+            simulationEnabled: role != .bench))
+    }
+
+    private func advanceEscalation(events: inout [CombatEvent]) {
+        let escalationEvents = escalation.advance(
+            frame: frame,
+            combatReady: Set(rules.values.filter {
+                profiles[$0.actorID.raw] != nil
+            }.map(\.actorID)))
+        for event in escalationEvents {
+            if var rule = rules[event.actorID.raw] {
+                rule.participation = escalation.participation[event.actorID]
+                if event.kind == .joined { rule.rosterRole = .incidental }
+                rules[event.actorID.raw] = rule
+            }
+            events.append(CombatEvent(
+                frame: frame,
+                kind: event.kind == .joined ? .neutralJoined :
+                    (event.kind == .withdrew ? .neutralWithdrew : .neutralAlerted),
+                actorID: event.actorID, targetID: event.offenderID))
+        }
     }
 
     public func beginDrag(actorID: EntityID, x: Double, y: Double) {
@@ -266,26 +429,29 @@ public final class CombatWorld {
                                events: inout [CombatEvent]) {
         guard body.authority != .scripted else { return }
         guard body.locomotion != .dragged && body.locomotion != .tossed else { return }
+        if (body.phase == .hitStun || body.phase == .blockStun),
+           let burst = profile.moves.first(where: {
+               $0.systemControl == .defensiveBurst &&
+                   buffer.isSystemControlPress(.defensiveBurst)
+           }), startMove(burst, body: &body, events: &events) {
+            body.stunFrames = 0
+            body.invulnerabilityFrames = max(body.invulnerabilityFrames, 12)
+            return
+        }
         guard body.canAcceptAction, body.actionTimeline == nil else { return }
 
         let matchingMoves = profile.moves.enumerated().filter {
-            CommandMatcher.matches($0.element.command, buffer: buffer, facing: body.facing)
+            (($0.element.systemControl.map(buffer.isSystemControlPress) ?? false) ||
+                ($0.element.systemControl == nil && CommandMatcher.matches(
+                    $0.element.command, buffer: buffer, facing: body.facing))) &&
+                body.gameplayEnergy.current >= $0.element.effectiveResourceRules.startCost
         }
         if let move = matchingMoves.max(by: { lhs, rhs in
             let left = commandSpecificity(lhs.element.command)
             let right = commandSpecificity(rhs.element.command)
             return left == right ? lhs.offset > rhs.offset : left < right
         })?.element {
-            let instanceID = body.rules.actionSequence ?? 0
-            body.rules.actionSequence = instanceID + 1
-            body.actionTimeline = ActionTimeline(
-                instanceID: instanceID,
-                definition: move.actionDefinition)
-            body.hitTargets.removeAll()
-            body.hitLedger.removeAll()
-            body.phase = .startup
-            events.append(CombatEvent(frame: frame, kind: .moveStarted,
-                                      actorID: body.actorID, moveID: move.id))
+            _ = startMove(move, body: &body, events: &events)
             return
         }
 
@@ -312,6 +478,40 @@ public final class CombatWorld {
         } else {
             body.velocity.x = 0
         }
+    }
+
+    @discardableResult
+    private func startMove(
+        _ move: CombatMoveDefinition,
+        body: inout CombatBodyState,
+        events: inout [CombatEvent]
+    ) -> Bool {
+        let resource = move.effectiveResourceRules
+        var energy = body.gameplayEnergy
+        guard energy.spend(resource.startCost, frame: frame) else { return false }
+        body.gameplayEnergy = energy
+        let instanceID = body.rules.actionSequence ?? 0
+        body.rules.actionSequence = instanceID + 1
+        body.actionTimeline = ActionTimeline(
+            instanceID: instanceID, definition: move.actionDefinition)
+        body.hitTargets.removeAll()
+        body.hitLedger.removeAll()
+        body.phase = .startup
+        events.append(CombatEvent(
+            frame: frame, kind: .moveStarted,
+            actorID: body.actorID, moveID: move.id))
+        if resource.startCost > 0 {
+            events.append(CombatEvent(
+                frame: frame, kind: .energySpent, actorID: body.actorID,
+                moveID: move.id, amount: resource.startCost))
+        }
+        if resource.family == .powerUp {
+            body.powerUpFrames = 480
+            events.append(CombatEvent(
+                frame: frame, kind: .powerUpStarted,
+                actorID: body.actorID, moveID: move.id, amount: 480))
+        }
+        return true
     }
 
     private func commandSpecificity(_ command: CombatCommand) -> Int {
@@ -344,8 +544,7 @@ public final class CombatWorld {
             body.phase = .neutral
             return
         }
-        if let definition = move.projectile,
-           timeline.frame == definition.spawnFrame {
+        for definition in move.authoredProjectiles where timeline.frame == definition.spawnFrame {
             spawnProjectile(
                 definition, move: move, timeline: timeline,
                 owner: body, events: &events)
@@ -365,6 +564,7 @@ public final class CombatWorld {
     }
 
     private func advanceHealth(_ body: inout CombatBodyState, profile: CombatProfile,
+                               input: FighterInputFrame,
                                events: inout [CombatEvent]) {
         switch body.healthState {
         case .active, .knockedOut:
@@ -375,8 +575,32 @@ public final class CombatWorld {
                 body.velocity.y = 0
                 if body.recoveryFramesRemaining > 0 { body.recoveryFramesRemaining -= 1 }
                 if body.recoveryFramesRemaining == 0 {
+                    let choice: RecoveryChoice
+                    if input.down, body.lastRecoveryChoice != .delayed {
+                        body.lastRecoveryChoice = .delayed
+                        body.recoveryFramesRemaining = 30
+                        events.append(CombatEvent(
+                            frame: frame, kind: .recoverySelected,
+                            actorID: body.actorID, moveID: RecoveryChoice.delayed.rawValue))
+                        return
+                    } else if input.forward(facing: body.facing) {
+                        choice = .forward
+                        body.position.x += 28 * body.facing.sign
+                    } else if input.back(facing: body.facing) {
+                        choice = .backward
+                        body.position.x -= 28 * body.facing.sign
+                    } else {
+                        choice = .neutral
+                    }
+                    body.lastRecoveryChoice = choice
                     body.healthState = .gettingUp
                     body.recoveryFramesRemaining = profile.getUpFrames
+                    var combo = body.combo
+                    combo.end(reason: .recovered)
+                    body.combo = combo
+                    events.append(CombatEvent(
+                        frame: frame, kind: .recoverySelected,
+                        actorID: body.actorID, moveID: choice.rawValue))
                     events.append(CombatEvent(frame: frame, kind: .recoveryStarted, actorID: body.actorID))
                 }
             }
@@ -388,6 +612,7 @@ public final class CombatWorld {
                 body.hp = max(1, Int(Double(profile.maxHP) * profile.revivedHPFraction))
                 body.invulnerabilityFrames = profile.reviveInvulnerabilityFrames
                 body.phase = .neutral
+                body.lastRecoveryChoice = nil
                 events.append(CombatEvent(frame: frame, kind: .recovered,
                                           actorID: body.actorID, amount: body.hp))
             }
@@ -404,7 +629,10 @@ public final class CombatWorld {
               body.phase == .neutral,
               body.locomotion == .grounded else { return }
         guard let target = snapshot.values
-            .filter({ $0.actorID != body.actorID && $0.healthState == .active })
+            .filter({
+                $0.actorID != body.actorID && $0.healthState == .active &&
+                    $0.rosterRole != .bench && permitsContact(body.actorID, $0.actorID)
+            })
             .min(by: {
                 abs($0.position.x - body.position.x) <
                 abs($1.position.x - body.position.x)
@@ -476,6 +704,7 @@ public final class CombatWorld {
 
         for attackerID in ids {
             guard let attacker = snapshot[attackerID],
+                  attacker.rosterRole != .bench,
                   attacker.phase == .active,
                   let attackerProfile = profiles[attackerID],
                   let move = attackerProfile.move(id: attacker.currentMoveID) else { continue }
@@ -491,7 +720,7 @@ public final class CombatWorld {
         for (offset, firstID) in ids.enumerated() {
             guard let first = attacks[firstID], first.definition.clashLevel > 0 else { continue }
             for secondID in ids.dropFirst(offset + 1) {
-                guard session?.permits(first.actor.actorID, EntityID(secondID)) == true,
+                guard permitsContact(first.actor.actorID, EntityID(secondID)),
                       let second = attacks[secondID],
                       second.definition.clashLevel == first.definition.clashLevel,
                       first.rects.contains(where: { lhs in second.rects.contains(where: lhs.overlaps) })
@@ -514,14 +743,18 @@ public final class CombatWorld {
                 let canRehit = lastHitFrame == nil || attack.definition.rehitFrames.map {
                     frame - (lastHitFrame ?? frame) >= Int64($0)
                 } == true
-                guard session?.permits(attack.actor.actorID, EntityID(defenderID)) == true,
+                guard permitsContact(attack.actor.actorID, EntityID(defenderID)),
                       !clashedDirections.contains("\(attackerID)>\(defenderID)"),
                       canRehit,
                       let defender = snapshot[defenderID],
+                      defender.rosterRole != .bench,
                       defender.invulnerabilityFrames == 0,
                       defender.healthState == .active,
                       defender.locomotion != .dragged,
                       let defenderProfile = profiles[defenderID] else { continue }
+                if defender.locomotion == .airborne,
+                   attack.move.effectiveResourceRules.juggleCost >
+                    defender.combo.juggleRemaining { continue }
                 let hurtRects = defenderProfile.hurtBoxes.map {
                     $0.placed(at: defender.position, facing: defender.facing, scale: defender.visualScale)
                 }
@@ -570,13 +803,19 @@ public final class CombatWorld {
                 let canRehit = lastHitFrame == nil || projectile.definition.hit.rehitFrames.map {
                     frame - (lastHitFrame ?? frame) >= Int64($0)
                 } == true
-                guard session?.permits(projectile.ownerID, EntityID(defenderID)) == true,
+                guard permitsContact(projectile.ownerID, EntityID(defenderID)),
                       canRehit,
                       let defender = snapshot[defenderID],
+                      defender.rosterRole != .bench,
                       defender.invulnerabilityFrames == 0,
                       defender.healthState == .active,
                       defender.locomotion != .dragged,
                       let defenderProfile = profiles[defenderID] else { continue }
+                let projectileMove = profiles[projectile.ownerID.raw]?
+                    .move(id: projectile.moveID)
+                if defender.locomotion == .airborne,
+                   (projectileMove?.effectiveResourceRules.juggleCost ?? 0) >
+                    defender.combo.juggleRemaining { continue }
                 let hurtRects = defenderProfile.hurtBoxes.map {
                     $0.placed(at: defender.position, facing: defender.facing, scale: defender.visualScale)
                 }
@@ -655,11 +894,26 @@ public final class CombatWorld {
                     actorID: attackerAtDetection.actorID, targetID: defender.actorID,
                     moveID: hit.moveID, amount: definition.chipDamage))
             } else {
-                defender.hp = max(0, defender.hp - definition.damage)
+                let moveRules = profiles[hit.attackerID]?.move(id: hit.moveID)?
+                    .effectiveResourceRules ?? MoveResourceRules()
+                var combo = defender.combo
+                let poweredDamage = attackerAtDetection.powerUpFrames > 0
+                    ? Int((Double(definition.damage) * 1.10).rounded(.down))
+                    : definition.damage
+                let scaled = combo.recordHit(
+                    attackerID: attackerAtDetection.actorID,
+                    defenderID: defender.actorID,
+                    moveID: hit.moveID,
+                    baseDamage: poweredDamage,
+                    baseHitStun: definition.hitStunFrames,
+                    juggleCost: moveRules.juggleCost,
+                    frame: frame)
+                defender.combo = combo
+                defender.hp = max(0, defender.hp - scaled.damage)
                 defender.actionTimeline = nil
                 defender.hitTargets.removeAll()
                 defender.phase = .hitStun
-                defender.stunFrames = max(defender.stunFrames, definition.hitStunFrames)
+                defender.stunFrames = max(defender.stunFrames, scaled.hitStunFrames)
                 defender.hitStopFrames = max(defender.hitStopFrames, definition.hitStopFrames)
                 defender.velocity.x = definition.knockbackX * attackerAtDetection.facing.sign
                 defender.velocity.y = definition.knockbackY
@@ -671,8 +925,28 @@ public final class CombatWorld {
                 events.append(CombatEvent(
                     frame: frame, kind: .hit,
                     actorID: attackerAtDetection.actorID, targetID: defender.actorID,
-                    moveID: hit.moveID, amount: definition.damage))
+                    moveID: hit.moveID, amount: scaled.damage))
+                events.append(CombatEvent(
+                    frame: frame, kind: .comboAdvanced,
+                    actorID: attackerAtDetection.actorID, targetID: defender.actorID,
+                    moveID: hit.moveID, amount: combo.hitCount))
             }
+
+            let resource = profiles[hit.attackerID]?.move(id: hit.moveID)?
+                .effectiveResourceRules ?? MoveResourceRules()
+            if var attacker = body(for: attackerAtDetection.actorID) {
+                var energy = attacker.gameplayEnergy
+                energy.gain(hit.guarding ? resource.onGuardGain : resource.onHitGain)
+                attacker.gameplayEnergy = energy
+                save(attacker)
+                events.append(CombatEvent(
+                    frame: frame, kind: .energyGained,
+                    actorID: attacker.actorID, moveID: hit.moveID,
+                    amount: hit.guarding ? resource.onGuardGain : resource.onHitGain))
+            }
+            var defenderEnergy = defender.gameplayEnergy
+            defenderEnergy.gain(resource.defenderGain)
+            defender.gameplayEnergy = defenderEnergy
 
             if defenderWasAlive && defender.hp == 0 {
                 defender.healthState = .knockedOut
@@ -683,6 +957,25 @@ public final class CombatWorld {
                     actorID: defender.actorID,
                     targetID: attackerAtDetection.actorID,
                     moveID: hit.moveID))
+            }
+            if !hit.guarding,
+               defender.participation == .uninvolved || {
+                   if case .alerted = defender.participation { return true }
+                   return false
+               }() {
+                escalation.recordCollateralHit(
+                    victimID: defender.actorID,
+                    offenderID: attackerAtDetection.actorID,
+                    offenderTeamID: teamID(for: attackerAtDetection.actorID),
+                    damage: events.last(where: {
+                        $0.kind == .hit && $0.actorID == attackerAtDetection.actorID &&
+                            $0.targetID == defender.actorID
+                    })?.amount ?? definition.damage,
+                    frame: frame, cascadeDepth: 0)
+                defender.participation = .alerted(offenderID: attackerAtDetection.actorID)
+                events.append(CombatEvent(
+                    frame: frame, kind: .neutralAlerted,
+                    actorID: defender.actorID, targetID: attackerAtDetection.actorID))
             }
             save(defender)
         }
@@ -739,6 +1032,47 @@ public final class CombatWorld {
         case .mid:
             return true
         }
+    }
+
+    private func permitsContact(_ attackerID: EntityID, _ defenderID: EntityID) -> Bool {
+        if let attackerTeam = teamID(for: attackerID),
+           attackerTeam == teamID(for: defenderID) { return false }
+        if let attacker = rules[attackerID.raw] {
+            switch attacker.participation ?? .uninvolved {
+            case .incidentalCombatant(let offenderID):
+                return offenderID == defenderID
+            case .alerted(let offenderID):
+                return offenderID == defenderID
+            case .uninvolved, .withdrawing: break
+            case .rosterParticipant: break
+            }
+        }
+        if session?.permits(attackerID, defenderID) == true { return true }
+        guard escalation.policy.enabled,
+              session?.state == .active,
+              session?.participantIDs.contains(attackerID) == true,
+              let defender = rules[defenderID.raw],
+              defender.rosterRole != .bench else { return false }
+        switch defender.participation ?? .uninvolved {
+        case .uninvolved, .alerted, .incidentalCombatant: return true
+        case .withdrawing, .rosterParticipant: return false
+        }
+    }
+
+    private func teamID(for actorID: EntityID) -> String? {
+        teams.values.first {
+            $0.activeID == actorID || $0.benchID == actorID
+        }?.teamID
+    }
+
+    public func expandedParticipants(for controlledIDs: [EntityID]) -> [EntityID] {
+        var result = Set(controlledIDs)
+        for team in teams.values
+        where result.contains(team.activeID) || result.contains(team.benchID) {
+            result.insert(team.activeID)
+            result.insert(team.benchID)
+        }
+        return result.sorted { $0.raw < $1.raw }
     }
 }
 

@@ -51,7 +51,7 @@ public struct UtilityCombatPolicy: CombatPolicy {
             $0.command.steps[0].requiredButtons.count == 1
         }
         if distance >= 110, distance <= 320, observation.frame % 180 < 30,
-           let projectile = directMoves.first(where: { $0.projectile != nil }),
+           let projectile = directMoves.first(where: { !$0.authoredProjectiles.isEmpty }),
            let button = projectile.command.steps[0].requiredButtons.first {
             return FighterInputFrame(buttons: [button])
         }
@@ -60,7 +60,7 @@ public struct UtilityCombatPolicy: CombatPolicy {
                 ? FighterInputFrame(right: true)
                 : FighterInputFrame(left: true)
         }
-        let closeMoves = directMoves.filter { $0.projectile == nil }
+        let closeMoves = directMoves.filter { $0.authoredProjectiles.isEmpty }
         guard !closeMoves.isEmpty else { return .neutral }
         let index = Int((observation.frame / 30) % Int64(closeMoves.count))
         guard let button = closeMoves[index].command.steps[0].requiredButtons.first else {

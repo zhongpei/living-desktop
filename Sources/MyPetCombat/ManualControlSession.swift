@@ -4,6 +4,7 @@ import Foundation
 public enum KeyboardControlKey: String, Codable, CaseIterable, Hashable, Sendable {
     case arrowLeft, arrowRight, arrowUp, arrowDown
     case keyZ, keyX, keyC, keyA, keyS, keyD
+    case keyQ, keyW, keyE, keyR
 }
 
 /// Logical controls consumed by FighterInputFrame. These are intentionally
@@ -11,6 +12,7 @@ public enum KeyboardControlKey: String, Codable, CaseIterable, Hashable, Sendabl
 public enum ManualControlKey: String, Codable, CaseIterable, Hashable, Sendable {
     case left, right, up, down
     case buttonX, buttonY, buttonZ, buttonA, buttonS, buttonD
+    case tag, assist, powerUp, defensiveBurst
 }
 
 public struct ManualControlMapping: Codable, Equatable, Sendable {
@@ -27,6 +29,7 @@ public struct ManualControlMapping: Codable, Equatable, Sendable {
         .arrowUp: .up, .arrowDown: .down,
         .keyZ: .buttonX, .keyX: .buttonY, .keyC: .buttonZ,
         .keyA: .buttonA, .keyS: .buttonS, .keyD: .buttonD,
+        .keyQ: .tag, .keyW: .assist, .keyE: .powerUp, .keyR: .defensiveBurst,
     ])
 }
 
@@ -116,11 +119,20 @@ public struct ManualControlSession: Codable, Equatable, Sendable {
         for (key, button) in mappings where logicalKeys.contains(key) {
             buttons.insert(button)
         }
+        var systemControls = Set<CombatSystemControl>()
+        let systemMappings: [(ManualControlKey, CombatSystemControl)] = [
+            (.tag, .tag), (.assist, .assist),
+            (.powerUp, .powerUp), (.defensiveBurst, .defensiveBurst),
+        ]
+        for (key, control) in systemMappings where logicalKeys.contains(key) {
+            systemControls.insert(control)
+        }
         return FighterInputFrame(
             left: logicalKeys.contains(.left),
             right: logicalKeys.contains(.right),
             up: logicalKeys.contains(.up),
             down: logicalKeys.contains(.down),
-            buttons: buttons)
+            buttons: buttons,
+            systemControls: systemControls)
     }
 }

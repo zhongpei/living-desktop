@@ -4,22 +4,45 @@ public enum CombatButton: String, Codable, CaseIterable, Hashable, Sendable {
     case x, y, z, a, s, d
 }
 
+public enum CombatSystemControl: String, Codable, CaseIterable, Hashable, Sendable {
+    case tag, assist, powerUp, defensiveBurst
+}
+
 public struct FighterInputFrame: Codable, Equatable, Sendable {
     public var left: Bool
     public var right: Bool
     public var up: Bool
     public var down: Bool
     public var buttons: Set<CombatButton>
+    public var systemControls: Set<CombatSystemControl>
 
     public init(left: Bool = false, right: Bool = false, up: Bool = false, down: Bool = false,
-                buttons: Set<CombatButton> = []) {
-        self.left = left; self.right = right; self.up = up; self.down = down; self.buttons = buttons
+                buttons: Set<CombatButton> = [],
+                systemControls: Set<CombatSystemControl> = []) {
+        self.left = left; self.right = right; self.up = up; self.down = down
+        self.buttons = buttons; self.systemControls = systemControls
     }
 
     public static let neutral = FighterInputFrame()
 
     public func forward(facing: CombatFacing) -> Bool { facing == .right ? right : left }
     public func back(facing: CombatFacing) -> Bool { facing == .right ? left : right }
+
+    private enum CodingKeys: String, CodingKey {
+        case left, right, up, down, buttons, systemControls
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            left: try values.decodeIfPresent(Bool.self, forKey: .left) ?? false,
+            right: try values.decodeIfPresent(Bool.self, forKey: .right) ?? false,
+            up: try values.decodeIfPresent(Bool.self, forKey: .up) ?? false,
+            down: try values.decodeIfPresent(Bool.self, forKey: .down) ?? false,
+            buttons: try values.decodeIfPresent(Set<CombatButton>.self, forKey: .buttons) ?? [],
+            systemControls: try values.decodeIfPresent(
+                Set<CombatSystemControl>.self, forKey: .systemControls) ?? [])
+    }
 }
 
 public struct CombatInputBuffer: Codable, Equatable, Sendable {
@@ -38,6 +61,12 @@ public struct CombatInputBuffer: Codable, Equatable, Sendable {
 
     public var newest: FighterInputFrame { storage.last ?? .neutral }
     public var framesNewestFirst: [FighterInputFrame] { Array(storage.reversed()) }
+
+    public func isSystemControlPress(_ control: CombatSystemControl) -> Bool {
+        let frames = framesNewestFirst
+        guard frames.first?.systemControls.contains(control) == true else { return false }
+        return frames.dropFirst().first?.systemControls.contains(control) != true
+    }
 }
 
 public enum CombatDirectionToken: String, Codable, Sendable {

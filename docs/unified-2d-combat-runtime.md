@@ -1054,6 +1054,12 @@ CombatSession
 
 多个无关角色可以继续聊天/看窗口，而另外两个角色在战斗。
 
+`participants` 默认只包含显式参战者，但不是只能在 session 创建时写入的固定数组。ruleset 可以
+声明 collateral policy：未参战中立角色不进入 CPU 合法目标集合，但真实 hit/projectile 若误伤其
+HurtBox，CombatEscalationSystem 可在当前 collision batch 完成后的下一逻辑帧，以稳定 session
+command 将其加入为 incidental combatant，并记录责任者和临时 target policy。正式竞技 ruleset
+默认关闭该能力；动态加入、仇恨和撤离必须进入 checkpoint/replay。
+
 默认规则是 non-lethal sparring：
 
 - KO 不 destroy entity；
@@ -1061,7 +1067,7 @@ CombatSession
 - session 结束后角色仍走自己的 downed/get-up 恢复；
 - Story 可以等待 recovered 或直接进入下一 beat。
 
-未来可以增加 free-for-all、team battle，但数据模型从第一天禁止 P1/P2 固定字段。
+free-for-all、team battle、自由换人和中立 NPC 动态参战都要求数据模型禁止 P1/P2 固定字段。
 
 ## 24. Determinism 规则
 

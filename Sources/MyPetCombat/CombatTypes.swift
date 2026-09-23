@@ -14,6 +14,10 @@ public enum CombatControlAuthority: String, Codable, Sendable {
     case autonomous, authored, manual, pointer, scripted
 }
 
+public enum CombatRosterRole: String, Codable, Sendable {
+    case active, bench, assist, incidental
+}
+
 public enum CombatAttackHeight: String, Codable, Sendable {
     case high, mid, low, air, throwAttack
 }
@@ -109,10 +113,21 @@ public struct CombatMoveDefinition: Codable, Equatable, Sendable {
     /// Petpack action name without the actions/ prefix.
     public var visualAction: String
     public var projectile: ProjectileDefinition?
+    /// Several independently timed projectiles may belong to one move (for example, thrown bowls).
+    public var projectiles: [ProjectileDefinition]?
+    /// FightingICE-style start/hit/guard resource deltas translated into the
+    /// shared MyPet gameplay resource. Optional preserves schema-v1 profiles.
+    public var resourceRules: MoveResourceRules?
+    /// Optional mapped gameplay control. Character profiles bind a logical
+    /// control to a move; physical keys remain entirely outside content data.
+    public var systemControl: CombatSystemControl?
 
     public init(id: String, command: CombatCommand, startupFrames: Int, activeFrames: Int,
                 recoveryFrames: Int, hit: CombatHitDefinition, visualAction: String,
-                projectile: ProjectileDefinition? = nil) {
+                projectile: ProjectileDefinition? = nil,
+                projectiles: [ProjectileDefinition]? = nil,
+                resourceRules: MoveResourceRules? = nil,
+                systemControl: CombatSystemControl? = nil) {
         self.id = id
         self.command = command
         self.startupFrames = max(0, startupFrames)
@@ -121,9 +136,20 @@ public struct CombatMoveDefinition: Codable, Equatable, Sendable {
         self.hit = hit
         self.visualAction = visualAction
         self.projectile = projectile
+        self.projectiles = projectiles
+        self.resourceRules = resourceRules
+        self.systemControl = systemControl
     }
 
     public var totalFrames: Int { startupFrames + activeFrames + recoveryFrames }
+    public var authoredProjectiles: [ProjectileDefinition] {
+        (projectile.map { [$0] } ?? []) + (projectiles ?? [])
+    }
+    public var effectiveResourceRules: MoveResourceRules {
+        resourceRules ?? MoveResourceRules(
+            family: authoredProjectiles.isEmpty ? .fastMelee : .projectile,
+            startCost: authoredProjectiles.isEmpty ? 0 : 45)
+    }
 
     public var actionDefinition: ActionDefinition {
         ActionDefinition(
@@ -214,6 +240,12 @@ public struct CombatRuleState: Codable, Equatable, Sendable {
     /// Per move-instance and hit-group contact frames. Optional preserves old checkpoints.
     public var hitLedger: [String: Int64]?
     public var visualScale: Double
+    public var gameplayEnergy: GameplayEnergyState?
+    public var participation: CombatParticipation?
+    public var combo: ComboState?
+    public var lastRecoveryChoice: RecoveryChoice?
+    public var rosterRole: CombatRosterRole?
+    public var powerUpFrames: Int?
 
     public init(actorID: EntityID, hp: Int = 1000, visualScale: Double = 1) {
         self.actorID = actorID
@@ -229,10 +261,16 @@ public struct CombatRuleState: Codable, Equatable, Sendable {
         self.hitTargets = []
         self.hitLedger = [:]
         self.visualScale = max(0.05, visualScale)
+        self.gameplayEnergy = GameplayEnergyState(current: 150)
+        self.participation = .uninvolved
+        self.combo = ComboState()
+        self.lastRecoveryChoice = nil
+        self.rosterRole = .active
+        self.powerUpFrames = 0
     }
 
     public var canAcceptAction: Bool {
-        healthState == .active && hitStopFrames == 0 && stunFrames == 0 &&
+        healthState == .active && rosterRole != .bench && hitStopFrames == 0 && stunFrames == 0 &&
         (phase == .neutral || phase == .guarding)
     }
 }
@@ -310,6 +348,30 @@ public struct CombatBodyState: Codable, Equatable, Sendable {
         get { rules.visualScale }
         set { rules.visualScale = max(0.05, newValue) }
     }
+    public var gameplayEnergy: GameplayEnergyState {
+        get { rules.gameplayEnergy ?? GameplayEnergyState(current: 0) }
+        set { rules.gameplayEnergy = newValue }
+    }
+    public var participation: CombatParticipation {
+        get { rules.participation ?? .uninvolved }
+        set { rules.participation = newValue }
+    }
+    public var combo: ComboState {
+        get { rules.combo ?? ComboState() }
+        set { rules.combo = newValue }
+    }
+    public var lastRecoveryChoice: RecoveryChoice? {
+        get { rules.lastRecoveryChoice }
+        set { rules.lastRecoveryChoice = newValue }
+    }
+    public var rosterRole: CombatRosterRole {
+        get { rules.rosterRole ?? .active }
+        set { rules.rosterRole = newValue }
+    }
+    public var powerUpFrames: Int {
+        get { rules.powerUpFrames ?? 0 }
+        set { rules.powerUpFrames = max(0, newValue) }
+    }
 
     public var canAcceptAction: Bool { rules.canAcceptAction }
 }
@@ -317,6 +379,10 @@ public struct CombatBodyState: Codable, Equatable, Sendable {
 public enum CombatEventKind: String, Codable, Sendable {
     case moveStarted, hit, blocked, clash, projectileSpawned, projectileExpired
     case knockedOut, downed, recoveryStarted, recovered
+    case energySpent, energyGained, comboAdvanced, recoverySelected
+    case assistEntered, assistExited, tagStarted, tagHandoff, tagCompleted
+    case neutralAlerted, neutralJoined, neutralWithdrew
+    case powerUpStarted, powerUpEnded
 }
 
 public struct CombatEvent: Codable, Equatable, Sendable {
@@ -367,11 +433,15 @@ public struct CombatWorldCheckpoint: Codable, Equatable, Sendable {
     public var buffers: [String: CombatInputBuffer]
     public var session: CombatSession?
     public var projectiles: [String: CombatProjectileState]?
+    public var teams: [String: TeamCombatState]?
+    public var escalation: CombatEscalationState?
 
     public init(frame: Int64, bodyWorld: BodyWorldCheckpoint, rules: [String: CombatRuleState],
                 profiles: [String: CombatProfile], inputs: [String: FighterInputFrame],
                 buffers: [String: CombatInputBuffer], session: CombatSession? = nil,
-                projectiles: [String: CombatProjectileState]? = nil) {
+                projectiles: [String: CombatProjectileState]? = nil,
+                teams: [String: TeamCombatState]? = nil,
+                escalation: CombatEscalationState? = nil) {
         self.frame = frame
         self.bodyWorld = bodyWorld
         self.rules = rules
@@ -380,5 +450,7 @@ public struct CombatWorldCheckpoint: Codable, Equatable, Sendable {
         self.buffers = buffers
         self.session = session
         self.projectiles = projectiles
+        self.teams = teams
+        self.escalation = escalation
     }
 }

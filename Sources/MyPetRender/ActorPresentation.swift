@@ -160,10 +160,20 @@ public final class ActorPresentation {
         } ?? false
         let (image, _) = animator.tick(dt: dt)
         if let frame = projectedFrame {
+            let combatHUD = pose.flatMap { pose -> CombatHUDSnapshot? in
+                guard let hp = pose.hp, let maxHP = pose.maxHP,
+                      let energy = pose.energy, let maxEnergy = pose.maxEnergy
+                else { return nil }
+                return CombatHUDSnapshot(
+                    hp: hp, maxHP: maxHP,
+                    energy: energy, maxEnergy: maxEnergy,
+                    active: pose.combatRole == "active")
+            }
             let renderSnapshot = RenderSnapshot(
                 actorID: actorID, frame: frame, image: image,
                 mirrored: mirrored, opacity: opacity,
-                propImage: propImage, propFrame: propFrame, visible: true)
+                propImage: propImage, propFrame: propFrame, visible: true,
+                combatHUD: combatHUD)
             renderBackend.render(snapshot: renderSnapshot, interpolation: 0)
             lastRenderSnapshot = renderSnapshot
         }
@@ -191,7 +201,8 @@ public final class ActorPresentation {
                 actorID: snapshot.actorID, frame: snapshot.frame,
                 image: snapshot.image, mirrored: snapshot.mirrored,
                 opacity: 1, propImage: snapshot.propImage,
-                propFrame: snapshot.propFrame, visible: snapshot.visible)
+                propFrame: snapshot.propFrame, visible: snapshot.visible,
+                combatHUD: snapshot.combatHUD)
             renderBackend.render(snapshot: updated, interpolation: 0)
             lastRenderSnapshot = updated
         }
@@ -290,7 +301,8 @@ public final class ActorPresentation {
                 actorID: snapshot.actorID, frame: snapshot.frame,
                 image: snapshot.image, mirrored: snapshot.mirrored,
                 opacity: snapshot.opacity, propImage: image,
-                propFrame: rect, visible: snapshot.visible)
+                propFrame: rect, visible: snapshot.visible,
+                combatHUD: snapshot.combatHUD)
             renderBackend.render(snapshot: updated, interpolation: 0)
             lastRenderSnapshot = updated
         }

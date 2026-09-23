@@ -203,6 +203,29 @@ final class CombatSimulationTests: XCTestCase {
         })
     }
 
+    func testOneControlledTeamStartsSessionWithAnOpposingTeam() {
+        let runtime = CombatRuntime()
+        for (id, x) in [("red-a", 300.0), ("red-b", 250.0),
+                        ("blue-a", 500.0), ("blue-b", 550.0)] {
+            runtime.register(
+                actorID: EntityID(id), profile: CombatProfile(),
+                x: x, yFeet: 700)
+        }
+        runtime.configureTeam(
+            teamID: "red", activeID: EntityID("red-a"),
+            benchID: EntityID("red-b"))
+        runtime.configureTeam(
+            teamID: "blue", activeID: EntityID("blue-a"),
+            benchID: EntityID("blue-b"))
+
+        runtime.activate(.autonomous, for: EntityID("red-a"))
+
+        XCTAssertEqual(runtime.world.session?.participantIDs, [
+            EntityID("blue-a"), EntityID("blue-b"),
+            EntityID("red-a"), EntityID("red-b"),
+        ])
+    }
+
     private func combatDigest(renderHz: Int) -> CombatRuntimeDigest {
         let combat = CombatRuntime()
         combat.register(actorID: EntityID("a"), profile: CombatProfile(),

@@ -58,6 +58,10 @@ public struct BodyPose: Codable, Equatable, Sendable {
     /// Optional combat projection. Old recordings decode these as nil.
     public var hp: Int?
     public var maxHP: Int?
+    public var energy: Int?
+    public var maxEnergy: Int?
+    public var combatRole: String?
+    public var combatParticipation: String?
     public var combatPhase: String?
     public var healthState: String?
     /// When true, renderer must not apply secondary spatial layout; the body/combat
@@ -76,6 +80,10 @@ public struct BodyPose: Codable, Equatable, Sendable {
         horizontalSpeed: Double = 0,
         hp: Int? = nil,
         maxHP: Int? = nil,
+        energy: Int? = nil,
+        maxEnergy: Int? = nil,
+        combatRole: String? = nil,
+        combatParticipation: String? = nil,
         combatPhase: String? = nil,
         healthState: String? = nil,
         authoritativePlacement: Bool = false,
@@ -90,6 +98,10 @@ public struct BodyPose: Codable, Equatable, Sendable {
         self.horizontalSpeed = horizontalSpeed
         self.hp = hp
         self.maxHP = maxHP
+        self.energy = energy
+        self.maxEnergy = maxEnergy
+        self.combatRole = combatRole
+        self.combatParticipation = combatParticipation
         self.combatPhase = combatPhase
         self.healthState = healthState
         self.authoritativePlacement = authoritativePlacement
@@ -98,7 +110,8 @@ public struct BodyPose: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case actorID, x, yFeet, facingRight, motion, action, horizontalSpeed
-        case hp, maxHP, combatPhase, healthState, authoritativePlacement, displayHeight
+        case hp, maxHP, energy, maxEnergy, combatRole, combatParticipation
+        case combatPhase, healthState, authoritativePlacement, displayHeight
     }
 
     public init(from decoder: Decoder) throws {
@@ -113,6 +126,10 @@ public struct BodyPose: Codable, Equatable, Sendable {
             horizontalSpeed: try values.decodeIfPresent(Double.self, forKey: .horizontalSpeed) ?? 0,
             hp: try values.decodeIfPresent(Int.self, forKey: .hp),
             maxHP: try values.decodeIfPresent(Int.self, forKey: .maxHP),
+            energy: try values.decodeIfPresent(Int.self, forKey: .energy),
+            maxEnergy: try values.decodeIfPresent(Int.self, forKey: .maxEnergy),
+            combatRole: try values.decodeIfPresent(String.self, forKey: .combatRole),
+            combatParticipation: try values.decodeIfPresent(String.self, forKey: .combatParticipation),
             combatPhase: try values.decodeIfPresent(String.self, forKey: .combatPhase),
             healthState: try values.decodeIfPresent(String.self, forKey: .healthState),
             authoritativePlacement: try values.decodeIfPresent(Bool.self, forKey: .authoritativePlacement) ?? false,
