@@ -192,6 +192,37 @@ final class ContentPackageReaderTests: XCTestCase {
         XCTAssertThrowsError(try ContentPackageReader.inspect(at: archiveURL))
     }
 
+    func testGroupPackageRejectsCharacterWithoutVisualPack() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mypet-group-visual-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let archiveURL = root.appendingPathComponent("group.mypetpack")
+        let group = CharacterGroup(id: "group", categoryID: "sample",
+                                   displayNames: .init("Group"), descriptions: .init("Group"),
+                                   memberIDs: ["actor"])
+        let cast = CastPack(id: "group", groupID: "group", displayName: "Group", summary: "",
+                            members: [CastMember(id: "actor", kind: .character,
+                                                 displayName: "Actor", role: "lead")])
+        let payload = try JSONEncoder().encode(
+            GroupPackagePayload(group: group, cast: cast, characters: [roleDefinition()]))
+        let files = [SampleEntry("content/group.json", payload)]
+        let listed = files.map { file in ContentPackageFile(path: file.path,
+            sha256: SHA256.hash(data: file.data).map { String(format: "%02x", $0) }.joined()) }
+        let manifest = ContentPackageManifest(
+            formatVersion: 1, kind: .group, id: "group", revision: 1,
+            name: "Group", content: "content/group.json", files: listed)
+        let archive = try Archive(url: archiveURL, accessMode: .create)
+        try add([SampleEntry("package.json", try JSONEncoder().encode(manifest))] + files,
+                to: archive)
+
+        XCTAssertThrowsError(try ContentPackageReader.inspect(at: archiveURL)) { error in
+            XCTAssertEqual(
+                error as? ContentPackageError,
+                .invalidContent("character actor requires visualPackID"))
+        }
+    }
+
     func testValidStoryArchiveCanInspectThenExtract() throws {
         let (root, archive) = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }

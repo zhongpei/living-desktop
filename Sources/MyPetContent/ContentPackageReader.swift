@@ -121,6 +121,13 @@ public enum ContentPackageReader {
                   }) else {
                 throw ContentPackageError.invalidContent("group member profiles are not self-contained")
             }
+            for member in group.members where member.kind == .character {
+                guard let visualPackID = member.visualPackID,
+                      !visualPackID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw ContentPackageError.invalidContent(
+                        "character \(member.id) requires visualPackID")
+                }
+            }
             for visualID in Set(group.members.compactMap(\.visualPackID)) {
                 try validatePetPack(id: visualID, entries: entries, archive: archive)
             }
