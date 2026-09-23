@@ -34,6 +34,7 @@ public final class CombatWorld {
     private var projectiles: [String: CombatProjectileState] = [:]
     private var teams: [String: TeamCombatState] = [:]
     private var escalation = CombatEscalationState(policy: .flatArena)
+    private var combatReadiness: [String: Bool] = [:]
     public private(set) var session: CombatSession?
 
     public init(bodyWorld: BodyWorld = BodyWorld()) {
@@ -51,6 +52,8 @@ public final class CombatWorld {
         self.projectiles = checkpoint.projectiles ?? [:]
         self.teams = checkpoint.teams ?? [:]
         self.escalation = checkpoint.escalation ?? CombatEscalationState(policy: .flatArena)
+        self.combatReadiness = checkpoint.combatReadiness ??
+            Dictionary(uniqueKeysWithValues: checkpoint.rules.keys.map { ($0, true) })
     }
 
     public func checkpoint() -> CombatWorldCheckpoint {
@@ -64,7 +67,8 @@ public final class CombatWorld {
             session: session,
             projectiles: projectiles,
             teams: teams,
-            escalation: escalation)
+            escalation: escalation,
+            combatReadiness: combatReadiness)
     }
 
     @discardableResult
@@ -129,7 +133,8 @@ public final class CombatWorld {
 
     public func register(actorID: EntityID, profile: CombatProfile = CombatProfile(),
                          x: Double, yFeet: Double, facing: CombatFacing = .right,
-                         visualScale: Double = 1) {
+                         visualScale: Double = 1,
+                         realCombatReady: Bool = true) {
         profiles[actorID.raw] = profile
         let definition = BodyDefinition(
             entityID: actorID, pushRadius: profile.pushRadius, visualScale: visualScale)
@@ -147,6 +152,7 @@ public final class CombatWorld {
             actorID: actorID, hp: profile.maxHP, visualScale: visualScale)
         buffers[actorID.raw] = CombatInputBuffer()
         inputs[actorID.raw] = .neutral
+        combatReadiness[actorID.raw] = realCombatReady
     }
 
     public func unregister(actorID: EntityID) {
@@ -159,6 +165,7 @@ public final class CombatWorld {
         profiles[actorID.raw] = nil
         inputs[actorID.raw] = nil
         buffers[actorID.raw] = nil
+        combatReadiness[actorID.raw] = nil
     }
 
     public func setProfile(_ profile: CombatProfile, for actorID: EntityID) {
@@ -190,6 +197,10 @@ public final class CombatWorld {
         profiles[actorID.raw]
     }
 
+    public func isCombatReady(_ actorID: EntityID) -> Bool {
+        combatReadiness[actorID.raw] ?? false
+    }
+
     public func setAuthority(_ authority: CombatControlAuthority, for actorID: EntityID) {
         guard var rule = rules[actorID.raw] else { return }
         rule.authority = authority
@@ -205,6 +216,27 @@ public final class CombatWorld {
             regenDelayFrames: energy.regenDelayFrames)
         rule.gameplayEnergy = energy
         rules[actorID.raw] = rule
+    }
+
+    @discardableResult
+    public func authorizeWindowInteraction(
+        _ action: WindowGameplayAction,
+        for actorID: EntityID,
+        policy: inout WindowInteractionPolicy,
+        userActive: Bool,
+        targetIsForeground: Bool
+    ) -> WindowAuthorization {
+        guard var rule = rules[actorID.raw] else { return .disabled }
+        var energy = rule.gameplayEnergy ?? GameplayEnergyState(current: 0)
+        let authorization = policy.authorize(
+            action, energy: &energy, frame: frame,
+            userActive: userActive,
+            targetIsForeground: targetIsForeground)
+        if authorization == .allowed {
+            rule.gameplayEnergy = energy
+            rules[actorID.raw] = rule
+        }
+        return authorization
     }
 
     public func snapshot() -> CombatWorldSnapshot {
@@ -388,7 +420,7 @@ public final class CombatWorld {
         let escalationEvents = escalation.advance(
             frame: frame,
             combatReady: Set(rules.values.filter {
-                profiles[$0.actorID.raw] != nil
+                combatReadiness[$0.actorID.raw] == true
             }.map(\.actorID)))
         for event in escalationEvents {
             if var rule = rules[event.actorID.raw] {
@@ -432,7 +464,8 @@ public final class CombatWorld {
         if (body.phase == .hitStun || body.phase == .blockStun),
            let burst = profile.moves.first(where: {
                $0.systemControl == .defensiveBurst &&
-                   buffer.isSystemControlPress(.defensiveBurst)
+                   buffer.containsSystemControlPress(
+                       .defensiveBurst, withinLast: 16)
            }), startMove(burst, body: &body, events: &events) {
             body.stunFrames = 0
             body.invulnerabilityFrames = max(body.invulnerabilityFrames, 12)
@@ -698,6 +731,7 @@ public final class CombatWorld {
         let snapshot = Dictionary(uniqueKeysWithValues: self.snapshot().bodies.map {
             ($0.actorID.raw, $0)
         })
+        resolveProjectileClashes(events: &events)
         let ids = snapshot.keys.sorted()
         var pending: [PendingHit] = []
         var attacks: [String: ActiveAttack] = [:]
@@ -983,6 +1017,57 @@ public final class CombatWorld {
         for projectileID in Set(pending.compactMap(\.projectileID)).sorted() {
             guard projectiles[projectileID]?.definition.destroyOnHit == true else { continue }
             removeProjectile(projectileID, events: &events)
+        }
+    }
+
+    private func resolveProjectileClashes(events: inout [CombatEvent]) {
+        let ids = projectiles.keys.sorted()
+        var destroyed: Set<String> = []
+        for (offset, leftID) in ids.enumerated() {
+            guard !destroyed.contains(leftID),
+                  let left = projectiles[leftID],
+                  left.definition.hit.clashLevel > 0,
+                  let leftBody = bodyWorld.state(for: left.entityID)
+            else { continue }
+            for rightID in ids.dropFirst(offset + 1) {
+                guard !destroyed.contains(rightID),
+                      let right = projectiles[rightID],
+                      right.ownerID != left.ownerID,
+                      right.definition.hit.clashLevel == left.definition.hit.clashLevel,
+                      permitsContact(left.ownerID, right.ownerID),
+                      let rightBody = bodyWorld.state(for: right.entityID)
+                else { continue }
+                let leftRects = left.definition.hit.attackBoxes.map {
+                    $0.placed(at: left.previousPosition, facing: leftBody.facing)
+                }
+                let rightRects = right.definition.hit.attackBoxes.map {
+                    $0.placed(at: right.previousPosition, facing: rightBody.facing)
+                }
+                let relativeDisplacement = Vec2(
+                    x: (leftBody.position.x - left.previousPosition.x) -
+                        (rightBody.position.x - right.previousPosition.x),
+                    y: (leftBody.position.y - left.previousPosition.y) -
+                        (rightBody.position.y - right.previousPosition.y))
+                let collided = leftRects.contains { leftRect in
+                    rightRects.contains { rightRect in
+                        leftRect.overlaps(rightRect) ||
+                            leftRect.sweep(
+                                displacement: relativeDisplacement,
+                                against: rightRect) != nil
+                    }
+                }
+                guard collided else { continue }
+                destroyed.insert(leftID)
+                destroyed.insert(rightID)
+                events.append(CombatEvent(
+                    frame: frame, kind: .clash,
+                    actorID: left.ownerID, targetID: right.ownerID,
+                    moveID: left.moveID))
+                break
+            }
+        }
+        for id in destroyed.sorted() {
+            removeProjectile(id, events: &events)
         }
     }
 

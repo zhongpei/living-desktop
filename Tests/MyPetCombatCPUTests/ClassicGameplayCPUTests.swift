@@ -24,6 +24,7 @@ final class ClassicGameplayCPUTests: XCTestCase {
         input.style = CharacterGameplayStyle(
             combat: 0, explore: 0, destruction: 1, risk: 0,
             energyReserve: 0, spectacle: 1)
+        input.combat.selfBody.gameplayEnergy = GameplayEnergyState(current: 300)
         let output = cpu.advance(input)
         XCTAssertEqual(output.activity, .interactWindow)
         XCTAssertEqual(output.platformIntent, .damageWindowOverlay("window-a"))
@@ -43,6 +44,43 @@ final class ClassicGameplayCPUTests: XCTestCase {
             rhs.append(restored.advance(next))
         }
         XCTAssertEqual(lhs, rhs)
+    }
+
+    func testCommitmentIsNotCancelledMerelyBecauseAnOpponentExists() {
+        var cpu = ClassicGameplayCPU(actorID: EntityID("me"), seed: 29)
+        var initial = observation(formalRound: false, withOpponent: false)
+        initial.windowIDs = ["window-a"]
+        initial.style = CharacterGameplayStyle(
+            combat: 0, explore: 0, destruction: 1, risk: 0,
+            energyReserve: 0, spectacle: 1)
+        initial.combat.selfBody.gameplayEnergy = GameplayEnergyState(current: 300)
+        XCTAssertEqual(cpu.advance(initial).activity, .interactWindow)
+
+        var opponentAppeared = observation(formalRound: false, withOpponent: true)
+        opponentAppeared.combat.frame = 1
+        opponentAppeared.windowIDs = ["window-a"]
+        opponentAppeared.style = initial.style
+        opponentAppeared.combat.selfBody.gameplayEnergy = GameplayEnergyState(current: 300)
+
+        XCTAssertEqual(cpu.advance(opponentAppeared).activity, .interactWindow)
+    }
+
+    func testWindowMinimumViabilityProtectsForegroundAndEnergyReserve() {
+        var cpu = ClassicGameplayCPU(actorID: EntityID("me"), seed: 31)
+        var input = observation(formalRound: false, withOpponent: false)
+        input.style = CharacterGameplayStyle(
+            combat: 0, explore: 0, destruction: 1, risk: 0,
+            energyReserve: 1, spectacle: 1)
+        input.windows = [GameplayWindowState(
+            id: "front", areaRatio: 0.8, isForeground: true,
+            isMoving: false, isPullable: true, allowsDamageOverlay: true)]
+
+        let output = cpu.advance(input)
+
+        XCTAssertNotEqual(output.activity, .interactWindow)
+        if case .some(.damageWindowOverlay) = output.platformIntent {
+            XCTFail("foreground window must not reach a destructive platform intent")
+        }
     }
 
     private func observation(

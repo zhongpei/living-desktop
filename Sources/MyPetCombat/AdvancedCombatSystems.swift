@@ -48,7 +48,7 @@ public struct GameplayEnergyState: Codable, Equatable, Sendable {
     }
 }
 
-public enum CombatActionFamily: String, Codable, CaseIterable, Sendable {
+public enum CombatActionFamily: String, Codable, CaseIterable, Hashable, Sendable {
     case fastMelee, heavyMelee, `throw`, projectile, movement, guardAction
     case special, superMove, powerUp, burst, tag, assist, windowInteraction
 }
@@ -482,6 +482,44 @@ public struct ActionHistory: Codable, Equatable, Sendable {
         if entries.count >= 2, entries.suffix(2).allSatisfy({ $0.family == family }) {
             sequence = 1
         }
-        return Double(direct * direct * 20 + sameFamily * 8 + sequence * 18)
+        return Double(direct * direct * 20 + sameFamily * 8 + sequence * 18) +
+            sequencePenalty(nextFamily: family)
+    }
+
+    public func sequencePenalty(nextFamily: CombatActionFamily) -> Double {
+        let families = entries.map(\.family)
+        guard !families.isEmpty else { return 0 }
+        let candidate = families + [nextFamily]
+        var penalty = 0.0
+        for length in 2...3 where candidate.count >= length {
+            let pattern = Array(candidate.suffix(length))
+            guard families.count >= length else { continue }
+            let repeats = (0...(families.count - length)).filter { start in
+                Array(families[start..<(start + length)]) == pattern
+            }.count
+            penalty += Double(repeats * (length == 2 ? 14 : 28))
+        }
+        return penalty
+    }
+
+    public var familyEntropyBits: Double {
+        guard !entries.isEmpty else { return 0 }
+        let counts = Dictionary(grouping: entries, by: \.family).mapValues(\.count)
+        return counts.values.reduce(0) { result, count in
+            let probability = Double(count) / Double(entries.count)
+            return result - probability * log2(probability)
+        }
+    }
+
+    public var longestFamilyRun: Int {
+        var longest = 0
+        var current = 0
+        var previous: CombatActionFamily?
+        for entry in entries {
+            current = entry.family == previous ? current + 1 : 1
+            longest = max(longest, current)
+            previous = entry.family
+        }
+        return longest
     }
 }

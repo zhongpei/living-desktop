@@ -67,6 +67,23 @@ public struct CombatInputBuffer: Codable, Equatable, Sendable {
         guard frames.first?.systemControls.contains(control) == true else { return false }
         return frames.dropFirst().first?.systemControls.contains(control) != true
     }
+
+    public func containsSystemControlPress(
+        _ control: CombatSystemControl,
+        withinLast maximumFrames: Int
+    ) -> Bool {
+        let count = min(storage.count, max(1, maximumFrames))
+        let start = storage.count - count
+        var previousHeld = start > 0
+            ? storage[start - 1].systemControls.contains(control)
+            : false
+        for input in storage.suffix(count) {
+            let held = input.systemControls.contains(control)
+            if held && !previousHeld { return true }
+            previousHeld = held
+        }
+        return false
+    }
 }
 
 public enum CombatDirectionToken: String, Codable, Sendable {

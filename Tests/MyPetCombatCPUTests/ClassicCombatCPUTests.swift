@@ -168,7 +168,7 @@ final class ClassicCombatCPUTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(firstGuardFrame ?? 0, 15)
     }
 
-    func testCPUUsesReservedFullGaugeBurstAgainstImmediateCloseThreat() {
+    func testCPUUsesDefensiveBurstOnlyWhileInStun() {
         let light = CombatMoveDefinition(
             id: "light", command: .button(.x), startupFrames: 3,
             activeFrames: 2, recoveryFrames: 6,
@@ -195,12 +195,147 @@ final class ClassicCombatCPUTests: XCTestCase {
             actorID: EntityID("enemy"), x: 350, yFeet: 700, facing: .left)
         var cpu = ClassicCombatCPU(actorID: me.actorID, difficulty: .normal, seed: 19)
 
-        let defensive = cpu.advance(CPUCombatObservation(
+        let neutral = cpu.advance(CPUCombatObservation(
             frame: 0, selfBody: me, opponents: [enemy],
+            selfProfile: profile, opponentProfiles: ["enemy": profile],
+            environment: floor))
+        XCTAssertNotEqual(neutral.moveID, "burst")
+
+        me.phase = .hitStun
+        me.stunFrames = 10
+        let defensive = cpu.advance(CPUCombatObservation(
+            frame: 1, selfBody: me, opponents: [enemy],
             selfProfile: profile, opponentProfiles: ["enemy": profile],
             environment: floor))
         XCTAssertEqual(defensive.moveID, "burst")
         XCTAssertEqual(defensive.input.systemControls, [.defensiveBurst])
+        let heldStun = cpu.advance(CPUCombatObservation(
+            frame: 2, selfBody: me, opponents: [enemy],
+            selfProfile: profile, opponentProfiles: ["enemy": profile],
+            environment: floor))
+        XCTAssertEqual(heldStun.input, .neutral)
+    }
+
+    func testCPUReservesFullGaugeForBurstWhenHealthIsCritical() {
+        let superMove = CombatMoveDefinition(
+            id: "super", command: .button(.z), startupFrames: 3,
+            activeFrames: 2, recoveryFrames: 6,
+            hit: CombatHitDefinition(damage: 300, hitStopFrames: 0),
+            visualAction: "super",
+            resourceRules: MoveResourceRules(
+                family: .superMove, startCost: 300))
+        let burst = CombatMoveDefinition(
+            id: "burst", command: .button(.s), startupFrames: 0,
+            activeFrames: 2, recoveryFrames: 6,
+            hit: CombatHitDefinition(damage: 20, hitStopFrames: 0),
+            visualAction: "burst",
+            resourceRules: MoveResourceRules(family: .burst, startCost: 300),
+            systemControl: .defensiveBurst)
+        let resourceSpecial = CombatMoveDefinition(
+            id: "resource-special", command: .button(.x), startupFrames: 2,
+            activeFrames: 2, recoveryFrames: 4,
+            hit: CombatHitDefinition(damage: 50, hitStopFrames: 0),
+            visualAction: "special",
+            resourceRules: MoveResourceRules(family: .special, startCost: 45))
+        let profile = CombatProfile(moves: [superMove, burst, resourceSpecial])
+        var me = CombatBodyState(actorID: EntityID("me"), x: 300, yFeet: 700)
+        me.hp = 400
+        me.gameplayEnergy = GameplayEnergyState(current: 300)
+        let enemy = CombatBodyState(
+            actorID: EntityID("enemy"), x: 350, yFeet: 700, facing: .left)
+        var cpu = ClassicCombatCPU(actorID: me.actorID, difficulty: .normal, seed: 29)
+
+        let neutral = cpu.advance(CPUCombatObservation(
+            frame: 0, selfBody: me, opponents: [enemy],
+            selfProfile: profile, opponentProfiles: ["enemy": profile],
+            environment: floor))
+        XCTAssertNotEqual(neutral.moveID, "super")
+        XCTAssertNotEqual(neutral.moveID, "resource-special")
+
+        me.phase = .hitStun
+        me.stunFrames = 10
+        let defensive = cpu.advance(CPUCombatObservation(
+            frame: 1, selfBody: me, opponents: [enemy],
+            selfProfile: profile, opponentProfiles: ["enemy": profile],
+            environment: floor))
+        XCTAssertEqual(defensive.moveID, "burst")
+    }
+
+    func testCPUReservesNextFullGaugeForFirstBurstAfterUsingSuper() {
+        let free = CombatMoveDefinition(
+            id: "free", command: .button(.x), startupFrames: 2,
+            activeFrames: 2, recoveryFrames: 4,
+            hit: CombatHitDefinition(damage: 30, hitStopFrames: 0),
+            visualAction: "free")
+        let superMove = CombatMoveDefinition(
+            id: "super", command: .button(.z), startupFrames: 3,
+            activeFrames: 2, recoveryFrames: 6,
+            hit: CombatHitDefinition(damage: 300, hitStopFrames: 0),
+            visualAction: "super",
+            resourceRules: MoveResourceRules(family: .superMove, startCost: 300))
+        let projectile = CombatMoveDefinition(
+            id: "projectile", command: .button(.y), startupFrames: 3,
+            activeFrames: 2, recoveryFrames: 6,
+            hit: CombatHitDefinition(damage: 80, hitStopFrames: 0),
+            visualAction: "projectile",
+            resourceRules: MoveResourceRules(family: .projectile, startCost: 45))
+        let burst = CombatMoveDefinition(
+            id: "burst", command: .button(.s), startupFrames: 0,
+            activeFrames: 2, recoveryFrames: 6,
+            hit: CombatHitDefinition(damage: 20, hitStopFrames: 0),
+            visualAction: "burst",
+            resourceRules: MoveResourceRules(family: .burst, startCost: 300),
+            systemControl: .defensiveBurst)
+        let profile = CombatProfile(moves: [free, superMove, projectile, burst])
+        var me = CombatBodyState(actorID: EntityID("me"), x: 300, yFeet: 700)
+        me.gameplayEnergy = GameplayEnergyState(current: 300)
+        let enemy = CombatBodyState(
+            actorID: EntityID("enemy"), x: 350, yFeet: 700, facing: .left)
+        var cpu = ClassicCombatCPU(actorID: me.actorID, difficulty: .normal, seed: 31)
+        let first = cpu.advance(CPUCombatObservation(
+            frame: 0, selfBody: me, opponents: [enemy],
+            selfProfile: profile, opponentProfiles: ["enemy": profile],
+            environment: floor))
+        XCTAssertEqual(first.moveID, "super")
+        for frame: Int64 in 1...8 {
+            _ = cpu.advance(CPUCombatObservation(
+                frame: frame, selfBody: me, opponents: [enemy],
+                selfProfile: profile, opponentProfiles: ["enemy": profile],
+                environment: floor))
+        }
+        let reserved = cpu.advance(CPUCombatObservation(
+            frame: 120, selfBody: me, opponents: [enemy],
+            selfProfile: profile, opponentProfiles: ["enemy": profile],
+            environment: floor))
+        XCTAssertNotEqual(reserved.moveID, "super")
+        XCTAssertNotEqual(reserved.moveID, "projectile")
+    }
+
+    func testCPUConvertsFullGaugeIntoAnUnseenReachableSuper() {
+        let light = CombatMoveDefinition(
+            id: "light", command: .button(.x), startupFrames: 3,
+            activeFrames: 2, recoveryFrames: 6,
+            hit: CombatHitDefinition(damage: 30, hitStopFrames: 0),
+            visualAction: "light")
+        let superMove = CombatMoveDefinition(
+            id: "super", command: .button(.z), startupFrames: 8,
+            activeFrames: 3, recoveryFrames: 20,
+            hit: CombatHitDefinition(damage: 220, hitStopFrames: 0),
+            visualAction: "super",
+            resourceRules: MoveResourceRules(family: .superMove, startCost: 300))
+        let profile = CombatProfile(moves: [light, superMove])
+        var me = CombatBodyState(actorID: EntityID("me"), x: 300, yFeet: 700)
+        me.gameplayEnergy = GameplayEnergyState(current: 300)
+        let enemy = CombatBodyState(
+            actorID: EntityID("enemy"), x: 350, yFeet: 700, facing: .left)
+        var cpu = ClassicCombatCPU(actorID: me.actorID, difficulty: .normal, seed: 37)
+
+        let output = cpu.advance(CPUCombatObservation(
+            frame: 0, selfBody: me, opponents: [enemy],
+            selfProfile: profile, opponentProfiles: ["enemy": profile],
+            environment: floor))
+
+        XCTAssertEqual(output.moveID, "super")
     }
 
     func testCPUApproachesWhenAttackBoxCannotYetReachHurtBox() {

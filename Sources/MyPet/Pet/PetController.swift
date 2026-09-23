@@ -253,7 +253,8 @@ final class PetController {
             x: model.x,
             yFeet: model.yFeet,
             facingRight: model.facingRight,
-            displayHeight: displayH)
+            displayHeight: displayH,
+            realCombatReady: combatEnabled)
 
         self.presentation = ActorPresentation(
             source: library,
@@ -709,6 +710,11 @@ final class PetController {
             consumeCombatEvents(combatCoordinator.advance(
                 elapsedSeconds: dt,
                 environment: model.bodyEnvironmentSnapshot(),
+                platformContext: GameplayPlatformContext(
+                    userActive: systemWorld.idleSeconds() < 5,
+                    foregroundWindowIDs: world.foreground.map {
+                        Set(["window:\($0.id):top"])
+                    } ?? Set()),
                 beforeFrame: { [weak self] in self?.prepareBodySimulationFrame() }))
         }
         syncBodyProjection()

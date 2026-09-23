@@ -193,4 +193,44 @@ final class ProjectileTests: XCTestCase {
         XCTAssertEqual(restored.snapshot(), world.snapshot())
         XCTAssertEqual(replayEvents, originalEvents)
     }
+
+    func testEqualLevelOpposingProjectilesClashAndBothExpire() {
+        let projectile = ProjectileDefinition(
+            id: "orb", spawnFrame: 0, spawnOffset: Vec2(x: 20, y: -50),
+            velocity: Vec2(x: 10, y: 0), lifetimeFrames: 30,
+            hit: CombatHitDefinition(
+                damage: 20, hitStopFrames: 0,
+                attackBoxes: [CollisionBox(x1: -8, y1: -8, x2: 8, y2: 8)],
+                clashLevel: 1),
+            visualResourceID: "effects/orb")
+        let move = CombatMoveDefinition(
+            id: "cast", command: .button(.d), startupFrames: 0,
+            activeFrames: 1, recoveryFrames: 2,
+            hit: CombatHitDefinition(damage: 0, attackBoxes: []),
+            visualAction: "cast", projectile: projectile)
+        let world = CombatWorld()
+        world.register(
+            actorID: EntityID("left"), profile: CombatProfile(moves: [move]),
+            x: 300, yFeet: 700)
+        world.register(
+            actorID: EntityID("right"), profile: CombatProfile(moves: [move]),
+            x: 400, yFeet: 700, facing: .left)
+        XCTAssertTrue(world.beginSession(
+            id: "projectile-clash",
+            participants: [EntityID("left"), EntityID("right")]))
+        world.setInput(FighterInputFrame(buttons: [.d]), for: EntityID("left"))
+        world.setInput(FighterInputFrame(buttons: [.d]), for: EntityID("right"))
+
+        var events: [CombatEvent] = []
+        for _ in 0..<4 {
+            events += world.step(environment: floor)
+            world.setInput(.neutral, for: EntityID("left"))
+            world.setInput(.neutral, for: EntityID("right"))
+        }
+
+        XCTAssertEqual(events.filter { $0.kind == .clash }.count, 1)
+        XCTAssertTrue(world.snapshot().projectiles.isEmpty)
+        XCTAssertEqual(world.body(for: EntityID("left"))?.hp, 1000)
+        XCTAssertEqual(world.body(for: EntityID("right"))?.hp, 1000)
+    }
 }

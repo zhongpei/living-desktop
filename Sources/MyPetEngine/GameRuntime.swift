@@ -210,6 +210,7 @@ public final class GameRuntime {
     public func advance(
         elapsedSeconds: Double,
         combatEnvironment: BodyEnvironment? = nil,
+        combatPlatformContext: GameplayPlatformContext = .idle,
         bodyStep: ((Int64) -> Void)? = nil,
         semanticStep: (() -> TickReport?)? = nil
     ) -> RuntimeAdvanceResult {
@@ -227,7 +228,8 @@ public final class GameRuntime {
                 bodyStep?(frame)
                 if let combatEnvironment, let combatRuntime {
                     combatEvents.append(contentsOf: combatRuntime.advance(
-                        environment: combatEnvironment))
+                        environment: combatEnvironment,
+                        platformContext: combatPlatformContext))
                 }
                 if (frame + 1).isMultiple(of: 3) {
                     if let semanticStep {

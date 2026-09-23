@@ -1,5 +1,6 @@
 import XCTest
 import MyPetCombat
+import MyPetCombatCPU
 import MyPetCore
 import MyPetEngine
 @testable import MyPetSimulation
@@ -224,6 +225,88 @@ final class CombatSimulationTests: XCTestCase {
             EntityID("blue-a"), EntityID("blue-b"),
             EntityID("red-a"), EntityID("red-b"),
         ])
+    }
+
+    func testNonCombatReadyBystanderIsNotSelectedAsAutomaticOpponent() {
+        let runtime = CombatRuntime()
+        runtime.register(
+            actorID: EntityID("fighter"), profile: CombatProfile(),
+            x: 300, yFeet: 700)
+        runtime.register(
+            actorID: EntityID("pet"), profile: CombatProfile(moves: []),
+            x: 350, yFeet: 700, realCombatReady: false)
+
+        runtime.activate(.autonomous, for: EntityID("fighter"))
+
+        XCTAssertNil(runtime.world.session)
+        XCTAssertEqual(
+            runtime.world.body(for: EntityID("pet"))?.participation,
+            .uninvolved)
+    }
+
+    func testRuntimeCPUSeedChangesDecisionStreamButRemainsReplayable() {
+        func run(seed: UInt64) -> CombatRuntimeDigest {
+            let runtime = CombatRuntime(cpuSeed: seed)
+            let moves = CombatButton.allCases.map { button in
+                CombatMoveDefinition(
+                    id: "move-\(button.rawValue)", command: .button(button),
+                    startupFrames: 0, activeFrames: 1, recoveryFrames: 1,
+                    hit: CombatHitDefinition(
+                        damage: 10, hitStopFrames: 0, hitStunFrames: 0,
+                        knockbackX: 0),
+                    visualAction: "attack")
+            }
+            let profile = CombatProfile(moves: moves)
+            runtime.register(actorID: EntityID("a"), profile: profile, x: 400, yFeet: 700)
+            runtime.register(
+                actorID: EntityID("b"), profile: profile,
+                x: 445, yFeet: 700, facing: .left)
+            runtime.activate(.autonomous, for: EntityID("a"))
+            runtime.activate(.autonomous, for: EntityID("b"))
+            for _ in 0..<120 {
+                _ = runtime.advance(environment: makeScenario().desktop.combatEnvironment())
+            }
+            return runtime.digest
+        }
+
+        XCTAssertEqual(run(seed: 101), run(seed: 101))
+        XCTAssertNotEqual(run(seed: 101), run(seed: 202))
+    }
+
+    func testWindowPlatformIntentIsAuthorizedBeforePublicationAndSpendsEnergy() {
+        let runtime = CombatRuntime(cpuSeed: 7)
+        runtime.register(
+            actorID: EntityID("a"), profile: CombatProfile(moves: []),
+            x: 400, yFeet: 500)
+        runtime.setGameplayEnergy(300, for: EntityID("a"))
+        runtime.setGameplayStyle(
+            CharacterGameplayStyle(
+                combat: 0, explore: 0, destruction: 1, risk: 0,
+                energyReserve: 0, spectacle: 1),
+            for: EntityID("a"))
+        runtime.activate(.autonomous, for: EntityID("a"))
+        var policy = WindowInteractionPolicy()
+        policy.damageCooldownFrames = 0
+        runtime.setWindowInteractionPolicy(policy)
+        let environment = BodyEnvironment(
+            bounds: Rect2D(x: 0, y: 0, width: 1000, height: 700),
+            surfaces: [
+                Surface(id: "floor", kind: .floor, left: 0, right: 1000, y: 700),
+                Surface(id: "window-a", kind: .windowTop, left: 250, right: 750, y: 520),
+            ])
+
+        for _ in 0..<240 {
+            _ = runtime.advance(
+                environment: environment,
+                platformContext: GameplayPlatformContext(userActive: false))
+            if runtime.platformIntents["a"] != nil { break }
+        }
+
+        XCTAssertEqual(
+            runtime.platformIntents["a"],
+            .damageWindowOverlay("window-a"))
+        XCTAssertEqual(runtime.world.body(for: EntityID("a"))?.gameplayEnergy.current, 180)
+        XCTAssertEqual(runtime.platformAuthorizations["a"], .allowed)
     }
 
     private func combatDigest(renderHz: Int) -> CombatRuntimeDigest {
