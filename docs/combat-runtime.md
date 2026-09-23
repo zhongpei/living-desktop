@@ -48,7 +48,7 @@ The body never has separate "AI physics" and "player physics".
   manual/autonomous authority after the tossed actor lands.
 
 The first manual mapping is arrows for direction/jump/crouch, Z/X/C and A/S/D for the six
-fighting buttons, Tab for target cycling and Escape to leave control. The control utility
+fighting buttons and Escape to leave control. The control utility
 window becomes key only after the user explicitly chooses "接管控制"; normal desktop play
 does not require a global event tap or Input Monitoring permission.
 
