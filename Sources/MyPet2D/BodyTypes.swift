@@ -12,6 +12,7 @@ public struct BodyDefinition: Codable, Equatable, Sendable {
     public var pushEnabled: Bool
     public var simulationEnabled: Bool
     public var collisionMask: CollisionMask
+    public var gravityScale: Double
 
     public init(
         entityID: EntityID,
@@ -19,7 +20,8 @@ public struct BodyDefinition: Codable, Equatable, Sendable {
         visualScale: Double = 1,
         pushEnabled: Bool = true,
         simulationEnabled: Bool = true,
-        collisionMask: CollisionMask = [.environment, .body]
+        collisionMask: CollisionMask = [.environment, .body],
+        gravityScale: Double = 1
     ) {
         self.entityID = entityID
         self.pushRadius = max(1, pushRadius)
@@ -27,6 +29,25 @@ public struct BodyDefinition: Codable, Equatable, Sendable {
         self.pushEnabled = pushEnabled
         self.simulationEnabled = simulationEnabled
         self.collisionMask = collisionMask
+        self.gravityScale = max(0, gravityScale)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case entityID, pushRadius, visualScale, pushEnabled, simulationEnabled
+        case collisionMask, gravityScale
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            entityID: try values.decode(EntityID.self, forKey: .entityID),
+            pushRadius: try values.decodeIfPresent(Double.self, forKey: .pushRadius) ?? 24,
+            visualScale: try values.decodeIfPresent(Double.self, forKey: .visualScale) ?? 1,
+            pushEnabled: try values.decodeIfPresent(Bool.self, forKey: .pushEnabled) ?? true,
+            simulationEnabled: try values.decodeIfPresent(Bool.self, forKey: .simulationEnabled) ?? true,
+            collisionMask: try values.decodeIfPresent(CollisionMask.self, forKey: .collisionMask)
+                ?? [.environment, .body],
+            gravityScale: try values.decodeIfPresent(Double.self, forKey: .gravityScale) ?? 1)
     }
 }
 

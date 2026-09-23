@@ -8,10 +8,11 @@ public final class CombatWorld {
     private struct PendingHit {
         let attackerID: String
         let defenderID: String
-        let move: CombatMoveDefinition
+        let moveID: String
         let definition: CombatHitDefinition
         let ledgerKey: String
         let guarding: Bool
+        let projectileID: String?
     }
 
     private struct ActiveAttack {
@@ -29,6 +30,7 @@ public final class CombatWorld {
     private var profiles: [String: CombatProfile] = [:]
     private var inputs: [String: FighterInputFrame] = [:]
     private var buffers: [String: CombatInputBuffer] = [:]
+    private var projectiles: [String: CombatProjectileState] = [:]
     public private(set) var session: CombatSession?
 
     public init(bodyWorld: BodyWorld = BodyWorld()) {
@@ -43,6 +45,7 @@ public final class CombatWorld {
         self.inputs = checkpoint.inputs
         self.buffers = checkpoint.buffers
         self.session = checkpoint.session
+        self.projectiles = checkpoint.projectiles ?? [:]
     }
 
     public func checkpoint() -> CombatWorldCheckpoint {
@@ -53,7 +56,8 @@ public final class CombatWorld {
             profiles: profiles,
             inputs: inputs,
             buffers: buffers,
-            session: session)
+            session: session,
+            projectiles: projectiles)
     }
 
     @discardableResult
@@ -144,9 +148,21 @@ public final class CombatWorld {
     }
 
     public func snapshot() -> CombatWorldSnapshot {
-        CombatWorldSnapshot(frame: frame, bodies: rules.keys.sorted().compactMap {
-            body(for: EntityID($0))
-        })
+        CombatWorldSnapshot(
+            frame: frame,
+            bodies: rules.keys.sorted().compactMap { body(for: EntityID($0)) },
+            projectiles: projectiles.keys.sorted().compactMap { id in
+                guard let projectile = projectiles[id],
+                      let body = bodyWorld.state(for: projectile.entityID) else { return nil }
+                return CombatProjectileSnapshot(
+                    entityID: projectile.entityID,
+                    ownerID: projectile.ownerID,
+                    definitionID: projectile.definition.id,
+                    position: body.position,
+                    velocity: body.velocity,
+                    spawnedAtFrame: projectile.spawnedAtFrame,
+                    visualResourceID: projectile.definition.visualResourceID)
+            })
     }
 
     @discardableResult
@@ -184,7 +200,7 @@ public final class CombatWorld {
             orientTowardNearestOpponent(&body, snapshot: frameSnapshot)
             if body.healthState == .active {
                 acceptControl(&body, profile: profile, input: input, buffer: buffer, events: &events)
-                advanceMove(&body, profile: profile)
+                advanceMove(&body, profile: profile, events: &events)
             }
             if body.healthState == .knockedOut && body.locomotion == .grounded {
                 body.locomotion = .airborne
@@ -201,6 +217,7 @@ public final class CombatWorld {
 
         bodyWorld.advance(environment)
         resolveHits(events: &events)
+        expireProjectiles(environment: environment, events: &events)
         // A KO becomes downed only after its physical knockback has actually landed.
         for id in ids {
             guard var body = body(for: EntityID(id)), let profile = profiles[id] else { continue }
@@ -276,13 +293,14 @@ public final class CombatWorld {
         }
     }
 
-    private func advanceMove(_ body: inout CombatBodyState, profile: CombatProfile) {
+    private func advanceMove(_ body: inout CombatBodyState, profile: CombatProfile,
+                             events: inout [CombatEvent]) {
         guard var timeline = body.actionTimeline else {
             if body.stunFrames == 0 { body.phase = .neutral }
             return
         }
         guard timeline.definition.domain == .combat else { return }
-        guard profile.move(id: timeline.definition.actionID) != nil else {
+        guard let move = profile.move(id: timeline.definition.actionID) else {
             body.actionTimeline = nil
             if body.stunFrames == 0 { body.phase = .neutral }
             return
@@ -297,6 +315,12 @@ public final class CombatWorld {
             body.hitLedger.removeAll()
             body.phase = .neutral
             return
+        }
+        if let definition = move.projectile,
+           timeline.frame == definition.spawnFrame {
+            spawnProjectile(
+                definition, move: move, timeline: timeline,
+                owner: body, events: &events)
         }
         // Keep the terminal cursor through hit resolution. A one-frame active
         // action must still own that frame; it is cleared on the next step.
@@ -365,6 +389,50 @@ public final class CombatWorld {
     private func save(_ body: CombatBodyState) {
         rules[body.actorID.raw] = body.rules
         bodyWorld.update(body.actorID) { $0 = body.body }
+    }
+
+    private func spawnProjectile(
+        _ definition: ProjectileDefinition,
+        move: CombatMoveDefinition,
+        timeline: ActionTimeline,
+        owner: CombatBodyState,
+        events: inout [CombatEvent]
+    ) {
+        let entityID = EntityID(
+            "projectile:\(owner.actorID.raw):\(timeline.instanceID):\(definition.id)")
+        guard projectiles[entityID.raw] == nil else { return }
+        let facing = owner.facing
+        let position = Vec2(
+            x: owner.position.x + definition.spawnOffset.x * facing.sign,
+            y: owner.position.y + definition.spawnOffset.y)
+        let velocity = Vec2(
+            x: definition.velocity.x * facing.sign,
+            y: definition.velocity.y)
+        bodyWorld.register(
+            BodyDefinition(
+                entityID: entityID,
+                pushRadius: 1,
+                visualScale: owner.visualScale,
+                pushEnabled: false,
+                collisionMask: definition.collisionMask,
+                gravityScale: 0),
+            state: BodyState(
+                entityID: entityID,
+                position: position,
+                velocity: velocity,
+                facing: facing,
+                locomotion: .airborne))
+        projectiles[entityID.raw] = CombatProjectileState(
+            entityID: entityID,
+            ownerID: owner.actorID,
+            moveID: move.id,
+            moveInstanceID: timeline.instanceID,
+            definition: definition,
+            spawnedAtFrame: frame,
+            previousPosition: position)
+        events.append(CombatEvent(
+            frame: frame, kind: .projectileSpawned,
+            actorID: owner.actorID, targetID: entityID, moveID: move.id))
     }
 
     private func resolveHits(events: inout [CombatEvent]) {
@@ -444,16 +512,91 @@ public final class CombatWorld {
                 pending.append(PendingHit(
                     attackerID: attackerID,
                     defenderID: defenderID,
-                    move: attack.move,
+                    moveID: attack.move.id,
                     definition: attack.definition,
                     ledgerKey: ledgerKey,
-                    guarding: guarding))
+                    guarding: guarding,
+                    projectileID: nil))
+            }
+        }
+
+        for projectileID in projectiles.keys.sorted() {
+            guard let projectile = projectiles[projectileID],
+                  projectile.definition.collisionMask.contains(.hurt),
+                  let projectileBody = bodyWorld.state(for: projectile.entityID),
+                  let owner = snapshot[projectile.ownerID.raw] else { continue }
+            let scale = bodyWorld.definition(for: projectile.entityID)?.visualScale ?? 1
+            let startRects = projectile.definition.hit.attackBoxes.map {
+                $0.placed(
+                    at: projectile.previousPosition,
+                    facing: projectileBody.facing,
+                    scale: scale)
+            }
+            let displacement = Vec2(
+                x: projectileBody.position.x - projectile.previousPosition.x,
+                y: projectileBody.position.y - projectile.previousPosition.y)
+            var projectileHits: [(time: Double, hit: PendingHit)] = []
+            for defenderID in ids where defenderID != projectile.ownerID.raw {
+                let ledgerKey = "\(projectile.moveInstanceID)|\(projectile.definition.hit.hitGroup)|\(defenderID)"
+                let lastHitFrame = projectile.hitLedger[ledgerKey]
+                let canRehit = lastHitFrame == nil || projectile.definition.hit.rehitFrames.map {
+                    frame - (lastHitFrame ?? frame) >= Int64($0)
+                } == true
+                guard session?.permits(projectile.ownerID, EntityID(defenderID)) == true,
+                      canRehit,
+                      let defender = snapshot[defenderID],
+                      defender.invulnerabilityFrames == 0,
+                      defender.healthState == .active,
+                      defender.locomotion != .dragged,
+                      let defenderProfile = profiles[defenderID] else { continue }
+                let hurtRects = defenderProfile.hurtBoxes.map {
+                    $0.placed(at: defender.position, facing: defender.facing, scale: defender.visualScale)
+                }
+                let contactTimes = startRects.flatMap { attackRect in
+                    hurtRects.compactMap { hurtRect -> Double? in
+                        if attackRect.overlaps(hurtRect) { return 0 }
+                        return attackRect.sweep(
+                            displacement: displacement,
+                            against: hurtRect)?.time
+                    }
+                }
+                guard let contactTime = contactTimes.min() else { continue }
+                let input = inputs[defenderID] ?? .neutral
+                let attackerIsRight = owner.position.x > defender.position.x
+                let guarding = guardMatches(
+                    projectile.definition.hit.attackHeight,
+                    input: input,
+                    holdingBack: attackerIsRight ? input.left : input.right,
+                    defender: defender)
+                projectileHits.append((contactTime, PendingHit(
+                    attackerID: projectile.ownerID.raw,
+                    defenderID: defenderID,
+                    moveID: projectile.moveID,
+                    definition: projectile.definition.hit,
+                    ledgerKey: ledgerKey,
+                    guarding: guarding,
+                    projectileID: projectileID)))
+            }
+            projectileHits.sort {
+                $0.time == $1.time
+                    ? $0.hit.defenderID < $1.hit.defenderID
+                    : $0.time < $1.time
+            }
+            if projectile.definition.destroyOnHit {
+                pending.append(contentsOf: projectileHits.prefix(1).map(\.hit))
+            } else {
+                pending.append(contentsOf: projectileHits.map(\.hit))
             }
         }
 
         // Mark every attacker's contact before mutating defenders. This preserves
         // per-move hit de-duplication even when multiple actors trade on one frame.
         for hit in pending {
+            if let projectileID = hit.projectileID,
+               var projectile = projectiles[projectileID] {
+                projectile.hitLedger[hit.ledgerKey] = frame
+                projectiles[projectileID] = projectile
+            }
             guard var attacker = body(for: EntityID(hit.attackerID)) else { continue }
             attacker.hitTargets.insert(hit.defenderID)
             attacker.hitLedger[hit.ledgerKey] = frame
@@ -463,7 +606,9 @@ public final class CombatWorld {
 
         for hit in pending.sorted(by: {
             $0.defenderID == $1.defenderID
-                ? $0.attackerID < $1.attackerID
+                ? ($0.attackerID == $1.attackerID
+                    ? ($0.projectileID ?? "") < ($1.projectileID ?? "")
+                    : $0.attackerID < $1.attackerID)
                 : $0.defenderID < $1.defenderID
         }) {
             guard let attackerAtDetection = snapshot[hit.attackerID],
@@ -480,7 +625,7 @@ public final class CombatWorld {
                 events.append(CombatEvent(
                     frame: frame, kind: .blocked,
                     actorID: attackerAtDetection.actorID, targetID: defender.actorID,
-                    moveID: hit.move.id, amount: definition.chipDamage))
+                    moveID: hit.moveID, amount: definition.chipDamage))
             } else {
                 defender.hp = max(0, defender.hp - definition.damage)
                 defender.actionTimeline = nil
@@ -498,7 +643,7 @@ public final class CombatWorld {
                 events.append(CombatEvent(
                     frame: frame, kind: .hit,
                     actorID: attackerAtDetection.actorID, targetID: defender.actorID,
-                    moveID: hit.move.id, amount: definition.damage))
+                    moveID: hit.moveID, amount: definition.damage))
             }
 
             if defenderWasAlive && defender.hp == 0 {
@@ -509,10 +654,46 @@ public final class CombatWorld {
                     frame: frame, kind: .knockedOut,
                     actorID: defender.actorID,
                     targetID: attackerAtDetection.actorID,
-                    moveID: hit.move.id))
+                    moveID: hit.moveID))
             }
             save(defender)
         }
+
+        for projectileID in Set(pending.compactMap(\.projectileID)).sorted() {
+            guard projectiles[projectileID]?.definition.destroyOnHit == true else { continue }
+            removeProjectile(projectileID, events: &events)
+        }
+    }
+
+    private func expireProjectiles(environment: BodyEnvironment, events: inout [CombatEvent]) {
+        for id in projectiles.keys.sorted() {
+            guard var projectile = projectiles[id],
+                  let body = bodyWorld.state(for: projectile.entityID) else {
+                projectiles[id] = nil
+                continue
+            }
+            let age = frame - projectile.spawnedAtFrame + 1
+            let outside = (body.position.x <= environment.bounds.minX && body.velocity.x < 0) ||
+                (body.position.x >= environment.bounds.maxX && body.velocity.x > 0) ||
+                (body.position.y <= environment.bounds.minY && body.velocity.y < 0) ||
+                (body.position.y >= environment.bounds.maxY && body.velocity.y > 0)
+            if age >= Int64(projectile.definition.lifetimeFrames) || outside {
+                removeProjectile(id, events: &events)
+            } else {
+                projectile.previousPosition = body.position
+                projectiles[id] = projectile
+            }
+        }
+    }
+
+    private func removeProjectile(_ id: String, events: inout [CombatEvent]) {
+        guard let projectile = projectiles.removeValue(forKey: id) else { return }
+        bodyWorld.unregister(projectile.entityID)
+        events.append(CombatEvent(
+            frame: frame, kind: .projectileExpired,
+            actorID: projectile.ownerID,
+            targetID: projectile.entityID,
+            moveID: projectile.moveID))
     }
 
     private func guardMatches(_ height: CombatAttackHeight, input: FighterInputFrame,

@@ -3,6 +3,14 @@ import MyPetCore
 @testable import MyPet2D
 
 final class GeometryAndBodyWorldTests: XCTestCase {
+    func testLegacyBodyDefinitionDefaultsGravityScale() throws {
+        let data = Data(#"{"entityID":{"raw":"legacy"}}"#.utf8)
+        let definition = try JSONDecoder().decode(BodyDefinition.self, from: data)
+
+        XCTAssertEqual(definition.gravityScale, 1)
+        XCTAssertEqual(definition.collisionMask, [.environment, .body])
+    }
+
     func testAttachedSurfaceFractionUsesSameMarginWhenResampled() {
         let world = BodyWorld()
         let actor = EntityID("pet")
@@ -81,6 +89,31 @@ final class GeometryAndBodyWorldTests: XCTestCase {
         world.advance(environment)
         XCTAssertEqual(world.state(for: actor)?.position.y, 520)
         XCTAssertGreaterThanOrEqual(world.state(for: actor)?.position.x ?? 0, 520)
+    }
+
+    func testBodyWithoutEnvironmentMaskPassesThroughSurface() {
+        let projectile = EntityID("projectile")
+        let world = BodyWorld()
+        world.register(
+            BodyDefinition(
+                entityID: projectile, pushEnabled: false,
+                collisionMask: [.hit], gravityScale: 0),
+            state: BodyState(
+                entityID: projectile,
+                position: Vec2(x: 300, y: 390),
+                velocity: Vec2(x: 0, y: 20),
+                locomotion: .airborne))
+        let environment = BodyEnvironment(
+            bounds: Rect2D(x: 0, y: 0, width: 1200, height: 800),
+            surfaces: [Surface(
+                id: "window", kind: .windowTop,
+                left: 200, right: 600, y: 400)])
+
+        world.advance(environment)
+
+        XCTAssertNil(world.state(for: projectile)?.currentSurfaceID)
+        XCTAssertEqual(world.state(for: projectile)?.position.y, 410)
+        XCTAssertEqual(world.state(for: projectile)?.locomotion, .airborne)
     }
 
     func testPushResolutionUsesStableEntityOrder() {
