@@ -1,7 +1,15 @@
-# Unified Body and Combat Runtime
+# Transitional Body and Combat Runtime (v1)
 
-Living Desktop uses one deterministic body/combat foundation for ordinary desktop play,
-story scenes and fighting. Fighting is a capability of the world, not a second game mode.
+> **Transitional implementation note.** This document describes the v1 implementation
+> introduced before the final module split. The authoritative target architecture is
+> [Unified 2D Combat-Capable Runtime](unified-2d-combat-runtime.md). In particular, generic
+> body physics still lives in `MyPetCombat`, `PetModel` and `CombatWorld` temporarily share
+> position responsibility, the combat simulator is still a separate runner, and rendering
+> has not yet reached the final immutable `RenderSnapshot` interface.
+
+Living Desktop v1 introduces a deterministic combat/body path alongside the existing desktop
+body as a migration step. Fighting is a capability of the world, not a second game mode, but
+the single-authority body design is not complete until the target architecture above lands.
 
 ## Runtime boundaries
 
@@ -127,13 +135,15 @@ actions remain authoritative at their existing layer. The migration rule is:
 Legacy story movement currently uses `PetModel` as a compatibility façade. Its integration
 has been moved to the same fixed 60 Hz frame grid. Whenever fighting, hitstun, knock-out,
 manual control or autonomous combat owns an actor, `CombatWorld` becomes the live position
-authority and projects its body state back into the façade. This allows incremental migration
-without maintaining a second combat physics model.
+authority and projects its body state back into the façade. The synchronization seam is
+intentional migration debt: v1 still has two body implementations, and the target design
+moves their generic physics into one `MyPet2D.BodyWorld`.
 
 ## Simulation and replay
 
-`CombatDataSimulation` uses the exact `MyPetCombat` implementation used by the macOS
-runtime. `VirtualDesktop` supplies virtual screens/windows instead of AppKit/CGWindowList.
+`CombatDataSimulation` uses the same v1 `CombatWorld` implementation used by the macOS
+combat coordinator, but it remains a separate runner from `GameRuntime` in this transitional
+version. `VirtualDesktop` supplies virtual screens/windows instead of AppKit/CGWindowList.
 Snapshots contain the combat frame, bodies, profiles, input buffers and current inputs, so
 restore/replay does not fake movement by waiting a number of story ticks.
 
@@ -143,8 +153,8 @@ behavior.
 
 ## Rendering boundary
 
-Game logic never imports a concrete renderer. `ActorPresentation` consumes immutable
-presentation snapshots and writes through:
+The v1 presentation path no longer depends directly on a concrete actor window. It writes
+through the intermediate seams:
 
 - `ActorRenderBackend`;
 - `ActorRenderSurface`.
@@ -153,9 +163,8 @@ The v1 backend is `CoreAnimationRenderBackend`, implemented with native AppKit t
 panels and CALayer composition. This keeps the current desktop-window behavior and avoids a
 third-party game-engine dependency.
 
-A future Metal implementation may replace that backend (for texture atlases, batching,
-GPU effects, high-refresh interpolation, etc.) without changing MyPetCombat, GameRuntime,
-StoryDirector, content packages or the simulator.
+The target design replaces these surface-level seams with immutable `RenderSnapshot` values
+and a stable `RenderBackend`. Metal remains a measured follow-up, not part of this v1 PR.
 
 During combat, body coordinates are marked `authoritativePlacement`; presentation must not
 apply a second actor-spacing pass. Purely visual transitions such as opacity remain renderer

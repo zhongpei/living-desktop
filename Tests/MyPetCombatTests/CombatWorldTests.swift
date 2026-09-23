@@ -7,6 +7,10 @@ final class CombatWorldTests: XCTestCase {
         bounds: CombatRect(x: 0, y: 0, width: 1200, height: 800),
         surfaces: [CombatSurface(id: "floor:0", kind: .floor, left: 0, right: 1200, y: 700)])
 
+    func testSixButtonContractUsesXYZASD() {
+        XCTAssertEqual(Set(CombatButton.allCases.map(\.rawValue)), Set(["x", "y", "z", "a", "s", "d"]))
+    }
+
     func testCommandSynthesizerRoundTripsThroughRecognizer() {
         let command = CombatCommand([
             CombatCommandStep(direction: .down),
@@ -50,6 +54,7 @@ final class CombatWorldTests: XCTestCase {
         for _ in 0..<10 {
             world.setInput(.neutral, for: EntityID("a"))
             _ = world.step(environment: floor)
+            if world.body(for: EntityID("b"))?.healthState == .active { break }
         }
         let body = world.body(for: EntityID("b"))
         XCTAssertNotNil(body)

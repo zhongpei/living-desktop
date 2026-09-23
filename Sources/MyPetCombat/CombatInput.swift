@@ -1,7 +1,7 @@
 import Foundation
 
 public enum CombatButton: String, Codable, CaseIterable, Hashable, Sendable {
-    case x, y, z, a, b, c
+    case x, y, z, a, s, d
 }
 
 public struct FighterInputFrame: Codable, Equatable, Sendable {

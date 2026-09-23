@@ -35,7 +35,6 @@ final class ManualControlPanel: NSPanel {
 
         inputView.onInput = { [weak self] in self?.onInput?($0) }
         inputView.onExit = { [weak self] in self?.finish() }
-        inputView.onCycleTarget = { [weak self] in self?.onCycleTarget?() }
         NotificationCenter.default.addObserver(
             forName: NSWindow.didResignKeyNotification, object: self, queue: .main
         ) { [weak self] _ in
@@ -65,7 +64,6 @@ final class ManualControlPanel: NSPanel {
 private final class ManualControlView: NSView {
     var onInput: ((FighterInputFrame) -> Void)?
     var onExit: (() -> Void)?
-    var onCycleTarget: (() -> Void)?
     private var pressed = Set<UInt16>()
 
     override var acceptsFirstResponder: Bool { true }
@@ -89,7 +87,7 @@ private final class ManualControlView: NSView {
 
     private func emit() {
         let chars: [UInt16: CombatButton] = [
-            6: .z, 7: .x, 8: .c, // z x c
+            6: .x, 7: .y, 8: .z, // physical Z X C -> logical X Y Z
             0: .a, 1: .s, 2: .d  // a s d
         ]
         var buttons = Set<CombatButton>()

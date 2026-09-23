@@ -336,9 +336,8 @@ final class PetController {
         }
 
         let normalized = intent.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if combatEnabled && ["attack", "fight", "challenge", "combat"].contains(normalized) {
-            beginAutonomousCombat(reason: "story:\(normalized)")
-        }
+        // Legacy authored story intents stay presentation-only. Real damage is entered
+        // explicitly through manual/autonomous combat control, never by the word "attack".
         let semantic: ActionIntent
         switch normalized {
         case "run":
@@ -447,10 +446,8 @@ final class PetController {
             semantic = .socialTease
         case "hug":
             semantic = .socialHug
-        case "argue":
+        case "argue", "challenge":
             semantic = .socialArgue
-        case "challenge":
-            semantic = combatEnabled ? .taunt : .socialArgue
         case "combat_ready":
             semantic = .combatReady
         case "attack", "fight":
