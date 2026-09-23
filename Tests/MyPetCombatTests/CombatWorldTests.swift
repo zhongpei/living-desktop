@@ -8,6 +8,167 @@ final class CombatWorldTests: XCTestCase {
         bounds: CombatRect(x: 0, y: 0, width: 1200, height: 800),
         surfaces: [CombatSurface(id: "floor:0", kind: .floor, left: 0, right: 1200, y: 700)])
 
+    @discardableResult
+    private func beginSession(_ world: CombatWorld, _ ids: [String] = ["a", "b"]) -> Bool {
+        world.beginSession(
+            id: "test-session",
+            participants: ids.map(EntityID.init))
+    }
+
+    func testDamageRequiresExplicitCombatSession() {
+        let move = CombatMoveDefinition(
+            id: "hit", command: .button(.x), startupFrames: 0, activeFrames: 1,
+            recoveryFrames: 1, hit: CombatHitDefinition(damage: 25, hitStopFrames: 0),
+            visualAction: "attack")
+        let world = CombatWorld()
+        world.register(actorID: EntityID("a"), profile: CombatProfile(moves: [move]),
+                       x: 400, yFeet: 700)
+        world.register(actorID: EntityID("b"), x: 445, yFeet: 700, facing: .left)
+        world.setInput(FighterInputFrame(buttons: [.x]), for: EntityID("a"))
+
+        _ = world.step(environment: floor)
+
+        XCTAssertEqual(world.body(for: EntityID("b"))?.hp, 1000)
+        XCTAssertNil(world.session)
+    }
+
+    func testExplicitCombatSessionAllowsDamageAndCheckpointsLifecycle() throws {
+        let move = CombatMoveDefinition(
+            id: "hit", command: .button(.x), startupFrames: 0, activeFrames: 1,
+            recoveryFrames: 1, hit: CombatHitDefinition(damage: 25, hitStopFrames: 0),
+            visualAction: "attack")
+        let world = CombatWorld()
+        world.register(actorID: EntityID("a"), profile: CombatProfile(moves: [move]),
+                       x: 400, yFeet: 700)
+        world.register(actorID: EntityID("b"), x: 445, yFeet: 700, facing: .left)
+        XCTAssertTrue(beginSession(world))
+        world.setInput(FighterInputFrame(buttons: [.x]), for: EntityID("a"))
+
+        _ = world.step(environment: floor)
+        let restored = CombatWorld(checkpoint: world.checkpoint())
+
+        XCTAssertEqual(world.body(for: EntityID("b"))?.hp, 975)
+        XCTAssertEqual(restored.session, world.session)
+        XCTAssertEqual(restored.session?.state, .active)
+    }
+
+    func testLegacyHitAndCheckpointPayloadsDecodeWithRuleDefaults() throws {
+        let hit = try JSONDecoder().decode(
+            CombatHitDefinition.self,
+            from: Data(#"{"damage":25}"#.utf8))
+        XCTAssertEqual(hit.id, "primary")
+        XCTAssertEqual(hit.attackHeight, .mid)
+        XCTAssertEqual(hit.hitGroup, "primary")
+        XCTAssertNil(hit.rehitFrames)
+        XCTAssertEqual(hit.clashLevel, 0)
+
+        let world = CombatWorld()
+        world.register(actorID: EntityID("a"), x: 400, yFeet: 700)
+        var payload = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(world.checkpoint()))
+                as? [String: Any])
+        payload.removeValue(forKey: "session")
+        var rules = try XCTUnwrap(payload["rules"] as? [String: Any])
+        var actor = try XCTUnwrap(rules["a"] as? [String: Any])
+        actor.removeValue(forKey: "hitLedger")
+        rules["a"] = actor
+        payload["rules"] = rules
+
+        let restored = CombatWorld(checkpoint: try JSONDecoder().decode(
+            CombatWorldCheckpoint.self,
+            from: JSONSerialization.data(withJSONObject: payload)))
+
+        XCTAssertNil(restored.session)
+        XCTAssertEqual(restored.body(for: EntityID("a"))?.hitLedger, [:])
+    }
+
+    func testCombatSessionRejectsInvalidRosterAndCancelsWhenParticipantLeaves() {
+        let world = CombatWorld()
+        world.register(actorID: EntityID("a"), x: 400, yFeet: 700)
+        world.register(actorID: EntityID("b"), x: 445, yFeet: 700)
+
+        XCTAssertFalse(world.beginSession(id: "single", participants: [EntityID("a")]))
+        XCTAssertFalse(world.beginSession(
+            id: "unknown", participants: [EntityID("a"), EntityID("missing")]))
+        XCTAssertTrue(beginSession(world))
+
+        world.unregister(actorID: EntityID("b"))
+
+        XCTAssertEqual(world.session?.state, .cancelled)
+        XCTAssertEqual(world.session?.endedAtFrame, 0)
+    }
+
+    func testHighAndLowGuardRequireMatchingStance() {
+        func remainingHP(height: CombatAttackHeight, crouching: Bool) -> Int? {
+            let move = CombatMoveDefinition(
+                id: "height", command: .button(.x), startupFrames: 0, activeFrames: 1,
+                recoveryFrames: 1,
+                hit: CombatHitDefinition(
+                    damage: 40, chipDamage: 3, hitStopFrames: 0,
+                    attackHeight: height),
+                visualAction: "attack")
+            let world = CombatWorld()
+            world.register(actorID: EntityID("a"), profile: CombatProfile(moves: [move]),
+                           x: 400, yFeet: 700)
+            world.register(actorID: EntityID("b"), x: 445, yFeet: 700, facing: .left)
+            XCTAssertTrue(beginSession(world))
+            world.setInput(FighterInputFrame(buttons: [.x]), for: EntityID("a"))
+            world.setInput(FighterInputFrame(right: true, down: crouching), for: EntityID("b"))
+            _ = world.step(environment: floor)
+            return world.body(for: EntityID("b"))?.hp
+        }
+
+        XCTAssertEqual(remainingHP(height: .high, crouching: false), 997)
+        XCTAssertEqual(remainingHP(height: .high, crouching: true), 960)
+        XCTAssertEqual(remainingHP(height: .low, crouching: true), 997)
+        XCTAssertEqual(remainingHP(height: .low, crouching: false), 960)
+    }
+
+    func testMultiHitUsesStableHitGroupAndRehitWindow() {
+        let move = CombatMoveDefinition(
+            id: "multi", command: .button(.x), startupFrames: 0, activeFrames: 5,
+            recoveryFrames: 1,
+            hit: CombatHitDefinition(
+                id: "pulse", damage: 10, hitStopFrames: 0,
+                hitGroup: "petals", rehitFrames: 2),
+            visualAction: "attack")
+        let world = CombatWorld()
+        world.register(actorID: EntityID("a"), profile: CombatProfile(moves: [move]),
+                       x: 400, yFeet: 700)
+        world.register(actorID: EntityID("b"), x: 445, yFeet: 700, facing: .left)
+        XCTAssertTrue(beginSession(world))
+
+        for frame in 0..<6 {
+            world.setInput(frame == 0 ? FighterInputFrame(buttons: [.x]) : .neutral,
+                           for: EntityID("a"))
+            _ = world.step(environment: floor)
+        }
+
+        XCTAssertEqual(world.body(for: EntityID("b"))?.hp, 970)
+    }
+
+    func testEqualClashLevelsSuppressSameFrameDamageDeterministically() {
+        let move = CombatMoveDefinition(
+            id: "clash", command: .button(.x), startupFrames: 0, activeFrames: 1,
+            recoveryFrames: 1,
+            hit: CombatHitDefinition(damage: 40, hitStopFrames: 0, clashLevel: 1),
+            visualAction: "attack")
+        let world = CombatWorld()
+        world.register(actorID: EntityID("a"), profile: CombatProfile(moves: [move]),
+                       x: 425, yFeet: 700)
+        world.register(actorID: EntityID("b"), profile: CombatProfile(moves: [move]),
+                       x: 475, yFeet: 700, facing: .left)
+        XCTAssertTrue(beginSession(world))
+        world.setInput(FighterInputFrame(buttons: [.x]), for: EntityID("a"))
+        world.setInput(FighterInputFrame(buttons: [.x]), for: EntityID("b"))
+
+        let events = world.step(environment: floor)
+
+        XCTAssertEqual(world.body(for: EntityID("a"))?.hp, 1000)
+        XCTAssertEqual(world.body(for: EntityID("b"))?.hp, 1000)
+        XCTAssertEqual(events.filter { $0.kind == .clash }.count, 1)
+    }
+
     func testInjectedBodyWorldRemainsSinglePositionAuthorityForScriptedActor() {
         let bodies = BodyWorld()
         let actor = EntityID("scripted")
@@ -55,6 +216,7 @@ final class CombatWorldTests: XCTestCase {
         let world = CombatWorld()
         world.register(actorID: EntityID("a"), x: 400, yFeet: 700)
         world.register(actorID: EntityID("b"), x: 450, yFeet: 700, facing: .left)
+        XCTAssertTrue(beginSession(world))
         for _ in 0..<8 {
             world.setInput(FighterInputFrame(buttons: [.x]), for: EntityID("a"), authority: .manual)
             _ = world.step(environment: floor)
@@ -94,6 +256,7 @@ final class CombatWorldTests: XCTestCase {
         world.register(actorID: EntityID("a"), profile: CombatProfile(moves: [move]),
                        x: 400, yFeet: 700)
         world.register(actorID: EntityID("b"), x: 445, yFeet: 700, facing: .left)
+        XCTAssertTrue(beginSession(world))
         world.setInput(FighterInputFrame(buttons: [.x]), for: EntityID("a"))
 
         _ = world.step(environment: floor)
@@ -112,6 +275,7 @@ final class CombatWorldTests: XCTestCase {
         world.register(actorID: EntityID("a"), profile: CombatProfile(moves: [move]),
                        x: 400, yFeet: 700)
         world.register(actorID: EntityID("b"), x: 445, yFeet: 700, facing: .left)
+        XCTAssertTrue(beginSession(world))
         world.setInput(FighterInputFrame(buttons: [.x]), for: EntityID("a"))
         _ = world.step(environment: floor)
         let contactFrame = world.body(for: EntityID("a"))?.actionTimeline?.frame
@@ -165,6 +329,7 @@ final class CombatWorldTests: XCTestCase {
         let world = CombatWorld()
         world.register(actorID: EntityID("a"), profile: profile, x: 400, yFeet: 700)
         world.register(actorID: EntityID("b"), profile: profile, x: 450, yFeet: 700, facing: .left)
+        XCTAssertTrue(beginSession(world))
         world.setInput(FighterInputFrame(buttons: [.x]), for: EntityID("a"))
         _ = world.step(environment: floor)
         for _ in 0..<10 {
@@ -202,6 +367,7 @@ final class CombatWorldTests: XCTestCase {
         let world = CombatWorld()
         world.register(actorID: EntityID("a"), x: 400, yFeet: 700)
         world.register(actorID: EntityID("b"), x: 450, yFeet: 700, facing: .left)
+        XCTAssertTrue(beginSession(world))
         for _ in 0..<90 {
             world.setInput(FighterInputFrame(buttons: [.x]), for: EntityID("a"))
             _ = world.step(environment: floor)
@@ -213,6 +379,7 @@ final class CombatWorldTests: XCTestCase {
         let world = CombatWorld()
         world.register(actorID: EntityID("a"), x: 425, yFeet: 700)
         world.register(actorID: EntityID("b"), x: 475, yFeet: 700, facing: .left)
+        XCTAssertTrue(beginSession(world))
         for _ in 0..<5 {
             world.setInput(FighterInputFrame(buttons: [.x]), for: EntityID("a"))
             world.setInput(FighterInputFrame(buttons: [.x]), for: EntityID("b"))
@@ -233,6 +400,7 @@ final class CombatWorldTests: XCTestCase {
         let world = CombatWorld()
         world.register(actorID: EntityID("a"), profile: profile, x: 400, yFeet: 700)
         world.register(actorID: EntityID("b"), profile: profile, x: 450, yFeet: 700, facing: .left)
+        XCTAssertTrue(beginSession(world))
         world.setInput(FighterInputFrame(buttons: [.x]), for: EntityID("a"))
         _ = world.step(environment: floor)
         XCTAssertEqual(world.body(for: EntityID("b"))?.healthState, .downed)
@@ -254,6 +422,7 @@ final class CombatWorldTests: XCTestCase {
             let world = CombatWorld()
             world.register(actorID: EntityID("a"), x: 300, yFeet: 700)
             world.register(actorID: EntityID("b"), x: 500, yFeet: 700, facing: .left)
+            XCTAssertTrue(beginSession(world))
             for frame in 0..<120 {
                 world.setInput(frame < 40 ? FighterInputFrame(right: true) :
                     FighterInputFrame(buttons: [.x]), for: EntityID("a"))

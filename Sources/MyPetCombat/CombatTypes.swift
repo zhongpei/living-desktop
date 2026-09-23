@@ -14,6 +14,10 @@ public enum CombatControlAuthority: String, Codable, Sendable {
     case autonomous, manual, pointer, scripted
 }
 
+public enum CombatAttackHeight: String, Codable, Sendable {
+    case high, mid, low, air, throwAttack
+}
+
 public struct CollisionBox: Codable, Equatable, Sendable {
     public var rect: CombatRect
     public init(x1: Double, y1: Double, x2: Double, y2: Double) {
@@ -33,6 +37,7 @@ public struct CollisionBox: Codable, Equatable, Sendable {
 }
 
 public struct CombatHitDefinition: Codable, Equatable, Sendable {
+    public var id: String
     public var damage: Int
     public var chipDamage: Int
     public var hitStopFrames: Int
@@ -41,11 +46,20 @@ public struct CombatHitDefinition: Codable, Equatable, Sendable {
     public var knockbackX: Double
     public var knockbackY: Double
     public var attackBoxes: [CollisionBox]
+    public var attackHeight: CombatAttackHeight
+    public var hitGroup: String
+    public var rehitFrames: Int?
+    public var clashLevel: Int
 
-    public init(damage: Int = 40, chipDamage: Int = 0, hitStopFrames: Int = 5,
+    public init(id: String = "primary", damage: Int = 40, chipDamage: Int = 0,
+                hitStopFrames: Int = 5,
                 hitStunFrames: Int = 14, blockStunFrames: Int = 9,
                 knockbackX: Double = 3.2, knockbackY: Double = 0,
-                attackBoxes: [CollisionBox] = [CollisionBox(x1: 18, y1: -78, x2: 78, y2: -25)]) {
+                attackBoxes: [CollisionBox] = [CollisionBox(x1: 18, y1: -78, x2: 78, y2: -25)],
+                attackHeight: CombatAttackHeight = .mid,
+                hitGroup: String = "primary", rehitFrames: Int? = nil,
+                clashLevel: Int = 0) {
+        self.id = id.isEmpty ? "primary" : id
         self.damage = max(0, damage)
         self.chipDamage = max(0, chipDamage)
         self.hitStopFrames = max(0, hitStopFrames)
@@ -54,6 +68,34 @@ public struct CombatHitDefinition: Codable, Equatable, Sendable {
         self.knockbackX = knockbackX
         self.knockbackY = knockbackY
         self.attackBoxes = attackBoxes
+        self.attackHeight = attackHeight
+        self.hitGroup = hitGroup.isEmpty ? self.id : hitGroup
+        self.rehitFrames = rehitFrames.map { max(1, $0) }
+        self.clashLevel = max(0, clashLevel)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, damage, chipDamage, hitStopFrames, hitStunFrames, blockStunFrames
+        case knockbackX, knockbackY, attackBoxes, attackHeight, hitGroup, rehitFrames, clashLevel
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try values.decodeIfPresent(String.self, forKey: .id) ?? "primary",
+            damage: try values.decodeIfPresent(Int.self, forKey: .damage) ?? 40,
+            chipDamage: try values.decodeIfPresent(Int.self, forKey: .chipDamage) ?? 0,
+            hitStopFrames: try values.decodeIfPresent(Int.self, forKey: .hitStopFrames) ?? 5,
+            hitStunFrames: try values.decodeIfPresent(Int.self, forKey: .hitStunFrames) ?? 14,
+            blockStunFrames: try values.decodeIfPresent(Int.self, forKey: .blockStunFrames) ?? 9,
+            knockbackX: try values.decodeIfPresent(Double.self, forKey: .knockbackX) ?? 3.2,
+            knockbackY: try values.decodeIfPresent(Double.self, forKey: .knockbackY) ?? 0,
+            attackBoxes: try values.decodeIfPresent([CollisionBox].self, forKey: .attackBoxes)
+                ?? [CollisionBox(x1: 18, y1: -78, x2: 78, y2: -25)],
+            attackHeight: try values.decodeIfPresent(CombatAttackHeight.self, forKey: .attackHeight) ?? .mid,
+            hitGroup: try values.decodeIfPresent(String.self, forKey: .hitGroup) ?? "primary",
+            rehitFrames: try values.decodeIfPresent(Int.self, forKey: .rehitFrames),
+            clashLevel: try values.decodeIfPresent(Int.self, forKey: .clashLevel) ?? 0)
     }
 }
 
@@ -166,6 +208,8 @@ public struct CombatRuleState: Codable, Equatable, Sendable {
     public var invulnerabilityFrames: Int
     public var authority: CombatControlAuthority
     public var hitTargets: Set<String>
+    /// Per move-instance and hit-group contact frames. Optional preserves old checkpoints.
+    public var hitLedger: [String: Int64]?
     public var visualScale: Double
 
     public init(actorID: EntityID, hp: Int = 1000, visualScale: Double = 1) {
@@ -180,6 +224,7 @@ public struct CombatRuleState: Codable, Equatable, Sendable {
         self.invulnerabilityFrames = 0
         self.authority = .autonomous
         self.hitTargets = []
+        self.hitLedger = [:]
         self.visualScale = max(0.05, visualScale)
     }
 
@@ -254,6 +299,10 @@ public struct CombatBodyState: Codable, Equatable, Sendable {
         get { rules.hitTargets }
         set { rules.hitTargets = newValue }
     }
+    public var hitLedger: [String: Int64] {
+        get { rules.hitLedger ?? [:] }
+        set { rules.hitLedger = newValue }
+    }
     public var visualScale: Double {
         get { rules.visualScale }
         set { rules.visualScale = max(0.05, newValue) }
@@ -263,7 +312,7 @@ public struct CombatBodyState: Codable, Equatable, Sendable {
 }
 
 public enum CombatEventKind: String, Codable, Sendable {
-    case moveStarted, hit, blocked, knockedOut, downed, recoveryStarted, recovered
+    case moveStarted, hit, blocked, clash, knockedOut, downed, recoveryStarted, recovered
 }
 
 public struct CombatEvent: Codable, Equatable, Sendable {
@@ -298,15 +347,17 @@ public struct CombatWorldCheckpoint: Codable, Equatable, Sendable {
     public var profiles: [String: CombatProfile]
     public var inputs: [String: FighterInputFrame]
     public var buffers: [String: CombatInputBuffer]
+    public var session: CombatSession?
 
     public init(frame: Int64, bodyWorld: BodyWorldCheckpoint, rules: [String: CombatRuleState],
                 profiles: [String: CombatProfile], inputs: [String: FighterInputFrame],
-                buffers: [String: CombatInputBuffer]) {
+                buffers: [String: CombatInputBuffer], session: CombatSession? = nil) {
         self.frame = frame
         self.bodyWorld = bodyWorld
         self.rules = rules
         self.profiles = profiles
         self.inputs = inputs
         self.buffers = buffers
+        self.session = session
     }
 }

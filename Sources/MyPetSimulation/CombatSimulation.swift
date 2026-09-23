@@ -82,6 +82,9 @@ public final class CombatDataSimulation {
             combat.register(actorID: actor.actorID, profile: actor.profile,
                             x: actor.x, yFeet: actor.yFeet, facing: actor.facing)
         }
+        _ = combat.beginSession(
+            id: "simulation:\(scenario.id)",
+            participants: scenario.actors.map(\.actorID))
     }
 
     public init(snapshot: CombatSimulationSnapshot) {
