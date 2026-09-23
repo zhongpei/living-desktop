@@ -78,6 +78,7 @@ final class BrainPrefixTests: XCTestCase {
                        "前缀不依赖实现术语")
         XCTAssertTrue(messages[0]["content"]?.contains("只输出台词本身") == true)
         XCTAssertTrue(messages[0]["content"]?.contains("不加解释、标签、JSON") == true)
+        XCTAssertTrue(messages[0]["content"]?.contains("不颠倒谁对谁做了什么") == true)
         XCTAssertFalse(messages[0]["content"]?.contains("emotion") == true)
         XCTAssertEqual(messages.last?["content"], "")
 
