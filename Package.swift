@@ -50,7 +50,7 @@ let package = Package(
         ),
         .target(
             name: "MyPetSimulation",
-            dependencies: ["MyPetCore", "MyPetEngine"],
+            dependencies: ["MyPetCore", "MyPetCombat", "MyPetEngine"],
             path: "Sources/MyPetSimulation"
         ),
         // Needle 3 C 接口：needle.h + shim（空实现，只为生成 C 模块），
@@ -121,7 +121,7 @@ let package = Package(
         ),
         .testTarget(
             name: "MyPetCoreTests",
-            dependencies: ["MyPetCore", "MyPetEngine", "MyPetSimulation", "MyPetContent"],
+            dependencies: ["MyPetCore", "MyPetCombat", "MyPetEngine", "MyPetSimulation", "MyPetContent"],
             path: "Tests/MyPetCoreTests"
         ),
         .testTarget(
