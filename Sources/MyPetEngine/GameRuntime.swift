@@ -1,6 +1,7 @@
 import Foundation
 import MyPetCore
 import MyPet2D
+import MyPetCombat
 
 /// Platform-neutral facts needed by the semantic chain. Real macOS input and
 /// `VirtualDesktop` both project into this value; neither platform leaks into
@@ -35,23 +36,26 @@ public struct GameRuntimeCheckpoint: Codable, Equatable, Sendable {
     public var platformIngress: PlatformEventBufferSnapshot
     public var body: BodyRuntimeSnapshot
     public var bodyClock: BodyFrameAccumulator
+    public var combat: CombatRuntimeCheckpoint?
 
     public init(
         kernel: KernelSnapshot,
         storyInterruptionPolicy: StoryInterruptionPolicy,
         platformIngress: PlatformEventBufferSnapshot,
         body: BodyRuntimeSnapshot,
-        bodyClock: BodyFrameAccumulator? = nil
+        bodyClock: BodyFrameAccumulator? = nil,
+        combat: CombatRuntimeCheckpoint? = nil
     ) {
         self.kernel = kernel
         self.storyInterruptionPolicy = storyInterruptionPolicy
         self.platformIngress = platformIngress
         self.body = body
         self.bodyClock = bodyClock ?? BodyFrameAccumulator(frame: kernel.clock.tick * 3)
+        self.combat = combat
     }
 
     private enum CodingKeys: String, CodingKey {
-        case kernel, storyInterruptionPolicy, platformIngress, body, bodyClock
+        case kernel, storyInterruptionPolicy, platformIngress, body, bodyClock, combat
     }
 
     public init(from decoder: Decoder) throws {
@@ -65,16 +69,23 @@ public struct GameRuntimeCheckpoint: Codable, Equatable, Sendable {
         bodyClock = try container.decodeIfPresent(
             BodyFrameAccumulator.self,
             forKey: .bodyClock) ?? BodyFrameAccumulator(frame: kernel.clock.tick * 3)
+        combat = try container.decodeIfPresent(CombatRuntimeCheckpoint.self, forKey: .combat)
     }
 }
 
 public struct RuntimeAdvanceResult: Equatable, Sendable {
     public var bodyFramesAdvanced: Int
     public var semanticReports: [TickReport]
+    public var combatEvents: [CombatEvent]
 
-    public init(bodyFramesAdvanced: Int, semanticReports: [TickReport]) {
+    public init(
+        bodyFramesAdvanced: Int,
+        semanticReports: [TickReport],
+        combatEvents: [CombatEvent] = []
+    ) {
         self.bodyFramesAdvanced = bodyFramesAdvanced
         self.semanticReports = semanticReports
+        self.combatEvents = combatEvents
     }
 }
 
@@ -89,6 +100,7 @@ public final class GameRuntime {
     private(set) var kernel: GameKernel
     private let platformIngress: PlatformEventBuffer
     private let bodyRuntime: BodyRuntime
+    public let combatRuntime: CombatRuntime?
     private var bodyClock = BodyFrameAccumulator()
 
     // Semantic work is allowed to submit late events from inside `step`, hence
@@ -101,13 +113,15 @@ public final class GameRuntime {
     public init(
         kernel: GameKernel = GameKernel(),
         platformIngressCapacity: Int = 256,
-        bodyExecutionMode: BodyExecutionMode = .headless
+        bodyExecutionMode: BodyExecutionMode = .headless,
+        combatRuntime: CombatRuntime? = nil
     ) {
         let ownedKernel = GameKernel(snapshot: kernel.snapshot())
         ownedKernel.storyInterruptionPolicy = kernel.storyInterruptionPolicy
         self.kernel = ownedKernel
         self.platformIngress = PlatformEventBuffer(capacity: platformIngressCapacity)
         self.bodyRuntime = BodyRuntime(mode: bodyExecutionMode)
+        self.combatRuntime = combatRuntime
         self.bodyClock = BodyFrameAccumulator(frame: ownedKernel.clock.tick * 3)
     }
 
@@ -121,7 +135,8 @@ public final class GameRuntime {
         self.init(
             kernel: kernel,
             platformIngressCapacity: checkpoint.platformIngress.capacity,
-            bodyExecutionMode: checkpoint.body.mode)
+            bodyExecutionMode: checkpoint.body.mode,
+            combatRuntime: checkpoint.combat.map(CombatRuntime.init(checkpoint:)))
         platformIngress.restore(checkpoint.platformIngress)
         bodyRuntime.restore(checkpoint.body)
         bodyClock = checkpoint.bodyClock
@@ -194,7 +209,9 @@ public final class GameRuntime {
     @discardableResult
     public func advance(
         elapsedSeconds: Double,
-        bodyStep: ((Int64) -> Void)? = nil
+        combatEnvironment: BodyEnvironment? = nil,
+        bodyStep: ((Int64) -> Void)? = nil,
+        semanticStep: (() -> TickReport?)? = nil
     ) -> RuntimeAdvanceResult {
         withState {
             guard !advancing else {
@@ -204,16 +221,26 @@ public final class GameRuntime {
             defer { advancing = false }
             let frames = bodyClock.consume(elapsedSeconds: elapsedSeconds)
             var reports: [TickReport] = []
+            var combatEvents: [CombatEvent] = []
             reports.reserveCapacity(frames.count / 3 + 1)
             for frame in frames {
                 bodyStep?(frame)
-                if (frame + 1).isMultiple(of: 3), let report = step() {
-                    reports.append(report)
+                if let combatEnvironment, let combatRuntime {
+                    combatEvents.append(contentsOf: combatRuntime.advance(
+                        environment: combatEnvironment))
+                }
+                if (frame + 1).isMultiple(of: 3) {
+                    if let semanticStep {
+                        if let report = semanticStep() { reports.append(report) }
+                    } else if let report = step() {
+                        reports.append(report)
+                    }
                 }
             }
             return RuntimeAdvanceResult(
                 bodyFramesAdvanced: frames.count,
-                semanticReports: reports)
+                semanticReports: reports,
+                combatEvents: combatEvents)
         }
     }
 
@@ -419,7 +446,8 @@ public final class GameRuntime {
                 storyInterruptionPolicy: kernel.storyInterruptionPolicy,
                 platformIngress: platformIngress.snapshot(),
                 body: bodyRuntime.checkpoint(),
-                bodyClock: bodyClock)
+                bodyClock: bodyClock,
+                combat: combatRuntime?.checkpoint())
         }
     }
 
@@ -460,13 +488,17 @@ public final class GameRuntime {
     public func restore(_ checkpoint: GameRuntimeCheckpoint) {
         withState {
             guard !stepping, !advancing,
-                  checkpoint.body.mode == bodyRuntime.mode else { return }
+                  checkpoint.body.mode == bodyRuntime.mode,
+                  (checkpoint.combat == nil) == (combatRuntime == nil) else { return }
             let restoredKernel = GameKernel(snapshot: checkpoint.kernel)
             restoredKernel.storyInterruptionPolicy = checkpoint.storyInterruptionPolicy
             kernel = restoredKernel
             platformIngress.restore(checkpoint.platformIngress)
             bodyRuntime.restore(checkpoint.body)
             bodyClock = checkpoint.bodyClock
+            if let combat = checkpoint.combat, let combatRuntime {
+                combatRuntime.restore(combat)
+            }
         }
     }
 

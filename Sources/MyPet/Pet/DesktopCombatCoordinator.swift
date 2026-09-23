@@ -9,17 +9,16 @@ import MyPetEngine
 /// hitboxes, HP and recovery are resolved on a single deterministic timeline.
 @MainActor
 final class DesktopCombatCoordinator {
-    let bodyWorld: BodyWorld
-    let world: CombatWorld
-    private var frameClock = CombatFrameClock()
-    private let policy = UtilityCombatPolicy()
-    private var controlRouter = ControlRouter()
+    private let combatRuntime: CombatRuntime
+    private let runtime: GameRuntime
+    var bodyWorld: BodyWorld { combatRuntime.bodyWorld }
+    var world: CombatWorld { combatRuntime.world }
     private var registeredActors = Set<String>()
 
     init() {
-        let bodyWorld = BodyWorld()
-        self.bodyWorld = bodyWorld
-        self.world = CombatWorld(bodyWorld: bodyWorld)
+        let combatRuntime = CombatRuntime()
+        self.combatRuntime = combatRuntime
+        self.runtime = GameRuntime(bodyExecutionMode: .external, combatRuntime: combatRuntime)
     }
 
     func register(actorID: EntityID, profile: CombatProfile, x: CGFloat, yFeet: CGFloat,
@@ -29,57 +28,47 @@ final class DesktopCombatCoordinator {
             return
         }
         registeredActors.insert(actorID.raw)
-        world.register(
+        combatRuntime.register(
             actorID: actorID,
             profile: profile,
             x: Double(x),
             yFeet: Double(yFeet),
             facing: facingRight ? .right : .left,
             visualScale: max(0.05, Double(displayHeight) / 110.0))
-        refreshSession()
     }
 
     func unregister(actorID: EntityID) {
         registeredActors.remove(actorID.raw)
-        controlRouter.removeActor(actorID)
-        world.unregister(actorID: actorID)
-        refreshSession()
+        combatRuntime.unregister(actorID)
     }
 
     func setManualInput(_ input: FighterInputFrame, actorID: EntityID) {
-        controlRouter.setInput(input, source: .manual, for: actorID)
+        combatRuntime.setInput(input, source: .manual, for: actorID)
     }
 
     func beginManual(actorID: EntityID) {
-        controlRouter.deactivate(.autonomous, for: actorID)
-        controlRouter.activate(.manual, for: actorID)
-        refreshSession()
+        combatRuntime.deactivate(.autonomous, for: actorID)
+        combatRuntime.activate(.manual, for: actorID)
     }
 
     func endManual(actorID: EntityID) {
-        controlRouter.deactivate(.manual, for: actorID)
-        applyResolvedInput(for: actorID)
-        refreshSession()
+        combatRuntime.deactivate(.manual, for: actorID)
     }
 
     func beginAutonomousCombat(actorID: EntityID) {
-        controlRouter.activate(.autonomous, for: actorID)
-        refreshSession()
+        combatRuntime.activate(.autonomous, for: actorID)
     }
 
     func endAutonomousCombat(actorID: EntityID) {
-        controlRouter.deactivate(.autonomous, for: actorID)
-        applyResolvedInput(for: actorID)
-        refreshSession()
+        combatRuntime.deactivate(.autonomous, for: actorID)
     }
 
     func beginPointerDrag(actorID: EntityID) {
-        controlRouter.activate(.pointer, for: actorID)
-        applyResolvedInput(for: actorID)
+        combatRuntime.activate(.pointer, for: actorID)
     }
 
     func endPointerDrag(actorID: EntityID) {
-        guard controlRouter.isActive(.pointer, for: actorID) else { return }
+        guard combatRuntime.isActive(.pointer, for: actorID) else { return }
     }
 
     func advance(
@@ -87,76 +76,14 @@ final class DesktopCombatCoordinator {
         environment: BodyEnvironment,
         beforeFrame: (() -> Void)? = nil
     ) -> [CombatEvent] {
-        let frames = frameClock.advance(elapsedSeconds: elapsedSeconds)
-        guard frames > 0 else { return [] }
-        var all: [CombatEvent] = []
-        for _ in 0..<frames {
-            beforeFrame?()
-            let snapshot = world.snapshot()
-            for body in snapshot.bodies {
-                if controlRouter.isActive(.autonomous, for: body.actorID) {
-                    let opponents = snapshot.bodies.filter {
-                        $0.actorID != body.actorID && $0.healthState == .active
-                    }
-                    controlRouter.setInput(
-                        policy.decide(CombatObservation(selfBody: body, opponents: opponents)),
-                        source: .autonomous,
-                        for: body.actorID)
-                }
-                applyResolvedInput(for: body.actorID)
-            }
-            let frameEvents = world.step(environment: environment)
-            all.append(contentsOf: frameEvents)
-            endAutonomousSparringOnKnockout(frameEvents)
-            restorePointerAuthorityAfterLanding()
-        }
-        return all
+        runtime.advance(
+            elapsedSeconds: elapsedSeconds,
+            combatEnvironment: environment,
+            bodyStep: { _ in beforeFrame?() }).combatEvents
     }
 
     func body(actorID: EntityID) -> CombatBodyState? { world.body(for: actorID) }
 
-    private func endAutonomousSparringOnKnockout(_ events: [CombatEvent]) {
-        var changed = false
-        for event in events where event.kind == .knockedOut {
-            let involved = [event.actorID, event.targetID].compactMap { $0 }
-            for actorID in involved
-            where controlRouter.isActive(.autonomous, for: actorID) {
-                changed = true
-                controlRouter.deactivate(.autonomous, for: actorID)
-                applyResolvedInput(for: actorID)
-            }
-        }
-        if changed { refreshSession() }
-    }
-
-    private func restorePointerAuthorityAfterLanding() {
-        for id in registeredActors.sorted() {
-            let actorID = EntityID(id)
-            guard controlRouter.isActive(.pointer, for: actorID),
-                  let body = world.body(for: actorID),
-                  body.locomotion == .grounded else { continue }
-            controlRouter.deactivate(.pointer, for: actorID)
-            applyResolvedInput(for: actorID)
-        }
-    }
-
-    private func refreshSession() {
-        let requested = controlRouter.hasAnyActive([.manual, .authored, .autonomous])
-        if requested, registeredActors.count >= 2 {
-            _ = world.beginSession(
-                id: "desktop",
-                participants: registeredActors.sorted().map(EntityID.init))
-        } else if world.session?.state == .active {
-            world.endSession(cancelled: false)
-        }
-    }
-
-    private func applyResolvedInput(for actorID: EntityID) {
-        if let route = controlRouter.resolve(for: actorID) {
-            world.setInput(route.input, for: actorID, authority: route.authority)
-        } else {
-            world.setInput(.neutral, for: actorID, authority: .scripted)
-        }
-    }
+    func checkpoint() -> GameRuntimeCheckpoint { runtime.checkpoint() }
 
 }

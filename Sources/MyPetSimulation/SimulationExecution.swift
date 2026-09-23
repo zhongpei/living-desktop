@@ -187,27 +187,41 @@ public final class DataSimulation {
 
     public init(scenario: HarnessScenario) {
         self.scenario = scenario
-        self.runtime = GameRuntime(kernel: GameKernel(scenario: scenario))
         self.desktop = scenario.desktop
         self.pipeline = scenario.pipeline.map { SemanticPipeline(configuration: $0) }
         if !scenario.combatActors.isEmpty {
-            self.combatSimulation = CombatDataSimulation(scenario: VirtualCombatScenario(
+            let combatScenario = VirtualCombatScenario(
                 id: scenario.id + "-combat",
                 desktop: scenario.desktop,
                 actors: scenario.combatActors,
                 inputs: scenario.combatInputs,
-                durationFrames: scenario.durationTicks * 3))
+                durationFrames: scenario.durationTicks * 3)
+            let runtime = GameRuntime(
+                kernel: GameKernel(scenario: scenario),
+                combatRuntime: CombatDataSimulation.makeCombatRuntime(scenario: combatScenario))
+            self.runtime = runtime
+            self.combatSimulation = CombatDataSimulation(
+                scenario: combatScenario, runtime: runtime, desktop: scenario.desktop)
         } else {
+            self.runtime = GameRuntime(kernel: GameKernel(scenario: scenario))
             self.combatSimulation = nil
         }
     }
 
     public init(snapshot: DataSimulationSnapshot) {
         self.scenario = snapshot.scenario
-        self.runtime = snapshot.runtimeCheckpoint.map(GameRuntime.init(checkpoint:))
-            ?? GameRuntime(snapshot: snapshot.kernel)
+        var runtimeCheckpoint = snapshot.runtimeCheckpoint
+            ?? GameRuntime(snapshot: snapshot.kernel).checkpoint()
+        if runtimeCheckpoint.combat == nil,
+           let upgradedCombat = snapshot.combat?.runtime.combat {
+            runtimeCheckpoint.combat = upgradedCombat
+        }
+        let restoredRuntime = GameRuntime(checkpoint: runtimeCheckpoint)
+        self.runtime = restoredRuntime
         self.desktop = snapshot.desktop
-        self.combatSimulation = snapshot.combat.map(CombatDataSimulation.init(snapshot:))
+        self.combatSimulation = snapshot.combat.map {
+            CombatDataSimulation(snapshot: $0, runtime: restoredRuntime)
+        }
         if let configuration = snapshot.scenario.pipeline {
             let pipeline = SemanticPipeline(configuration: configuration)
             if let snapshot = snapshot.pipeline { pipeline.restore(snapshot) }
@@ -221,19 +235,25 @@ public final class DataSimulation {
     public func step() -> TickReport {
         let tick = runtime.clock.tick
         let events = desktop.advance(to: tick)
-        let report: TickReport
-        if let pipeline {
-            report = runtime.step(
-                events: events,
-                pipeline: pipeline,
-                context: desktop.runtimeContext)!
-        } else {
-            report = runtime.step(events: events)!
+        let semanticStep = { [self] () -> TickReport? in
+            if let pipeline {
+                return runtime.step(
+                    events: events,
+                    pipeline: pipeline,
+                    context: desktop.runtimeContext)
+            }
+            return runtime.step(events: events)
         }
-        // 50 ms narrative ticks contain exactly three 60 Hz body/combat frames.
-        // Legacy scenarios without a combat track pay no cost.
-        if let combatSimulation { _ = combatSimulation.run(frames: 3) }
-        return report
+        guard let combatSimulation else { return semanticStep()! }
+        var report: TickReport?
+        for _ in 0..<3 {
+            _ = combatSimulation.step {
+                let value = semanticStep()
+                report = value
+                return value
+            }
+        }
+        return report!
     }
 
     @discardableResult

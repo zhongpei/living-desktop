@@ -1,6 +1,8 @@
 import Foundation
 import MyPetCombat
 import MyPetCore
+import MyPetEngine
+import MyPet2D
 
 public struct CombatInputEvent: Codable, Equatable, Sendable {
     public var frame: Int64
@@ -51,65 +53,131 @@ public struct VirtualCombatScenario: Codable, Equatable, Sendable {
 public struct CombatSimulationSnapshot: Codable, Equatable, Sendable {
     public var scenario: VirtualCombatScenario
     public var desktop: VirtualDesktop
-    public var combat: CombatWorldCheckpoint
-    public var activeInputs: [String: FighterInputFrame]
+    public var runtime: GameRuntimeCheckpoint
 
-    public init(scenario: VirtualCombatScenario, desktop: VirtualDesktop,
-                combat: CombatWorldCheckpoint, activeInputs: [String: FighterInputFrame]) {
+    public init(
+        scenario: VirtualCombatScenario,
+        desktop: VirtualDesktop,
+        runtime: GameRuntimeCheckpoint
+    ) {
         self.scenario = scenario
         self.desktop = desktop
-        self.combat = combat
-        self.activeInputs = activeInputs
+        self.runtime = runtime
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case scenario, desktop, runtime, combat, activeInputs
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        scenario = try values.decode(VirtualCombatScenario.self, forKey: .scenario)
+        desktop = try values.decode(VirtualDesktop.self, forKey: .desktop)
+        if let runtime = try values.decodeIfPresent(
+            GameRuntimeCheckpoint.self, forKey: .runtime) {
+            self.runtime = runtime
+            return
+        }
+
+        // Transitional combat-runner recordings stored the rules world and
+        // active input separately. Upgrade them into the unified checkpoint.
+        let legacyWorld = try values.decode(CombatWorldCheckpoint.self, forKey: .combat)
+        let legacyInputs = try values.decodeIfPresent(
+            [String: FighterInputFrame].self, forKey: .activeInputs) ?? [:]
+        var controls = ControlRouter()
+        for id in legacyWorld.rules.keys.sorted() {
+            controls.activate(
+                .authored,
+                for: EntityID(id),
+                input: legacyInputs[id] ?? legacyWorld.inputs[id] ?? .neutral)
+        }
+        let combat = CombatRuntime(checkpoint: CombatRuntimeCheckpoint(
+            world: legacyWorld, controls: controls))
+        var upgraded = GameRuntime(combatRuntime: combat).checkpoint()
+        upgraded.bodyClock = BodyFrameAccumulator(frame: legacyWorld.frame)
+        runtime = upgraded
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(scenario, forKey: .scenario)
+        try values.encode(desktop, forKey: .desktop)
+        try values.encode(runtime, forKey: .runtime)
     }
 }
 
-/// Headless combat uses the exact MyPetCombat world used by AppKit. Only the environment
-/// adapter changes. This makes hitboxes, gravity, moving windows, KO/recovery and input
-/// command matching replayable without a renderer.
+/// VirtualDesktop is an environment adapter around the same `GameRuntime` and
+/// `CombatRuntime` used by production. It owns no parallel combat clock.
 public final class CombatDataSimulation {
     public let scenario: VirtualCombatScenario
     public private(set) var desktop: VirtualDesktop
-    public private(set) var combat: CombatWorld
-    private var activeInputs: [String: FighterInputFrame] = [:]
+    public let runtime: GameRuntime
+    public var combatRuntime: CombatRuntime { runtime.combatRuntime! }
+    public var combat: CombatWorld { combatRuntime.world }
+    public var digest: CombatRuntimeDigest { combatRuntime.digest }
     private let eventsByFrame: [Int64: [CombatInputEvent]]
 
     public init(scenario: VirtualCombatScenario) {
+        let combat = Self.makeCombatRuntime(scenario: scenario)
         self.scenario = scenario
         self.desktop = scenario.desktop
-        self.combat = CombatWorld()
+        self.runtime = GameRuntime(combatRuntime: combat)
         self.eventsByFrame = Dictionary(grouping: scenario.inputs, by: \.frame)
-        for actor in scenario.actors {
-            combat.register(actorID: actor.actorID, profile: actor.profile,
-                            x: actor.x, yFeet: actor.yFeet, facing: actor.facing)
-        }
-        _ = combat.beginSession(
-            id: "simulation:\(scenario.id)",
-            participants: scenario.actors.map(\.actorID))
+    }
+
+    init(scenario: VirtualCombatScenario, runtime: GameRuntime, desktop: VirtualDesktop) {
+        precondition(runtime.combatRuntime != nil)
+        self.scenario = scenario
+        self.desktop = desktop
+        self.runtime = runtime
+        self.eventsByFrame = Dictionary(grouping: scenario.inputs, by: \.frame)
+    }
+
+    init(snapshot: CombatSimulationSnapshot, runtime: GameRuntime) {
+        precondition(runtime.combatRuntime != nil)
+        self.scenario = snapshot.scenario
+        self.desktop = snapshot.desktop
+        self.runtime = runtime
+        self.eventsByFrame = Dictionary(grouping: snapshot.scenario.inputs, by: \.frame)
     }
 
     public init(snapshot: CombatSimulationSnapshot) {
         self.scenario = snapshot.scenario
         self.desktop = snapshot.desktop
-        self.combat = CombatWorld(checkpoint: snapshot.combat)
-        self.activeInputs = snapshot.activeInputs
+        self.runtime = GameRuntime(checkpoint: snapshot.runtime)
+        precondition(runtime.combatRuntime != nil)
         self.eventsByFrame = Dictionary(grouping: snapshot.scenario.inputs, by: \.frame)
+    }
+
+    static func makeCombatRuntime(scenario: VirtualCombatScenario) -> CombatRuntime {
+        let runtime = CombatRuntime()
+        for actor in scenario.actors {
+            runtime.register(actorID: actor.actorID, profile: actor.profile,
+                             x: actor.x, yFeet: actor.yFeet, facing: actor.facing)
+            runtime.activate(.authored, for: actor.actorID)
+        }
+        _ = runtime.beginSession(id: "simulation:\(scenario.id)")
+        return runtime
     }
 
     @discardableResult
     public func step() -> [CombatEvent] {
-        let frame = combat.frame
-        // Existing harness time is 50 ms (20 Hz). Apply desktop events at those
-        // boundaries while combat continues at 60 Hz between them.
-        if frame % 3 == 0 {
+        step(semanticStep: nil)
+    }
+
+    @discardableResult
+    func step(semanticStep: (() -> TickReport?)?) -> [CombatEvent] {
+        let frame = runtime.bodyFrame
+        if frame.isMultiple(of: 3) {
             _ = desktop.advance(to: frame / 3)
         }
         for event in eventsByFrame[frame] ?? [] {
-            activeInputs[event.actorID.raw] = event.input
+            combatRuntime.setInput(event.input, source: .authored, for: event.actorID)
         }
-        for actor in combat.snapshot().bodies {
-            combat.setInput(activeInputs[actor.actorID.raw] ?? .neutral, for: actor.actorID)
-        }
-        return combat.step(environment: desktop.combatEnvironment())
+        return runtime.advance(
+            elapsedSeconds: 1.0 / Double(BodyFrameAccumulator.framesPerSecond),
+            combatEnvironment: desktop.combatEnvironment(),
+            semanticStep: semanticStep).combatEvents
     }
 
     @discardableResult
@@ -122,8 +190,9 @@ public final class CombatDataSimulation {
 
     public func snapshot() -> CombatSimulationSnapshot {
         CombatSimulationSnapshot(
-            scenario: scenario, desktop: desktop,
-            combat: combat.checkpoint(), activeInputs: activeInputs)
+            scenario: scenario,
+            desktop: desktop,
+            runtime: runtime.checkpoint())
     }
 }
 

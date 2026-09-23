@@ -1,6 +1,7 @@
 import XCTest
 import MyPetCombat
 import MyPetCore
+import MyPetEngine
 @testable import MyPetSimulation
 
 final class CombatSimulationTests: XCTestCase {
@@ -44,4 +45,145 @@ final class CombatSimulationTests: XCTestCase {
         _ = sim.run(frames: 30)
         XCTAssertNotNil(sim.combat.body(for: EntityID("a")))
     }
+
+    func testCombatSimulationCheckpointUsesGameRuntimeAsTheOnlyClockOwner() throws {
+        let scenario = makeScenario()
+        let simulation = CombatDataSimulation(scenario: scenario)
+        _ = simulation.run(frames: 7)
+
+        let snapshot = simulation.snapshot()
+        XCTAssertEqual(snapshot.runtime.bodyClock.frame, 7)
+        XCTAssertEqual(snapshot.runtime.combat?.world.frame, 7)
+
+        let data = try JSONEncoder().encode(snapshot)
+        let restored = CombatDataSimulation(
+            snapshot: try JSONDecoder().decode(CombatSimulationSnapshot.self, from: data))
+        let originalEvents = simulation.run(frames: 13)
+        let replayedEvents = restored.run(frames: 13)
+        XCTAssertEqual(originalEvents, replayedEvents)
+        XCTAssertEqual(simulation.digest, restored.digest)
+    }
+
+    func testVirtualDesktopAdapterMatchesDirectRuntimeDigest() {
+        let scenario = makeScenario()
+        let simulation = CombatDataSimulation(scenario: scenario)
+        let runtime = CombatRuntime()
+        for actor in scenario.actors {
+            runtime.register(
+                actorID: actor.actorID, profile: actor.profile,
+                x: actor.x, yFeet: actor.yFeet, facing: actor.facing)
+            runtime.activate(.authored, for: actor.actorID)
+        }
+        _ = runtime.beginSession(id: "simulation:\(scenario.id)")
+        let game = GameRuntime(combatRuntime: runtime)
+        let events = Dictionary(grouping: scenario.inputs, by: \.frame)
+        var active: [String: FighterInputFrame] = [:]
+        var desktop = scenario.desktop
+        for frame: Int64 in 0..<20 {
+            if frame % 3 == 0 { _ = desktop.advance(to: frame / 3) }
+            for event in events[frame] ?? [] { active[event.actorID.raw] = event.input }
+            for actor in scenario.actors {
+                runtime.setInput(active[actor.actorID.raw] ?? .neutral,
+                                 source: .authored, for: actor.actorID)
+            }
+            _ = game.advance(
+                elapsedSeconds: 1.0 / 60.0,
+                combatEnvironment: desktop.combatEnvironment())
+        }
+        _ = simulation.run(frames: 20)
+        XCTAssertEqual(simulation.digest, runtime.digest)
+    }
+
+    func testLegacyCombatRunnerRecordingUpgradesToUnifiedRuntimeCheckpoint() throws {
+        let scenario = makeScenario()
+        let simulation = CombatDataSimulation(scenario: scenario)
+        _ = simulation.run(frames: 5)
+        let legacy = LegacyCombatSimulationSnapshot(
+            scenario: scenario,
+            desktop: simulation.desktop,
+            combat: simulation.combat.checkpoint(),
+            activeInputs: ["a": .neutral, "b": .neutral])
+
+        let upgraded = try JSONDecoder().decode(
+            CombatSimulationSnapshot.self,
+            from: JSONEncoder().encode(legacy))
+
+        XCTAssertEqual(upgraded.runtime.bodyClock.frame, 5)
+        XCTAssertEqual(upgraded.runtime.combat?.world.frame, 5)
+        XCTAssertNotNil(CombatDataSimulation(snapshot: upgraded).combat.body(for: EntityID("a")))
+    }
+
+    func testDataSimulationAdvancesSemanticAndCombatOnOneRuntimeTimeline() {
+        let combat = makeScenario()
+        let scenario = HarnessScenario(
+            id: "combined-runtime",
+            durationTicks: 2,
+            entities: combat.actors.map {
+                EntityState(id: $0.actorID, kind: .actor)
+            },
+            desktop: combat.desktop,
+            combatActors: combat.actors,
+            combatInputs: combat.inputs)
+        let simulation = DataSimulation(scenario: scenario)
+
+        _ = simulation.step()
+
+        XCTAssertEqual(simulation.runtime.clock.tick, 1)
+        XCTAssertEqual(simulation.runtime.bodyFrame, 3)
+        XCTAssertEqual(simulation.runtime.combatRuntime?.world.frame, 3)
+        XCTAssertTrue(simulation.combatSimulation?.runtime === simulation.runtime)
+
+        let restored = DataSimulation(snapshot: simulation.snapshot())
+        _ = simulation.step()
+        _ = restored.step()
+        XCTAssertEqual(simulation.runtime.checkpoint(), restored.runtime.checkpoint())
+    }
+
+    func testCombatDigestIsIndependentOfRenderSamplingRate() {
+        let digests = [20, 40, 60, 120].map(combatDigest(renderHz:))
+        XCTAssertTrue(digests.dropFirst().allSatisfy { $0 == digests[0] })
+    }
+
+    private func combatDigest(renderHz: Int) -> CombatRuntimeDigest {
+        let combat = CombatRuntime()
+        combat.register(actorID: EntityID("a"), profile: CombatProfile(),
+                        x: 400, yFeet: 700)
+        combat.register(actorID: EntityID("b"), profile: CombatProfile(),
+                        x: 600, yFeet: 700, facing: .left)
+        combat.activate(.autonomous, for: EntityID("a"))
+        combat.activate(.autonomous, for: EntityID("b"))
+        let runtime = GameRuntime(combatRuntime: combat)
+        let environment = makeScenario().desktop.combatEnvironment()
+        for _ in 0..<renderHz {
+            _ = runtime.advance(
+                elapsedSeconds: 1.0 / Double(renderHz),
+                combatEnvironment: environment)
+        }
+        return combat.digest
+    }
+
+    private func makeScenario() -> VirtualCombatScenario {
+        VirtualCombatScenario(
+            id: "unified-runtime",
+            desktop: VirtualDesktop(screens: [
+                VirtualScreen(id: "main", frame: LayoutRect(
+                    x: 0, y: 0, width: 1000, height: 700), main: true),
+            ]),
+            actors: [
+                VirtualCombatActor(actorID: EntityID("a"), x: 400, yFeet: 700),
+                VirtualCombatActor(actorID: EntityID("b"), x: 455, yFeet: 700, facing: .left),
+            ],
+            inputs: [
+                CombatInputEvent(frame: 0, actorID: EntityID("a"),
+                                 input: FighterInputFrame(buttons: [.x])),
+                CombatInputEvent(frame: 1, actorID: EntityID("a"), input: .neutral),
+            ])
+    }
+}
+
+private struct LegacyCombatSimulationSnapshot: Codable {
+    var scenario: VirtualCombatScenario
+    var desktop: VirtualDesktop
+    var combat: CombatWorldCheckpoint
+    var activeInputs: [String: FighterInputFrame]
 }
