@@ -7,6 +7,23 @@ import XCTest
 
 @MainActor
 final class RenderBackendInjectionTests: XCTestCase {
+    func testNullRendererConsumesReadOnlySnapshotWithoutWorldMutation() {
+        let renderer = NullRenderer()
+        let snapshot = RenderSnapshot(
+            actorID: EntityID("actor"),
+            frame: LayoutRect(x: 10, y: 20, width: 40, height: 50),
+            image: makeImage(), mirrored: true, opacity: 0.75,
+            propImage: nil, propFrame: .zero, visible: true)
+
+        renderer.render(snapshot: snapshot, interpolation: 0.5)
+
+        XCTAssertEqual(renderer.lastSnapshot?.actorID, EntityID("actor"))
+        XCTAssertEqual(renderer.lastSnapshot?.frame,
+                       LayoutRect(x: 10, y: 20, width: 40, height: 50))
+        XCTAssertEqual(renderer.lastInterpolation, 0.5)
+        XCTAssertEqual(renderer.renderCount, 1)
+    }
+
     func testPresentationUsesInjectedBackendSurface() {
         let image = makeImage()
         let backend = FakeBackend()
@@ -51,11 +68,14 @@ private struct OneClipSource: SpriteClipSource {
 private final class FakeBackend: ActorRenderBackend {
     let surface = FakeSurface()
     var makeCount = 0
-    func makeActorSurface(initialFrame: CGRect,
+    func makeActorSurface(actorID: EntityID, initialFrame: CGRect,
                           coordinateSpace: any RenderCoordinateSpace) -> any ActorRenderSurface {
         makeCount += 1
         surface.frame = initialFrame
         return surface
+    }
+    func render(snapshot: RenderSnapshot, interpolation: Double) {
+        surface.render(snapshot: snapshot, interpolation: interpolation)
     }
 }
 
@@ -73,6 +93,13 @@ private final class FakeSurface: ActorRenderSurface {
     func setFrame(_ frame: CGRect) { self.frame = frame }
     func show() { shown = true }
     func hide() { shown = false }
+    func render(snapshot: RenderSnapshot, interpolation: Double) {
+        frame = CGRect(
+            x: snapshot.frame.x, y: snapshot.frame.y,
+            width: snapshot.frame.width, height: snapshot.frame.height)
+        alphaValue = snapshot.opacity
+        shown = snapshot.visible
+    }
 }
 
 @MainActor

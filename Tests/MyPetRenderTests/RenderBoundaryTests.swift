@@ -133,6 +133,73 @@ final class RenderBoundaryTests: XCTestCase {
             previous: "base/idle", current: "actions/wave", effects: [], actorID: actor))
     }
 
+    func testNullRendererCannotChangeRuntimeDigestAndReceivesPlannedFrame() {
+        let actor = EntityID("pet")
+        let image = makeImage()
+        let renderer = NullRenderer()
+        let presentation = ActorPresentation(
+            source: StubClipSource(clips: [
+                "idle": SpriteClip(frames: [image], fps: 5, looping: true),
+            ]),
+            initialFrame: CGRect(x: 0, y: 0, width: 80, height: 100),
+            appearance: ActorAppearance(
+                idle: "idle", walk: "idle", run: "idle", airborne: "idle",
+                drag: "idle", sleep: "idle", idlePool: ["idle"]),
+            actorID: actor,
+            coordinateSpace: StubCoordinateSpace(),
+            renderBackend: renderer)
+        let runtime = GameRuntime(bodyExecutionMode: .external)
+        _ = runtime.step(events: [GameEvent(
+            kind: .registerEntity, entity: EntityState(id: actor, kind: .actor))])
+        runtime.updateBodyPose(BodyPose(
+            actorID: actor, x: 790, yFeet: 590,
+            facingRight: true, motion: "grounded"))
+        let before = runtime.checkpoint()
+
+        presentation.apply(
+            snapshot: runtime.presentationSnapshot(), effects: [], dt: 0, now: 1)
+
+        XCTAssertEqual(runtime.checkpoint(), before)
+        XCTAssertEqual(renderer.lastSnapshot?.frame.maxX, 800)
+        XCTAssertEqual(renderer.lastSnapshot?.frame.maxY, 600)
+    }
+
+    func testNullAndCoreAnimationBackendsLeaveIdenticalLogicDigest() {
+        let actor = EntityID("pet")
+        let image = makeImage()
+        let source = StubClipSource(clips: [
+            "idle": SpriteClip(frames: [image], fps: 5, looping: true),
+        ])
+        let appearance = ActorAppearance(
+            idle: "idle", walk: "idle", run: "idle", airborne: "idle",
+            drag: "idle", sleep: "idle", idlePool: ["idle"])
+        let first = GameRuntime(bodyExecutionMode: .external)
+        _ = first.step(events: [GameEvent(
+            kind: .registerEntity, entity: EntityState(id: actor, kind: .actor))])
+        first.updateBodyPose(BodyPose(
+            actorID: actor, x: 300, yFeet: 500,
+            facingRight: true, motion: "grounded"))
+        let second = GameRuntime(checkpoint: first.checkpoint())
+        let nullPresentation = ActorPresentation(
+            source: source, initialFrame: CGRect(x: 0, y: 0, width: 80, height: 100),
+            appearance: appearance, actorID: actor,
+            coordinateSpace: StubCoordinateSpace(), renderBackend: NullRenderer())
+        let coreAnimationPresentation = ActorPresentation(
+            source: source, initialFrame: CGRect(x: 0, y: 0, width: 80, height: 100),
+            appearance: appearance, actorID: actor,
+            coordinateSpace: StubCoordinateSpace(),
+            renderBackend: CoreAnimationRenderBackend())
+
+        nullPresentation.apply(
+            snapshot: first.presentationSnapshot(), effects: [], dt: 0, now: 1)
+        coreAnimationPresentation.apply(
+            snapshot: second.presentationSnapshot(), effects: [], dt: 0, now: 1)
+
+        XCTAssertEqual(first.checkpoint(), second.checkpoint())
+        nullPresentation.hide()
+        coreAnimationPresentation.hide()
+    }
+
     private func makeImage() -> CGImage {
         CGImage(
             width: 1,
