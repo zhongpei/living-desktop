@@ -83,6 +83,8 @@ final class ActionRuntimeTests: XCTestCase {
         runtime.inject(.perform("actions/wave"))
         XCTAssertEqual(runtime.performance?.clipKey, "actions/wave")
         XCTAssertNil(runtime.performance?.endsAt, "once 型无 deadline，由播完收尾")
+        XCTAssertEqual(runtime.actionTimeline?.definition.actionID, "actions/wave")
+        XCTAssertEqual(runtime.actionTimeline?.definition.locomotionPolicy, .stationary)
 
         runtime.inject(.perform("actions/bathe"))
         XCTAssertEqual(runtime.performance?.clipKey, "actions/bathe")
@@ -91,6 +93,16 @@ final class ActionRuntimeTests: XCTestCase {
         // 到 deadline 表演自动清掉。
         run(until: { $0 > 4.5 }) { runtime.tick(now: $0) }
         XCTAssertNil(runtime.performance)
+    }
+
+    func testMovementAndPerformanceShareOneActionCursor() {
+        runtime.inject(.moveTo(1000))
+        XCTAssertEqual(runtime.actionTimeline?.definition.actionID, "move_to")
+        XCTAssertEqual(runtime.actionTimeline?.definition.locomotionPolicy, .authored)
+
+        runtime.inject(.perform("actions/wave"))
+        XCTAssertEqual(runtime.actionTimeline?.definition.actionID, "actions/wave")
+        XCTAssertFalse(model.walking)
     }
 
     func testWaitCancelsEverything() {

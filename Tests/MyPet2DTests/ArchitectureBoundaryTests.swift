@@ -37,6 +37,9 @@ final class ArchitectureBoundaryTests: XCTestCase {
         let combat = try String(
             contentsOf: root.appendingPathComponent("Sources/MyPetCombat/CombatWorld.swift"),
             encoding: .utf8)
+        let combatTypes = try String(
+            contentsOf: root.appendingPathComponent("Sources/MyPetCombat/CombatTypes.swift"),
+            encoding: .utf8)
 
         for forbidden in [
             "private func updateGrounded(",
@@ -47,5 +50,6 @@ final class ArchitectureBoundaryTests: XCTestCase {
             XCTAssertFalse(model.contains(forbidden), "PetModel still integrates: \(forbidden)")
         }
         XCTAssertFalse(combat.contains("func synchronizePose("))
+        XCTAssertFalse(combatTypes.contains("public var moveFrame:"))
     }
 }
