@@ -2234,9 +2234,6 @@ final class PetController {
             self.previousManualInput = .neutral
             self.combatCoordinator.endManual(actorID: self.runtimeActorID)
         }
-        manualControlPanel.onCycleTarget = { [weak self] in
-            self?.pushRecentEvent("manual combat target cycled")
-        }
     }
 
     private func beginManualControl() {
