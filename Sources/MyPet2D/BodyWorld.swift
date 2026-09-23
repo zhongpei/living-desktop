@@ -46,6 +46,9 @@ public final class BodyWorld {
     }
 
     public func state(for entityID: EntityID) -> BodyState? { bodies[entityID.raw] }
+    public func definition(for entityID: EntityID) -> BodyDefinition? {
+        definitions[entityID.raw]
+    }
 
     public func update(_ entityID: EntityID, _ mutation: (inout BodyState) -> Void) {
         guard var state = bodies[entityID.raw] else { return }
@@ -126,8 +129,9 @@ public final class BodyWorld {
         }
         body.position.y = surface.y
         if surface.kind != .floor, let fraction = body.surfaceFraction {
-            let usable = max(1, surface.right - surface.left - definition.pushRadius * 2)
-            body.position.x = surface.left + definition.pushRadius + min(1, max(0, fraction)) * usable
+            let margin = supportMargin(for: definition)
+            let usable = max(1, surface.right - surface.left - margin * 2)
+            body.position.x = surface.left + margin + min(1, max(0, fraction)) * usable
         }
     }
 
@@ -153,7 +157,7 @@ public final class BodyWorld {
         if body.locomotion == .grounded {
             body.position.x += body.velocity.x
             if let surface = environment.surface(id: body.currentSurfaceID) {
-                let margin = definition.pushRadius * 0.6
+                let margin = supportMargin(for: definition)
                 if !surface.contains(x: body.position.x, margin: margin) {
                     body.currentSurfaceID = nil
                     body.surfaceFraction = nil
@@ -196,7 +200,7 @@ public final class BodyWorld {
                Self.distanceToSpan(body.position.x, $0.left, $0.right) <
                    Self.distanceToSpan(body.position.x, $1.left, $1.right)
            }) {
-            let margin = definition.pushRadius * 0.6
+            let margin = supportMargin(for: definition)
             body.position.x = min(floor.right - margin, max(floor.left + margin, body.position.x))
             attach(&body, to: floor, definition: definition)
             body.surfaceFraction = nil
@@ -212,9 +216,10 @@ public final class BodyWorld {
         body.position.y = surface.y
         body.currentSurfaceID = surface.id
         body.locomotion = .grounded
-        let usable = max(1, surface.right - surface.left - definition.pushRadius * 2)
+        let margin = supportMargin(for: definition)
+        let usable = max(1, surface.right - surface.left - margin * 2)
         body.surfaceFraction = min(1, max(0,
-            (body.position.x - surface.left - definition.pushRadius) / usable))
+            (body.position.x - surface.left - margin) / usable))
     }
 
     private func resolvePushboxes(environment: BodyEnvironment) {
@@ -255,9 +260,14 @@ public final class BodyWorld {
             }
             return
         }
-        let usable = max(1, surface.right - surface.left - definition.pushRadius * 2)
+        let margin = supportMargin(for: definition)
+        let usable = max(1, surface.right - surface.left - margin * 2)
         body.surfaceFraction = min(1, max(0,
-            (body.position.x - surface.left - definition.pushRadius) / usable))
+            (body.position.x - surface.left - margin) / usable))
+    }
+
+    private func supportMargin(for definition: BodyDefinition) -> Double {
+        definition.pushRadius * 0.6
     }
 
     private static func distanceToSpan(_ x: Double, _ left: Double, _ right: Double) -> Double {

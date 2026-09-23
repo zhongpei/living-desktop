@@ -3,6 +3,32 @@ import MyPetCore
 @testable import MyPet2D
 
 final class GeometryAndBodyWorldTests: XCTestCase {
+    func testAttachedSurfaceFractionUsesSameMarginWhenResampled() {
+        let world = BodyWorld()
+        let actor = EntityID("pet")
+        let definition = BodyDefinition(entityID: actor, pushRadius: 40)
+        let surface = Surface(id: "window", kind: .windowTop, left: 100, right: 500, y: 200)
+        world.register(
+            definition,
+            state: BodyState(
+                entityID: actor,
+                position: Vec2(x: 300, y: 200),
+                velocity: Vec2(x: 1, y: 0),
+                locomotion: .grounded,
+                currentSurfaceID: surface.id,
+                surfaceFraction: 0.5))
+        let environment = BodyEnvironment(
+            bounds: Rect2D(x: 0, y: 0, width: 800, height: 600),
+            surfaces: [surface])
+
+        world.advance(environment)
+        let afterFirst = world.state(for: actor)
+        world.advance(environment)
+        let afterSecond = world.state(for: actor)
+
+        XCTAssertEqual(afterFirst?.position.x, 301)
+        XCTAssertEqual(afterSecond?.position.x, 302)
+    }
     func testRectOverlapIsStrictAtTouchingEdgeAndMirrorsAroundAxis() {
         let left = Rect2D(x: 0, y: 0, width: 10, height: 10)
         XCTAssertFalse(left.overlaps(Rect2D(x: 10, y: 0, width: 3, height: 3)))

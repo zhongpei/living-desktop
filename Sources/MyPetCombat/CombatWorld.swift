@@ -15,13 +15,15 @@ public final class CombatWorld {
     public static let framesPerSecond = BodyWorld.framesPerSecond
 
     public private(set) var frame: Int64 = 0
-    private var bodyWorld = BodyWorld()
+    private let bodyWorld: BodyWorld
     private var rules: [String: CombatRuleState] = [:]
     private var profiles: [String: CombatProfile] = [:]
     private var inputs: [String: FighterInputFrame] = [:]
     private var buffers: [String: CombatInputBuffer] = [:]
 
-    public init() {}
+    public init(bodyWorld: BodyWorld = BodyWorld()) {
+        self.bodyWorld = bodyWorld
+    }
 
     public init(checkpoint: CombatWorldCheckpoint) {
         self.frame = checkpoint.frame
@@ -46,12 +48,18 @@ public final class CombatWorld {
                          x: Double, yFeet: Double, facing: CombatFacing = .right,
                          visualScale: Double = 1) {
         profiles[actorID.raw] = profile
-        bodyWorld.register(
-            BodyDefinition(entityID: actorID, pushRadius: profile.pushRadius, visualScale: visualScale),
-            state: BodyState(
-                entityID: actorID,
-                position: Vec2(x: x, y: yFeet),
-                facing: facing))
+        let definition = BodyDefinition(
+            entityID: actorID, pushRadius: profile.pushRadius, visualScale: visualScale)
+        if bodyWorld.state(for: actorID) == nil {
+            bodyWorld.register(
+                definition,
+                state: BodyState(
+                    entityID: actorID,
+                    position: Vec2(x: x, y: yFeet),
+                    facing: facing))
+        } else {
+            bodyWorld.setDefinition(definition)
+        }
         rules[actorID.raw] = CombatRuleState(
             actorID: actorID, hp: profile.maxHP, visualScale: visualScale)
         buffers[actorID.raw] = CombatInputBuffer()
@@ -89,32 +97,6 @@ public final class CombatWorld {
     public func body(for actorID: EntityID) -> CombatBodyState? {
         guard let body = bodyWorld.state(for: actorID), let rule = rules[actorID.raw] else { return nil }
         return CombatBodyState(body: body, rules: rule)
-    }
-
-    /// Synchronizes a legacy/semantic body pose into the unified combat world without
-    /// resetting HP, stun, recovery or command history. This is the migration seam used by
-    /// non-combat story locomotion until every semantic verb is natively body-driven.
-    public func synchronizePose(
-        actorID: EntityID,
-        x: Double,
-        yFeet: Double,
-        facing: CombatFacing,
-        locomotion: BodyLocomotionState,
-        visualScale: Double = 1
-    ) {
-        guard var body = body(for: actorID),
-              body.authority == .scripted,
-              body.healthState == .active,
-              body.phase != .hitStun,
-              body.phase != .blockStun,
-              body.currentMoveID == nil else { return }
-        body.position = CombatPoint(x: x, y: yFeet)
-        body.facing = facing
-        if body.healthState == .active && body.phase != .hitStun && body.phase != .blockStun {
-            body.locomotion = locomotion
-        }
-        body.visualScale = max(0.05, visualScale)
-        save(body)
     }
 
     public func setAuthority(_ authority: CombatControlAuthority, for actorID: EntityID) {
@@ -220,6 +202,7 @@ public final class CombatWorld {
     private func acceptControl(_ body: inout CombatBodyState, profile: CombatProfile,
                                input: FighterInputFrame, buffer: CombatInputBuffer,
                                events: inout [CombatEvent]) {
+        guard body.authority != .scripted else { return }
         guard body.locomotion != .dragged && body.locomotion != .tossed else { return }
         if body.currentMoveID != nil { return }
 
