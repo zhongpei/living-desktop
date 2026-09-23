@@ -51,7 +51,7 @@ let package = Package(
         ),
         .target(
             name: "MyPetEngine",
-            dependencies: ["MyPetCore", "MyPetCombat"],
+            dependencies: ["MyPetCore", "MyPet2D", "MyPetCombat"],
             path: "Sources/MyPetEngine"
         ),
         .target(
@@ -132,7 +132,7 @@ let package = Package(
         ),
         .testTarget(
             name: "MyPetCoreTests",
-            dependencies: ["MyPetCore", "MyPetCombat", "MyPetEngine", "MyPetSimulation", "MyPetContent"],
+            dependencies: ["MyPetCore", "MyPet2D", "MyPetCombat", "MyPetEngine", "MyPetSimulation", "MyPetContent"],
             path: "Tests/MyPetCoreTests"
         ),
         .testTarget(

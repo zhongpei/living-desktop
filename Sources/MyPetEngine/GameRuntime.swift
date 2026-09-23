@@ -1,5 +1,6 @@
 import Foundation
 import MyPetCore
+import MyPet2D
 
 /// Platform-neutral facts needed by the semantic chain. Real macOS input and
 /// `VirtualDesktop` both project into this value; neither platform leaks into
@@ -33,17 +34,47 @@ public struct GameRuntimeCheckpoint: Codable, Equatable, Sendable {
     public var storyInterruptionPolicy: StoryInterruptionPolicy
     public var platformIngress: PlatformEventBufferSnapshot
     public var body: BodyRuntimeSnapshot
+    public var bodyClock: BodyFrameAccumulator
 
     public init(
         kernel: KernelSnapshot,
         storyInterruptionPolicy: StoryInterruptionPolicy,
         platformIngress: PlatformEventBufferSnapshot,
-        body: BodyRuntimeSnapshot
+        body: BodyRuntimeSnapshot,
+        bodyClock: BodyFrameAccumulator? = nil
     ) {
         self.kernel = kernel
         self.storyInterruptionPolicy = storyInterruptionPolicy
         self.platformIngress = platformIngress
         self.body = body
+        self.bodyClock = bodyClock ?? BodyFrameAccumulator(frame: kernel.clock.tick * 3)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case kernel, storyInterruptionPolicy, platformIngress, body, bodyClock
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        kernel = try container.decode(KernelSnapshot.self, forKey: .kernel)
+        storyInterruptionPolicy = try container.decode(
+            StoryInterruptionPolicy.self, forKey: .storyInterruptionPolicy)
+        platformIngress = try container.decode(
+            PlatformEventBufferSnapshot.self, forKey: .platformIngress)
+        body = try container.decode(BodyRuntimeSnapshot.self, forKey: .body)
+        bodyClock = try container.decodeIfPresent(
+            BodyFrameAccumulator.self,
+            forKey: .bodyClock) ?? BodyFrameAccumulator(frame: kernel.clock.tick * 3)
+    }
+}
+
+public struct RuntimeAdvanceResult: Equatable, Sendable {
+    public var bodyFramesAdvanced: Int
+    public var semanticReports: [TickReport]
+
+    public init(bodyFramesAdvanced: Int, semanticReports: [TickReport]) {
+        self.bodyFramesAdvanced = bodyFramesAdvanced
+        self.semanticReports = semanticReports
     }
 }
 
@@ -58,12 +89,14 @@ public final class GameRuntime {
     private(set) var kernel: GameKernel
     private let platformIngress: PlatformEventBuffer
     private let bodyRuntime: BodyRuntime
+    private var bodyClock = BodyFrameAccumulator()
 
     // Semantic work is allowed to submit late events from inside `step`, hence
     // a recursive lock. The lock is held for the entire pulse so background
     // model callbacks cannot mutate the inbox while Kernel is draining it.
     private let stateLock = NSRecursiveLock()
     private var stepping = false
+    private var advancing = false
 
     public init(
         kernel: GameKernel = GameKernel(),
@@ -75,6 +108,7 @@ public final class GameRuntime {
         self.kernel = ownedKernel
         self.platformIngress = PlatformEventBuffer(capacity: platformIngressCapacity)
         self.bodyRuntime = BodyRuntime(mode: bodyExecutionMode)
+        self.bodyClock = BodyFrameAccumulator(frame: ownedKernel.clock.tick * 3)
     }
 
     public convenience init(snapshot: KernelSnapshot) {
@@ -90,10 +124,12 @@ public final class GameRuntime {
             bodyExecutionMode: checkpoint.body.mode)
         platformIngress.restore(checkpoint.platformIngress)
         bodyRuntime.restore(checkpoint.body)
+        bodyClock = checkpoint.bodyClock
     }
 
     public var world: WorldState { withState { kernel.world } }
     public var clock: SimClock { withState { kernel.clock } }
+    public var bodyFrame: Int64 { withState { bodyClock.frame } }
     public var trace: [TraceEntry] { withState { kernel.trace } }
     public var manualViolations: [InvariantViolation] { withState { kernel.manualViolations } }
     public var pendingEventCount: Int { withState { kernel.inbox.count + platformIngress.count } }
@@ -150,6 +186,35 @@ public final class GameRuntime {
     @discardableResult
     public func stepReplayOrFault(events: [GameEvent]) -> TickReport? {
         step(events: events, allowRawBehavior: true, semanticWork: nil)
+    }
+
+    /// Advances the shared body timeline at 60 Hz. The legacy semantic world
+    /// advances exactly once after every third body frame (20 Hz), independent
+    /// of how often a renderer samples this Runtime.
+    @discardableResult
+    public func advance(
+        elapsedSeconds: Double,
+        bodyStep: ((Int64) -> Void)? = nil
+    ) -> RuntimeAdvanceResult {
+        withState {
+            guard !advancing else {
+                return RuntimeAdvanceResult(bodyFramesAdvanced: 0, semanticReports: [])
+            }
+            advancing = true
+            defer { advancing = false }
+            let frames = bodyClock.consume(elapsedSeconds: elapsedSeconds)
+            var reports: [TickReport] = []
+            reports.reserveCapacity(frames.count / 3 + 1)
+            for frame in frames {
+                bodyStep?(frame)
+                if (frame + 1).isMultiple(of: 3), let report = step() {
+                    reports.append(report)
+                }
+            }
+            return RuntimeAdvanceResult(
+                bodyFramesAdvanced: frames.count,
+                semanticReports: reports)
+        }
     }
 
     @discardableResult
@@ -300,7 +365,8 @@ public final class GameRuntime {
                     kernel: kernelSnapshot,
                     storyInterruptionPolicy: kernel.storyInterruptionPolicy,
                     platformIngress: platformIngress.snapshot(),
-                    body: bodyRuntime.checkpoint()),
+                    body: bodyRuntime.checkpoint(),
+                    bodyClock: bodyClock),
                 director: director.snapshot(),
                 storyDirector: storyDirector.snapshot(),
                 started: started)
@@ -352,7 +418,8 @@ public final class GameRuntime {
                 kernel: kernel.snapshot(),
                 storyInterruptionPolicy: kernel.storyInterruptionPolicy,
                 platformIngress: platformIngress.snapshot(),
-                body: bodyRuntime.checkpoint())
+                body: bodyRuntime.checkpoint(),
+                bodyClock: bodyClock)
         }
     }
 
@@ -378,7 +445,7 @@ public final class GameRuntime {
 
     public func restore(_ snapshot: KernelSnapshot) {
         withState {
-            guard !stepping else { return }
+            guard !stepping, !advancing else { return }
             let interruptionPolicy = kernel.storyInterruptionPolicy
             let restoredKernel = GameKernel(snapshot: snapshot)
             restoredKernel.storyInterruptionPolicy = interruptionPolicy
@@ -386,17 +453,20 @@ public final class GameRuntime {
             platformIngress.removeAll()
             bodyRuntime.reset()
             bodyRuntime.reconcile(world: kernel.world, tick: kernel.clock.tick)
+            bodyClock = BodyFrameAccumulator(frame: kernel.clock.tick * 3)
         }
     }
 
     public func restore(_ checkpoint: GameRuntimeCheckpoint) {
         withState {
-            guard !stepping, checkpoint.body.mode == bodyRuntime.mode else { return }
+            guard !stepping, !advancing,
+                  checkpoint.body.mode == bodyRuntime.mode else { return }
             let restoredKernel = GameKernel(snapshot: checkpoint.kernel)
             restoredKernel.storyInterruptionPolicy = checkpoint.storyInterruptionPolicy
             kernel = restoredKernel
             platformIngress.restore(checkpoint.platformIngress)
             bodyRuntime.restore(checkpoint.body)
+            bodyClock = checkpoint.bodyClock
         }
     }
 
