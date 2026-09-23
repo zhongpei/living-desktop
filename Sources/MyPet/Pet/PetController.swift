@@ -2200,7 +2200,7 @@ final class PetController {
         model.wake()
         actionRingOpen = false
         combatCoordinator.beginManual(actorID: runtimeActorID)
-        manualControlPanel.begin(actorName: characterDefinition?.displayName.defaultText ?? library.characterID)
+        manualControlPanel.begin(actorName: characterDefinition?.displayName ?? library.characterID)
     }
 
     private func beginAutonomousCombat(reason: String) {
