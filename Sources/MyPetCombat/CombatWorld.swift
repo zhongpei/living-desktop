@@ -9,7 +9,16 @@ public final class CombatWorld {
         let attackerID: String
         let defenderID: String
         let move: CombatMoveDefinition
+        let definition: CombatHitDefinition
+        let ledgerKey: String
         let guarding: Bool
+    }
+
+    private struct ActiveAttack {
+        let actor: CombatBodyState
+        let move: CombatMoveDefinition
+        let definition: CombatHitDefinition
+        let rects: [CombatRect]
     }
 
     public static let framesPerSecond = BodyWorld.framesPerSecond
@@ -20,6 +29,7 @@ public final class CombatWorld {
     private var profiles: [String: CombatProfile] = [:]
     private var inputs: [String: FighterInputFrame] = [:]
     private var buffers: [String: CombatInputBuffer] = [:]
+    public private(set) var session: CombatSession?
 
     public init(bodyWorld: BodyWorld = BodyWorld()) {
         self.bodyWorld = bodyWorld
@@ -32,6 +42,7 @@ public final class CombatWorld {
         self.profiles = checkpoint.profiles
         self.inputs = checkpoint.inputs
         self.buffers = checkpoint.buffers
+        self.session = checkpoint.session
     }
 
     public func checkpoint() -> CombatWorldCheckpoint {
@@ -41,7 +52,30 @@ public final class CombatWorld {
             rules: rules,
             profiles: profiles,
             inputs: inputs,
-            buffers: buffers)
+            buffers: buffers,
+            session: session)
+    }
+
+    @discardableResult
+    public func beginSession(id: String, participants: [EntityID]) -> Bool {
+        let unique = Array(Set(participants)).sorted { $0.raw < $1.raw }
+        guard unique.count >= 2,
+              unique.allSatisfy({ rules[$0.raw] != nil }) else { return false }
+        if let session, session.state == .active,
+           session.id == id, session.participantIDs == unique { return true }
+        session = CombatSession(id: id, participants: unique, startedAtFrame: frame)
+        return true
+    }
+
+    public func endSession(cancelled: Bool = false) {
+        guard var active = session, active.state == .active else { return }
+        active.state = cancelled ? .cancelled : .completed
+        active.endedAtFrame = frame
+        session = active
+        for id in active.participantIDs {
+            inputs[id.raw] = .neutral
+            buffers[id.raw] = CombatInputBuffer()
+        }
     }
 
     public func register(actorID: EntityID, profile: CombatProfile = CombatProfile(),
@@ -67,6 +101,10 @@ public final class CombatWorld {
     }
 
     public func unregister(actorID: EntityID) {
+        if session?.state == .active,
+           session?.participantIDs.contains(actorID) == true {
+            endSession(cancelled: true)
+        }
         bodyWorld.unregister(actorID)
         rules[actorID.raw] = nil
         profiles[actorID.raw] = nil
@@ -214,6 +252,7 @@ public final class CombatWorld {
                 instanceID: instanceID,
                 definition: move.actionDefinition)
             body.hitTargets.removeAll()
+            body.hitLedger.removeAll()
             body.phase = .startup
             events.append(CombatEvent(frame: frame, kind: .moveStarted,
                                       actorID: body.actorID, moveID: move.id))
@@ -255,6 +294,7 @@ public final class CombatWorld {
         case .finished, .cancelled:
             body.actionTimeline = nil
             body.hitTargets.removeAll()
+            body.hitLedger.removeAll()
             body.phase = .neutral
             return
         }
@@ -336,18 +376,51 @@ public final class CombatWorld {
         })
         let ids = snapshot.keys.sorted()
         var pending: [PendingHit] = []
+        var attacks: [String: ActiveAttack] = [:]
 
         for attackerID in ids {
             guard let attacker = snapshot[attackerID],
                   attacker.phase == .active,
                   let attackerProfile = profiles[attackerID],
                   let move = attackerProfile.move(id: attacker.currentMoveID) else { continue }
-            let attackRects = move.hit.attackBoxes.map {
+            let definition = move.hit
+            let attackRects = definition.attackBoxes.map {
                 $0.placed(at: attacker.position, facing: attacker.facing, scale: attacker.visualScale)
             }
+            attacks[attackerID] = ActiveAttack(
+                actor: attacker, move: move, definition: definition, rects: attackRects)
+        }
 
+        var clashedDirections: Set<String> = []
+        for (offset, firstID) in ids.enumerated() {
+            guard let first = attacks[firstID], first.definition.clashLevel > 0 else { continue }
+            for secondID in ids.dropFirst(offset + 1) {
+                guard session?.permits(first.actor.actorID, EntityID(secondID)) == true,
+                      let second = attacks[secondID],
+                      second.definition.clashLevel == first.definition.clashLevel,
+                      first.rects.contains(where: { lhs in second.rects.contains(where: lhs.overlaps) })
+                else { continue }
+                clashedDirections.insert("\(firstID)>\(secondID)")
+                clashedDirections.insert("\(secondID)>\(firstID)")
+                events.append(CombatEvent(
+                    frame: frame, kind: .clash,
+                    actorID: first.actor.actorID, targetID: second.actor.actorID,
+                    moveID: first.move.id))
+            }
+        }
+
+        for attackerID in ids {
+            guard let attack = attacks[attackerID] else { continue }
             for defenderID in ids where defenderID != attackerID {
-                guard !attacker.hitTargets.contains(defenderID),
+                let timelineID = attack.actor.actionTimeline?.instanceID ?? -1
+                let ledgerKey = "\(timelineID)|\(attack.definition.hitGroup)|\(defenderID)"
+                let lastHitFrame = attack.actor.hitLedger[ledgerKey]
+                let canRehit = lastHitFrame == nil || attack.definition.rehitFrames.map {
+                    frame - (lastHitFrame ?? frame) >= Int64($0)
+                } == true
+                guard session?.permits(attack.actor.actorID, EntityID(defenderID)) == true,
+                      !clashedDirections.contains("\(attackerID)>\(defenderID)"),
+                      canRehit,
                       let defender = snapshot[defenderID],
                       defender.invulnerabilityFrames == 0,
                       defender.healthState == .active,
@@ -356,19 +429,24 @@ public final class CombatWorld {
                 let hurtRects = defenderProfile.hurtBoxes.map {
                     $0.placed(at: defender.position, facing: defender.facing, scale: defender.visualScale)
                 }
-                guard attackRects.contains(where: { hit in
+                guard attack.rects.contains(where: { hit in
                     hurtRects.contains(where: hit.overlaps)
                 }) else { continue }
 
                 let input = inputs[defenderID] ?? .neutral
-                let attackerIsRight = attacker.position.x > defender.position.x
-                let guarding = defender.locomotion == .grounded &&
-                    (attackerIsRight ? input.left : input.right) &&
-                    defender.currentMoveID == nil
+                let attackerIsRight = attack.actor.position.x > defender.position.x
+                let holdingBack = attackerIsRight ? input.left : input.right
+                let guarding = guardMatches(
+                    attack.definition.attackHeight,
+                    input: input,
+                    holdingBack: holdingBack,
+                    defender: defender)
                 pending.append(PendingHit(
                     attackerID: attackerID,
                     defenderID: defenderID,
-                    move: move,
+                    move: attack.move,
+                    definition: attack.definition,
+                    ledgerKey: ledgerKey,
                     guarding: guarding))
             }
         }
@@ -378,7 +456,8 @@ public final class CombatWorld {
         for hit in pending {
             guard var attacker = body(for: EntityID(hit.attackerID)) else { continue }
             attacker.hitTargets.insert(hit.defenderID)
-            attacker.hitStopFrames = max(attacker.hitStopFrames, hit.move.hit.hitStopFrames)
+            attacker.hitLedger[hit.ledgerKey] = frame
+            attacker.hitStopFrames = max(attacker.hitStopFrames, hit.definition.hitStopFrames)
             save(attacker)
         }
 
@@ -389,7 +468,7 @@ public final class CombatWorld {
         }) {
             guard let attackerAtDetection = snapshot[hit.attackerID],
                   var defender = body(for: EntityID(hit.defenderID)) else { continue }
-            let definition = hit.move.hit
+            let definition = hit.definition
             let defenderWasAlive = defender.hp > 0
 
             if hit.guarding {
@@ -433,6 +512,23 @@ public final class CombatWorld {
                     moveID: hit.move.id))
             }
             save(defender)
+        }
+    }
+
+    private func guardMatches(_ height: CombatAttackHeight, input: FighterInputFrame,
+                              holdingBack: Bool, defender: CombatBodyState) -> Bool {
+        guard defender.locomotion == .grounded,
+              defender.currentMoveID == nil,
+              holdingBack else { return false }
+        switch height {
+        case .throwAttack:
+            return false
+        case .low:
+            return input.down
+        case .high, .air:
+            return !input.down
+        case .mid:
+            return true
         }
     }
 }

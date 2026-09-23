@@ -38,6 +38,7 @@ final class DesktopCombatCoordinator {
             yFeet: Double(yFeet),
             facing: facingRight ? .right : .left,
             visualScale: max(0.05, Double(displayHeight) / 110.0))
+        refreshSession()
     }
 
     func unregister(actorID: EntityID) {
@@ -47,6 +48,7 @@ final class DesktopCombatCoordinator {
         pointerResumeAuthority[actorID.raw] = nil
         manualInputs[actorID.raw] = nil
         world.unregister(actorID: actorID)
+        refreshSession()
     }
 
     func setManualInput(_ input: FighterInputFrame, actorID: EntityID) {
@@ -58,6 +60,7 @@ final class DesktopCombatCoordinator {
         autonomousActors.remove(actorID.raw)
         manualInputs[actorID.raw] = .neutral
         world.setAuthority(.manual, for: actorID)
+        refreshSession()
     }
 
     func endManual(actorID: EntityID) {
@@ -67,11 +70,13 @@ final class DesktopCombatCoordinator {
         } else {
             world.setInput(.neutral, for: actorID, authority: .scripted)
         }
+        refreshSession()
     }
 
     func beginAutonomousCombat(actorID: EntityID) {
         autonomousActors.insert(actorID.raw)
         world.setAuthority(.autonomous, for: actorID)
+        refreshSession()
     }
 
     func endAutonomousCombat(actorID: EntityID) {
@@ -81,6 +86,7 @@ final class DesktopCombatCoordinator {
         } else {
             world.setInput(.neutral, for: actorID, authority: .scripted)
         }
+        refreshSession()
     }
 
     func beginPointerDrag(actorID: EntityID) {
@@ -133,15 +139,18 @@ final class DesktopCombatCoordinator {
     func body(actorID: EntityID) -> CombatBodyState? { world.body(for: actorID) }
 
     private func endAutonomousSparringOnKnockout(_ events: [CombatEvent]) {
+        var changed = false
         for event in events where event.kind == .knockedOut {
             let involved = [event.actorID, event.targetID].compactMap { $0 }
             for actorID in involved where autonomousActors.remove(actorID.raw) != nil {
+                changed = true
                 if !pointerActors.contains(actorID.raw),
                    manualInputs[actorID.raw] == nil {
                     world.setInput(.neutral, for: actorID, authority: .scripted)
                 }
             }
         }
+        if changed { refreshSession() }
     }
 
     private func restorePointerAuthorityAfterLanding() {
@@ -152,6 +161,17 @@ final class DesktopCombatCoordinator {
             pointerActors.remove(id)
             let authority = pointerResumeAuthority.removeValue(forKey: id) ?? .scripted
             world.setInput(.neutral, for: actorID, authority: authority)
+        }
+    }
+
+    private func refreshSession() {
+        let requested = !autonomousActors.isEmpty || !manualInputs.isEmpty
+        if requested, registeredActors.count >= 2 {
+            _ = world.beginSession(
+                id: "desktop",
+                participants: registeredActors.sorted().map(EntityID.init))
+        } else if world.session?.state == .active {
+            world.endSession(cancelled: false)
         }
     }
 

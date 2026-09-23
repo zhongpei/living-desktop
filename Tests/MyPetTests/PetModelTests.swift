@@ -184,6 +184,25 @@ final class PetModelTests: XCTestCase {
         XCTAssertEqual(second.x, 898.5, accuracy: 0.001)
     }
 
+    @MainActor
+    func testDesktopCombatRequiresAnExplicitControlSession() {
+        let coordinator = DesktopCombatCoordinator()
+        coordinator.register(
+            actorID: EntityID("a"), profile: CombatProfile(),
+            x: 500, yFeet: 800, facingRight: true, displayHeight: 110)
+        coordinator.register(
+            actorID: EntityID("b"), profile: CombatProfile(),
+            x: 550, yFeet: 800, facingRight: false, displayHeight: 110)
+        XCTAssertNil(coordinator.world.session)
+
+        coordinator.beginAutonomousCombat(actorID: EntityID("a"))
+        XCTAssertEqual(coordinator.world.session?.state, .active)
+        XCTAssertEqual(coordinator.world.session?.participantIDs, [EntityID("a"), EntityID("b")])
+
+        coordinator.endAutonomousCombat(actorID: EntityID("a"))
+        XCTAssertEqual(coordinator.world.session?.state, .completed)
+    }
+
     func testWalkOffWindowEdgeFalls() {
         // 宠物从上方落到窗口顶沿（y=300），再往左走出窗沿 → 掉到地板。
         world.live[7] = CGRect(x: 300, y: 300, width: 800, height: 400)
