@@ -2,6 +2,7 @@ import AppKit
 import AVFoundation
 import MyPetContent
 import MyPetCore
+import MyPetEngine
 
 /// Petpack-only visual choices. Kernel supplies the body facts; this value
 /// supplies the available clips without teaching Core about image assets.
@@ -55,17 +56,21 @@ public final class ActorPresentation {
     private let voiceURL: (String) -> URL?
     private var voicePlayer: AVAudioPlayer?
     private let surface: any ActorRenderSurface
+    private let renderBackend: any ActorRenderBackend
+    private let worldPlanner: WorldRenderPlanner
     private let bubble: SpeechBubble
     private let appearance: ActorAppearance
     private let actorID: EntityID
     private let coordinateSpace: any RenderCoordinateSpace
-    private let layoutCoordinator: SpatialLayoutCoordinator?
     private let baselineRatio: Double
     private let stepMilliseconds: Int64
     private let visualSize: CGSize
     private var idleClip: String
     private var idleSwapAt = 0.0
-    private var displayedMirrored = false
+    private var opacity: CGFloat = 1
+    private var propImage: CGImage?
+    private var propFrame = CGRect.zero
+    private var lastRenderSnapshot: RenderSnapshot?
     private var castFrame: LayoutRect?
     private var detachedFromCastLayout = false
     private var transition: (plan: CastTransitionPlan, startedAt: Double)?
@@ -103,13 +108,15 @@ public final class ActorPresentation {
         let space = coordinateSpace ?? AppKitRenderCoordinateSpace()
         animator = SpriteAnimator(source: source)
         voiceURL = (source as? ClipLibrary)?.voiceURL(for:) ?? { _ in nil }
-        surface = (renderBackend ?? CoreAnimationRenderBackend()).makeActorSurface(
-            initialFrame: initialFrame, coordinateSpace: space)
+        let backend = renderBackend ?? CoreAnimationRenderBackend()
+        self.renderBackend = backend
+        surface = backend.makeActorSurface(
+            actorID: actorID, initialFrame: initialFrame, coordinateSpace: space)
         bubble = SpeechBubble()
         self.appearance = appearance
         self.actorID = actorID
         self.coordinateSpace = space
-        self.layoutCoordinator = layoutCoordinator
+        self.worldPlanner = WorldRenderPlanner(layout: layoutCoordinator)
         self.baselineRatio = baselineRatio
         self.stepMilliseconds = max(1, stepMilliseconds)
         visualSize = initialFrame.size
@@ -151,11 +158,14 @@ public final class ActorPresentation {
             appearance.leftAuthoredClips.contains(animator.clipName)
                 ? $0.facingRight : !$0.facingRight
         } ?? false
-        let (image, changed) = animator.tick(dt: dt)
-        if (changed || previous != animator.clipName || restart || mirrored != displayedMirrored),
-           let image {
-            surface.display(image: image, mirrored: mirrored)
-            displayedMirrored = mirrored
+        let (image, _) = animator.tick(dt: dt)
+        if let frame = projectedFrame {
+            let renderSnapshot = RenderSnapshot(
+                actorID: actorID, frame: frame, image: image,
+                mirrored: mirrored, opacity: opacity,
+                propImage: propImage, propFrame: propFrame, visible: true)
+            renderBackend.render(snapshot: renderSnapshot, interpolation: 0)
+            lastRenderSnapshot = renderSnapshot
         }
     }
 
@@ -175,13 +185,22 @@ public final class ActorPresentation {
 
     public func cancelTransition() {
         transition = nil
-        surface.alphaValue = 1
+        opacity = 1
+        if let snapshot = lastRenderSnapshot {
+            let updated = RenderSnapshot(
+                actorID: snapshot.actorID, frame: snapshot.frame,
+                image: snapshot.image, mirrored: snapshot.mirrored,
+                opacity: 1, propImage: snapshot.propImage,
+                propFrame: snapshot.propFrame, visible: snapshot.visible)
+            renderBackend.render(snapshot: updated, interpolation: 0)
+            lastRenderSnapshot = updated
+        }
     }
 
     public func stop() {
         stopVoice()
         cancelTransition()
-        layoutCoordinator?.remove(actorID)
+        worldPlanner.remove(actorID)
     }
 
     private func stopVoice() {
@@ -199,55 +218,45 @@ public final class ActorPresentation {
     private func place(pose: BodyPose, now: Double) {
         let width = Double(visualSize.width)
         let height = Double(visualSize.height)
-        let raw = LayoutRect(
-            x: pose.x - width / 2,
-            y: pose.yFeet - height * baselineRatio,
-            width: width, height: height)
-        if pose.authoritativePlacement || pose.motion == "dragged" || detachedFromCastLayout {
-            show(frame: raw)
-            return
-        }
         let work = coordinateSpace.flippedWorkArea(containing: CGPoint(
             x: CGFloat(pose.x), y: CGFloat(pose.yFeet)))
         let bounds = LayoutRect(
             x: Double(work.minX), y: Double(work.minY),
             width: Double(work.width), height: Double(work.height))
-        let safe = SpatialSafety.placeActor(
-            id: actorID, anchorX: pose.x, feetY: pose.yFeet,
-            width: width, height: height, baselineRatio: baselineRatio, in: bounds)
-        if transition == nil, let castFrame {
-            surface.alphaValue = 1
-            show(frame: SpatialSafety.fit(castFrame, in: bounds))
-            return
-        }
         let groupID = "screen:\(Int(work.minX)):\(Int(work.minY)):\(Int(work.width))x\(Int(work.height))"
-        let placed = layoutCoordinator?.update(safe, in: bounds, groupID: groupID) ?? safe
-        var frame = placed.frame
+        var frame = worldPlanner.frame(for: WorldRenderPlacementRequest(
+            actorID: actorID,
+            pose: pose,
+            visualWidth: width,
+            visualHeight: height,
+            baselineRatio: baselineRatio,
+            bounds: bounds,
+            groupID: groupID,
+            authoredFrame: transition == nil ? castFrame : nil,
+            bypassSafety: pose.authoritativePlacement || pose.motion == "dragged" ||
+                detachedFromCastLayout))
         if let transition {
             let duration = max(0.025,
                 Double(transition.plan.durationTicks) * Double(stepMilliseconds) / 1_000)
             let progress = (now - transition.startedAt) / duration
             if progress >= 1 {
                 self.transition = nil
-                surface.alphaValue = 1
+                opacity = 1
             } else {
                 let cue = transition.plan.presentation(
                     at: progress, leadingEdge: pose.x <= (bounds.minX + bounds.maxX) / 2)
                 frame.x += frame.width * cue.offsetXRatio
                 frame.y += frame.height * cue.offsetYRatio
-                surface.alphaValue = CGFloat(cue.opacity)
+                opacity = CGFloat(cue.opacity)
             }
         } else {
-            surface.alphaValue = 1
+            opacity = 1
         }
         show(frame: frame)
     }
 
     private func show(frame: LayoutRect) {
         projectedFrame = frame
-        surface.setFrame(coordinateSpace.appKitRect(
-            flippedTop: CGFloat(frame.y), x: CGFloat(frame.x),
-            width: CGFloat(frame.width), height: CGFloat(frame.height)))
     }
 
     private func selectedClip(for pose: BodyPose?, now: Double) -> String {
@@ -274,7 +283,17 @@ public final class ActorPresentation {
     }
 
     public func displayProp(image: CGImage?, rect: CGRect) {
-        surface.displayProp(image: image, rect: rect)
+        propImage = image
+        propFrame = rect
+        if let snapshot = lastRenderSnapshot {
+            let updated = RenderSnapshot(
+                actorID: snapshot.actorID, frame: snapshot.frame,
+                image: snapshot.image, mirrored: snapshot.mirrored,
+                opacity: snapshot.opacity, propImage: image,
+                propFrame: rect, visible: snapshot.visible)
+            renderBackend.render(snapshot: updated, interpolation: 0)
+            lastRenderSnapshot = updated
+        }
     }
 
     public func show() { surface.show() }
