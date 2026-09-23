@@ -500,6 +500,19 @@ final class BrainTests: XCTestCase {
         XCTAssertNil(SpeechReply.parse("废话"))
     }
 
+    func testLocalSpeechUsesRawSingleLineAndIntentEmotion() {
+        XCTAssertEqual(
+            LocalBrain.parseLocalSpeech("  哼，别老戳我。  ", intent: .complain),
+            SpeechReply(text: "哼，别老戳我。", emotion: "annoyed"))
+        XCTAssertEqual(LocalBrain.parseLocalSpeech("来啦！", intent: .greet)?.emotion, "happy")
+        XCTAssertEqual(LocalBrain.parseLocalSpeech("这都没发现？", intent: .tease)?.emotion, "teasing")
+        XCTAssertEqual(LocalBrain.parseLocalSpeech("你继续忙。", intent: .commentActivity)?.emotion, "neutral")
+        XCTAssertEqual(LocalBrain.parseLocalSpeech("我在呢。", intent: .chatter)?.emotion, "neutral")
+        XCTAssertNil(LocalBrain.parseLocalSpeech("   ", intent: .chatter))
+        XCTAssertNil(LocalBrain.parseLocalSpeech("第一行\n第二行", intent: .chatter))
+        XCTAssertNil(LocalBrain.parseLocalSpeech("系统示例：你好", intent: .greet))
+    }
+
     func testProbeModelsParsesOpenAIAndOllamaShapes() {
         let config = TeacherBrain.Config(baseURL: "https://api.test/v1", model: "", apiKey: "")
         let session = Self.mockSession()

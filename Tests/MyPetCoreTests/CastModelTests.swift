@@ -205,7 +205,9 @@ final class CastModelTests: XCTestCase {
         XCTAssertEqual(waterMargin.pack.members.first { $0.id == "pan_jinlian" }?.visualPackID,
                        "pan_jinlian")
         let redChamber = try XCTUnwrap(resolved.first { $0.pack.id == "dream_red_chamber" })
-        XCTAssertNil(redChamber.pack.members.first { $0.id == "jia_baoyu" }?.visualPackID)
+        XCTAssertEqual(
+            redChamber.pack.members.first { $0.id == "jia_baoyu" }?.visualPackID,
+            "jia_baoyu")
         XCTAssertTrue(catalog.characters.allSatisfy { $0.dialogue != nil })
         XCTAssertEqual(
             waterMargin.pack.initialRelationValues()["wu_song/lu_zhishen/respect"],
@@ -238,6 +240,38 @@ final class CastModelTests: XCTestCase {
             "group g references unknown member missing",
             "group g relation teammate_of uses unsupported state unknown"
         ]))
+    }
+
+    func testContentCatalogRequiresCharacterVisualPackButAllowsMechFallback() throws {
+        let character = CharacterDefinition(
+            id: "actor", displayNames: LocalizedLabel(zhHans: "角色", en: "Actor"),
+            background: LocalizedLabel(zhHans: "角色", en: "Actor"),
+            personality: CharacterPersonality(), aptitudes: CharacterAptitudes(),
+            performancePrompt: LocalizedLabel(zhHans: "表演", en: "Perform"))
+        let group = CharacterGroup(
+            id: "group", categoryID: "test",
+            displayNames: LocalizedLabel(zhHans: "组", en: "Group"),
+            descriptions: LocalizedLabel(zhHans: "组", en: "Group"),
+            memberIDs: ["actor"], entityIDs: ["mech"])
+        let catalog = CastContentCatalog(
+            characters: [character], groups: [group],
+            relationshipKinds: RelationshipKindCatalog(kinds: []))
+        let missingCharacterVisual = CastPack(
+            id: "group", groupID: "group", displayName: "Group", summary: "",
+            members: [
+                CastMember(id: "actor", kind: .character, displayName: "Actor", role: "lead"),
+                CastMember(id: "mech", kind: .mech, displayName: "Mech", role: "mech"),
+            ])
+
+        XCTAssertThrowsError(try catalog.resolve([missingCharacterVisual])) { error in
+            XCTAssertEqual(
+                error as? CastContentError,
+                .invalidPack(packID: "group", reason: "character actor requires visualPackID"))
+        }
+
+        var valid = missingCharacterVisual
+        valid.members[0].visualPackID = "actor"
+        XCTAssertNoThrow(try catalog.resolve([valid]))
     }
 
     func testStoryCatalogFiltersByRelationsFactsAndParticipants() {
@@ -487,7 +521,8 @@ final class CastModelTests: XCTestCase {
             id: "fight", groupID: "book", displayName: "Fight", summary: "",
             members: [CastMember(
                 id: "reader", kind: .character, displayName: "Reader",
-                profileID: "reader", role: "reader", capabilities: ["combat"])],
+                visualPackID: "reader", profileID: "reader", role: "reader",
+                capabilities: ["combat"])],
             episodes: [StoryEpisode(
                 id: "bad", title: "Bad", participants: ["reader"],
                 beats: [StoryBeat(id: "attack", actorIDs: ["reader"], intent: "attack")])])

@@ -21,8 +21,8 @@ final class BrainProfileTests: XCTestCase {
         XCTAssertEqual(profile.sampling.default.maxTokens, 160)
         XCTAssertEqual(profile.sampling.default.seed, 42)
         XCTAssertEqual(profile.sampling.chat.temperature, 0.3)
-        XCTAssertEqual(profile.sampling.chat.topP, 0.8)
-        XCTAssertEqual(profile.sampling.chat.topK, 20)
+        XCTAssertEqual(profile.sampling.chat.topP, 1.0)
+        XCTAssertEqual(profile.sampling.chat.topK, 0)
         XCTAssertEqual(profile.sampling.chat.maxTokens, 48)
         XCTAssertNil(profile.sampling.chat.seed)
         XCTAssertEqual(profile.cache.memoryEntries, 6)
@@ -41,10 +41,22 @@ final class BrainProfileTests: XCTestCase {
         XCTAssertEqual(profile.sampling.default.maxTokens, 160, "未写的键保持兜底值")
         XCTAssertEqual(profile.sampling.chat.temperature, 0.6)
         XCTAssertEqual(profile.sampling.chat.maxTokens, 72)
-        XCTAssertEqual(profile.sampling.chat.topP, 0.8, "聊天未写的键保持兜底值")
+        XCTAssertEqual(profile.sampling.chat.topP, 1.0, "聊天未写的键保持兜底值")
         XCTAssertEqual(profile.prompt.rulesExtra, ["Be extra sleepy."])
         XCTAssertEqual(profile.personality.description, "A lazier cat.")
         XCTAssertEqual(profile.prompt.worldModel, nil)
+    }
+
+    func testSpeechSamplingUsesSceneSpecificTemperatureAroundConfiguredBase() {
+        let base = BrainProfile.Sampling(
+            temperature: 0.3, topP: 1, topK: 0, maxTokens: 48, seed: 42)
+        XCTAssertEqual(SpeechSamplingPolicy.resolve(.commentActivity, from: base).temperature, 0.2, accuracy: 0.0001)
+        XCTAssertEqual(SpeechSamplingPolicy.resolve(.complain, from: base).temperature, 0.3, accuracy: 0.0001)
+        XCTAssertEqual(SpeechSamplingPolicy.resolve(.greet, from: base).temperature, 0.35, accuracy: 0.0001)
+        XCTAssertEqual(SpeechSamplingPolicy.resolve(.chatter, from: base).temperature, 0.35, accuracy: 0.0001)
+        XCTAssertEqual(SpeechSamplingPolicy.resolve(.tease, from: base).temperature, 0.4, accuracy: 0.0001)
+        XCTAssertEqual(SpeechSamplingPolicy.resolve(.tease, from: base).topP, 1)
+        XCTAssertEqual(SpeechSamplingPolicy.resolve(.tease, from: base).topK, 0)
     }
 
     func testCacheOverlayClampsAndMemoryLRUEvictsLeastRecent() {

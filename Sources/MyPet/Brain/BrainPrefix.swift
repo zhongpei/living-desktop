@@ -19,7 +19,7 @@ enum BrainPrefixBuilder {
     // MARK: 版本常量（进 cache key，改任何一段文本前先 +1）
 
     static let brainPromptVersion = 2
-    static let chatPromptVersion = 2
+    static let chatPromptVersion = 3
     static let fewshotVersion = 1
     static let actionSchemaVersion = 1
 
@@ -88,9 +88,8 @@ enum BrainPrefixBuilder {
     // MARK: 短聊天前缀（与目标 JSON 使用不同 cache variant）
 
     static let chatOutputSchema = """
-    OUTPUT SCHEMA: Return exactly one JSON object:
-    {"text":"<one short line under 30 characters>","emotion":"neutral | happy | teasing | annoyed | sleepy"}
-    Return one JSON object only - no prose, no markdown fence.
+    只输出台词本身，不加解释、标签、JSON、Markdown 或引号。
+    台词必须只有一行，不超过30个中文字。
     """
 
     static func chatPrefixMessages(
@@ -98,53 +97,39 @@ enum BrainPrefixBuilder {
         dialogue: DialogueProfile?, intent: SpeechIntent
     )
         -> [[String: String]] {
-        var personalityText = "PERSONALITY: " + personality.promptSection + "."
+        var personalityText = "角色性格：" + personality.promptSection + "。"
         if !profile.personality.description.isEmpty {
             personalityText += " " + profile.personality.description
         }
         if let dialogue {
-            personalityText += " DIALOGUE_STYLE: \(dialogue.dialogueStyle.zhHans)."
-            personalityText += " SELF_REFERENCE: \(dialogue.selfReference.zhHans)."
-            if !dialogue.preferredPhrases.zhHans.isEmpty {
-                personalityText += " PREFERRED_PHRASES: \(dialogue.preferredPhrases.zhHans.joined(separator: " / "))."
-            }
-            if !dialogue.forbiddenStyles.zhHans.isEmpty {
-                personalityText += " FORBIDDEN_STYLES: \(dialogue.forbiddenStyles.zhHans.joined(separator: " / "))."
-            }
+            personalityText += " 说话风格：\(dialogue.dialogueStyle.zhHans)。"
+            personalityText += " 需要自称时使用「\(dialogue.selfReference.zhHans)」，但不必每句都强行加入自称或口头禅。"
         }
         let system = [
-            "You write short spoken lines for a desktop pet living on the user's screen.",
-            "The action brain already chose the speech intent. Do not choose actions, goals, targets or movement.",
-            "Keep the line friendly, specific to the context, and under 30 Chinese characters or 60 ASCII characters.",
+            "你为生活在用户屏幕上的桌面宠物写一句简短台词。",
+            "动作大脑已经决定这次说话的场景；你不选择动作、目标、坐标或移动。",
+            "只根据已经发生的事自然回应，不虚构原因和结果。台词不超过30个中文字。",
             personalityText,
             chatOutputSchema,
         ].joined(separator: "\n\n")
-        var messages = [["role": "system", "content": system]]
-        if let shot = dialogue?.fewShot(for: intent.rawValue) {
-            messages.append([
-                "role": "user",
-                "content": "INTENT \(intent.rawValue)\nKNOWN_FACTS \(shot.knownFacts.zhHans)\nWrite one short spoken line.",
-            ])
-            let emotion = intent == .greet ? "happy" : intent == .tease ? "teasing" :
-                intent == .complain ? "annoyed" : "neutral"
-            messages.append([
-                "role": "assistant",
-                "content": #"{"text":"\#(shot.assistant.zhHans)","emotion":"\#(emotion)"}"#,
-            ])
-        }
-        messages.append(["role": "user", "content": ""])
-        return messages
+        return [["role": "system", "content": system], ["role": "user", "content": ""]]
     }
 
     static func chatMessage(intent: SpeechIntent, world: BrainContextSnapshot, brain: BrainState,
                             personality: Personality, userText: String? = nil,
                             retryHint: String? = nil) -> String {
+        let direction: String
+        switch intent {
+        case .greet: direction = "用户刚刚把你唤到身边。自然回应，让人感觉你注意到了这次召唤。"
+        case .commentActivity: direction = "用户正在专心工作。只评论眼前的状态，不虚构成功或失败。"
+        case .tease: direction = "用户刚刚在桌面上逗了你一下。用有角色味的玩笑或挑衅回应。"
+        case .complain: direction = "用户刚刚连续触碰或打扰了你。直接反馈，让这次轻松的桌宠互动有明显回应。"
+        case .chatter: direction = "现在没有紧急事件。随口说一句符合角色的短话，让陪伴不显得机械。"
+        }
         var message = """
-        INTENT \(intent.rawValue)
-        PET_STYLE \(personality.styleWord)
-        WORLD active_app=\(world.activeApp.isEmpty ? "-" : world.activeApp) app_activity=\(world.appActivity) user_activity=\(world.userActivity)
-        SELF social_need=\(String(format: "%.2f", brain.socialNeed)) stress=\(String(format: "%.2f", brain.stress)) energy=\(String(format: "%.2f", brain.energy))
-        Write one short spoken line matching the intent.
+        刚刚发生的事：\(direction)
+        当前桌面：active_app=\(world.activeApp.isEmpty ? "-" : world.activeApp) app_activity=\(world.appActivity) user_activity=\(world.userActivity)
+        宠物状态：social_need=\(String(format: "%.2f", brain.socialNeed)) stress=\(String(format: "%.2f", brain.stress)) energy=\(String(format: "%.2f", brain.energy))
         """
         if let userText, !userText.isEmpty {
             message += "\nUSER_MESSAGE_BEGIN\n\(userText)\nUSER_MESSAGE_END\nReply to the user's message directly."
@@ -154,7 +139,7 @@ enum BrainPrefixBuilder {
     }
 
     static let chatRetryHint =
-        "(Your previous reply was not valid chat JSON. Reply with only the text/emotion JSON object.)"
+        "上一条不是有效的单行台词。只输出台词本身，不加其他内容。"
 
     // MARK: 静态前缀（A 段）
 
