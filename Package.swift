@@ -141,7 +141,7 @@ let package = Package(
         ),
         .testTarget(
             name: "MyPetContentTests",
-            dependencies: ["MyPetContent", "MyPetCore", "MyPetEngine", "ZIPFoundation"],
+            dependencies: ["MyPetContent", "MyPetCore", "MyPetCombat", "MyPetEngine", "ZIPFoundation"],
             path: "Tests/MyPetContentTests"
         )
     ]
