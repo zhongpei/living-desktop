@@ -16,6 +16,23 @@ public final class CombatWorld {
 
     public init() {}
 
+    public init(checkpoint: CombatWorldCheckpoint) {
+        self.frame = checkpoint.frame
+        self.bodies = checkpoint.bodies
+        self.profiles = checkpoint.profiles
+        self.inputs = checkpoint.inputs
+        self.buffers = checkpoint.buffers
+    }
+
+    public func checkpoint() -> CombatWorldCheckpoint {
+        CombatWorldCheckpoint(
+            frame: frame,
+            bodies: bodies,
+            profiles: profiles,
+            inputs: inputs,
+            buffers: buffers)
+    }
+
     public func register(actorID: EntityID, profile: CombatProfile = CombatProfile(),
                          x: Double, yFeet: Double, facing: CombatFacing = .right,
                          visualScale: Double = 1) {
