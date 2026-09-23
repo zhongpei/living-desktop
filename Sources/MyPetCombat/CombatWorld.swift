@@ -429,7 +429,8 @@ public final class CombatWorld {
         guard body.locomotion == .grounded,
               let surface = environment.surface(id: body.currentSurfaceID),
               surface.kind != .floor else {
-            if body.currentSurfaceID.flatMap(environment.surface(id:))?.kind == .floor {
+            if let id = body.currentSurfaceID,
+               environment.surface(id: id)?.kind == .floor {
                 body.surfaceFraction = nil
             }
             return
