@@ -77,6 +77,58 @@ final class CombatWorldTests: XCTestCase {
         XCTAssertEqual(world.body(for: EntityID("a"))?.position.y, 520)
     }
 
+    func testHeldAttackButtonDoesNotAutoRepeatAfterRecovery() {
+        let world = CombatWorld()
+        world.register(actorID: EntityID("a"), x: 400, yFeet: 700)
+        world.register(actorID: EntityID("b"), x: 450, yFeet: 700, facing: .left)
+        for _ in 0..<90 {
+            world.setInput(FighterInputFrame(buttons: [.x]), for: EntityID("a"))
+            _ = world.step(environment: floor)
+        }
+        XCTAssertEqual(world.body(for: EntityID("b"))?.hp, 965)
+    }
+
+    func testSameFrameTradeIsIndependentOfActorOrder() {
+        let world = CombatWorld()
+        world.register(actorID: EntityID("a"), x: 425, yFeet: 700)
+        world.register(actorID: EntityID("b"), x: 475, yFeet: 700, facing: .left)
+        for _ in 0..<5 {
+            world.setInput(FighterInputFrame(buttons: [.x]), for: EntityID("a"))
+            world.setInput(FighterInputFrame(buttons: [.x]), for: EntityID("b"))
+            _ = world.step(environment: floor)
+        }
+        XCTAssertLessThan(world.body(for: EntityID("a"))!.hp, 1000)
+        XCTAssertLessThan(world.body(for: EntityID("b"))!.hp, 1000)
+    }
+
+    func testDownedRecoveryWaitsUntilDraggedActorReturnsToGround() {
+        let finisher = CombatMoveDefinition(
+            id: "ko", command: .button(.x), startupFrames: 0, activeFrames: 1, recoveryFrames: 1,
+            hit: CombatHitDefinition(damage: 2000, hitStopFrames: 0, hitStunFrames: 1),
+            visualAction: "attack")
+        let profile = CombatProfile(
+            moves: [finisher], downedRecoveryFrames: 1, getUpFrames: 1,
+            revivedHPFraction: 0.30, reviveInvulnerabilityFrames: 2)
+        let world = CombatWorld()
+        world.register(actorID: EntityID("a"), profile: profile, x: 400, yFeet: 700)
+        world.register(actorID: EntityID("b"), profile: profile, x: 450, yFeet: 700, facing: .left)
+        world.setInput(FighterInputFrame(buttons: [.x]), for: EntityID("a"))
+        _ = world.step(environment: floor)
+        _ = world.step(environment: floor)
+        XCTAssertEqual(world.body(for: EntityID("b"))?.healthState, .downed)
+
+        world.beginDrag(actorID: EntityID("b"), x: 500, y: 300)
+        for _ in 0..<20 { _ = world.step(environment: floor) }
+        XCTAssertEqual(world.body(for: EntityID("b"))?.healthState, .downed)
+
+        world.endDrag(actorID: EntityID("b"), wasClick: false)
+        for _ in 0..<180 {
+            _ = world.step(environment: floor)
+            if world.body(for: EntityID("b"))?.healthState == .active { break }
+        }
+        XCTAssertEqual(world.body(for: EntityID("b"))?.healthState, .active)
+    }
+
     func testSameInputsProduceSameSnapshot() {
         func run() -> CombatWorldSnapshot {
             let world = CombatWorld()
