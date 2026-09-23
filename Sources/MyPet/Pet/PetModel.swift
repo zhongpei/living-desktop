@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import MyPetCombat
 
 /// 世界读取接口：PetModel 只依赖它，测试时塞假世界。
 /// 生产环境由 SystemWorld（WindowWorld + Screens + 系统空闲时间）实现。
@@ -65,6 +66,10 @@ final class PetModel {
 
     private let world: WorldReading
     private var clock: Double = 0
+    /// All body physics now advance on the same fixed 60 Hz frame grid as combat.
+    /// Public callers may still provide variable render deltas; this accumulator
+    /// converts them to deterministic body frames.
+    private var combatFrameClock = CombatFrameClock()
 
     // 拖拽
     private var grabOffset = CGPoint.zero
@@ -252,9 +257,16 @@ final class PetModel {
     // ============ 主循环 ============
 
     func update(dtIn: Double) {
-        let dt = min(dtIn, 0.1)
-        clock += dt
+        let clamped = min(max(dtIn, 0), 0.25)
+        clock += clamped
+        let frames = combatFrameClock.advance(elapsedSeconds: clamped)
+        for _ in 0..<frames {
+            stepSimulationFrame()
+        }
+    }
 
+    private func stepSimulationFrame() {
+        let dt = 1.0 / Double(CombatWorld.framesPerSecond)
         switch state {
         case .grounded: updateGrounded(dt, asleep: false)
         case .asleep: updateGrounded(dt, asleep: true)
@@ -263,8 +275,64 @@ final class PetModel {
         case .dragged: break
         case .tossed: updateTossed(dt)
         }
-
         clampToVirtual()
+    }
+
+    /// Projects authoritative combat/body state back into the legacy PetModel facade.
+    /// Story/window code can keep reading PetModel during migration, but it no longer
+    /// integrates a second body while combat owns control.
+    func applyCombatBodyState(_ body: CombatBodyState) {
+        x = CGFloat(body.position.x)
+        yFeet = CGFloat(body.position.y)
+        vx = CGFloat(body.velocity.x * Double(CombatWorld.framesPerSecond))
+        vy = CGFloat(body.velocity.y * Double(CombatWorld.framesPerSecond))
+        facingRight = body.facing == .right
+        walking = false
+        pendingWalkDir = nil
+
+        switch body.locomotion {
+        case .grounded:
+            if let id = body.currentSurfaceID,
+               id.hasPrefix("window:"), id.hasSuffix(":top"),
+               let raw = id.split(separator: ":").dropFirst().first,
+               let windowID = UInt32(raw) {
+                perch = (CGWindowID(windowID), CGFloat(body.surfaceFraction ?? 0.5))
+                stance = nil
+                state = .perched
+            } else {
+                perch = nil
+                state = .grounded
+                stance = world.surfaces(near: x, footY: yFeet)
+                    .first { abs($0.y - yFeet) <= 2 && x >= $0.left && x <= $0.right }
+            }
+            walking = body.healthState == .active &&
+                body.phase == .neutral &&
+                abs(body.velocity.x) > 0.01
+        case .airborne:
+            perch = nil
+            stance = nil
+            state = .airborne
+        case .dragged:
+            perch = nil
+            stance = nil
+            state = .dragged
+        case .tossed:
+            perch = nil
+            stance = nil
+            state = .tossed
+        case .sleeping:
+            state = .asleep
+        }
+    }
+
+    /// Combat hit/throw impulse enters the same body physics used by mouse toss,
+    /// jumping and window falls. Values are points per combat frame.
+    func applyCombatImpulse(vxPerFrame: Double, vyPerFrame: Double) {
+        guard state != .dragged else { return }
+        detach()
+        vx = CGFloat(vxPerFrame * Double(CombatWorld.framesPerSecond))
+        vy = CGFloat(vyPerFrame * Double(CombatWorld.framesPerSecond))
+        state = .airborne
     }
 
     // ---- 站立（地板 / 窗口底沿）----

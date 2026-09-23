@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 import CoreText
+import MyPetCombat
 import MyPetContent
 import MyPetCore
 import MyPetEngine
@@ -112,6 +113,15 @@ final class PetController {
     private var semanticDecisionRequest: (recipeID: String, stepIndex: Int, sinceTick: Int64)?
     /// 角色组使用 CastRuntime 的共享 kernel，由 CastRuntime 统一推进时钟。
     private let usesSharedGameplayKernel: Bool
+    /// Body/combat is a separate 60 Hz authority. Cast injects one shared world so
+    /// every actor participates in the same hit/push/HP/recovery timeline.
+    private let combatCoordinator: DesktopCombatCoordinator
+    private let usesSharedCombatWorld: Bool
+    private let combatProfile: CombatProfile
+    private let combatEnabled: Bool
+    private let manualControlPanel = ManualControlPanel()
+    private var manualInput = FighterInputFrame.neutral
+    private var previousManualInput = FighterInputFrame.neutral
     /// 行动脑只提交语义请求。只有 Kernel 接受且计划世代仍有效时，
     /// 下一个 runtime pulse 才会让 AppKit 身体执行。
     private var pendingRuntimeActions: [String: PendingRuntimeAction] = [:]
@@ -168,6 +178,7 @@ final class PetController {
          layoutCoordinator: SpatialLayoutCoordinator? = nil,
          perceptionHub: PerceptionHub? = nil,
          gameplayRuntime injectedRuntime: GameRuntime? = nil,
+         combatCoordinator injectedCombatCoordinator: DesktopCombatCoordinator? = nil,
          sceneGraph injectedSceneGraph: SceneGraph? = nil,
          characterDefinition: CharacterDefinition? = nil,
          capabilities: [String]? = nil,
@@ -186,6 +197,14 @@ final class PetController {
             recipes: SceneCatalog.semanticRecipes,
             assetCatalog: AssetCatalog(exactActions: Set(library.actionNames)))
         self.usesSharedGameplayKernel = injectedRuntime != nil
+        let loadedCombatProfile = CombatProfileLoader.load(from: library.packURL)
+        self.combatProfile = loadedCombatProfile ?? CombatProfile(moves: [])
+        // A capability grants permission; an authored combat.json grants executable moves.
+        // Never create invisible damaging attacks just because the character catalog says combat.
+        self.combatEnabled = loadedCombatProfile != nil &&
+            (capabilities == nil || capabilities?.contains("combat") == true)
+        self.combatCoordinator = injectedCombatCoordinator ?? DesktopCombatCoordinator()
+        self.usesSharedCombatWorld = injectedCombatCoordinator != nil
         self.characterDefinition = characterDefinition
         self.declaredCapabilities = capabilities.map(Set.init)
         self.needle = needle ?? NeedleBrain()
@@ -219,6 +238,13 @@ final class PetController {
         self.model = PetModel(world: systemWorld, displayHeight: displayH, startAt: spawnPoint)
         model.spawn(onFloorAt: spawnPoint)
         self.actions = PetBodyDriver(model: model, library: library)
+        self.combatCoordinator.register(
+            actorID: runtimeActorID,
+            profile: combatProfile,
+            x: model.x,
+            yFeet: model.yFeet,
+            facingRight: model.facingRight,
+            displayHeight: displayH)
 
         self.presentation = ActorPresentation(
             source: library,
@@ -234,6 +260,7 @@ final class PetController {
         presentation.voicePlaybackEnabled = settings.voicePlaybackEnabled
 
         wireView()
+        wireManualControl()
         goalBrainCoordinator = GoalBrainCoordinator(local: self.localBrain, teacher: self.teacherBrain)
         refreshGoalBrains()
         // 非激活面板不会自己上屏：不抢 key 也要 orderFront。
@@ -309,6 +336,8 @@ final class PetController {
         }
 
         let normalized = intent.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        // Legacy authored story intents stay presentation-only. Real damage is entered
+        // explicitly through manual/autonomous combat control, never by the word "attack".
         let semantic: ActionIntent
         switch normalized {
         case "run":
@@ -419,6 +448,20 @@ final class PetController {
             semantic = .socialHug
         case "argue", "challenge":
             semantic = .socialArgue
+        case "combat_ready":
+            semantic = .combatReady
+        case "attack", "fight":
+            semantic = .attack
+        case "defend", "guard_self":
+            semantic = .defend
+        case "dodge":
+            semantic = .dodge
+        case "victory":
+            semantic = .victory
+        case "defeat":
+            semantic = .defeat
+        case "retreat":
+            semantic = .retreat
         case "activate":
             semantic = .mechActivate
         case "deactivate":
@@ -512,6 +555,8 @@ final class PetController {
         }
         actionRing.dismiss()
         actionRingOpen = false
+        if manualControlPanel.isVisible { manualControlPanel.finish() }
+        combatCoordinator.unregister(actorID: runtimeActorID)
     }
 
     /// 切换宠物时收起旧面板（定时器停了不代表窗口会自己消失）。
@@ -619,7 +664,21 @@ final class PetController {
         advancePointerResponse()
         tickSceneMove()
         tickScenePerform()
-        model.update(dtIn: dt)
+        applyManualLocomotion()
+        syncCombatPose()
+        if !usesSharedCombatWorld {
+            consumeCombatEvents(combatCoordinator.advance(elapsedSeconds: dt, desktopWorld: world))
+        }
+        if let combatBody = combatCoordinator.body(actorID: runtimeActorID),
+           combatBody.authority != .scripted ||
+           combatBody.healthState != .active ||
+           combatBody.currentMoveID != nil ||
+           combatBody.phase == .hitStun ||
+           combatBody.phase == .blockStun {
+            model.applyCombatBodyState(combatBody)
+        } else {
+            model.update(dtIn: dt)
+        }
         actions.tick(now: clock)
         updatePresentationPose()
         renderFrame(dt: dt, effects: presentationEffects)
@@ -635,15 +694,49 @@ final class PetController {
         }
     }
 
+    private func combatVisualAction(for body: CombatBodyState?) -> String? {
+        guard let body else { return nil }
+        if let move = combatProfile.move(id: body.currentMoveID) {
+            return library.action(named: move.visualAction)
+        }
+        let intent: ActionIntent?
+        switch body.healthState {
+        case .knockedOut, .downed: intent = .defeat
+        case .gettingUp: intent = .recover
+        case .active:
+            switch body.phase {
+            case .hitStun: intent = .hitReact
+            case .blockStun, .guarding: intent = .defend
+            default: intent = nil
+            }
+        }
+        guard let intent,
+              let name = ActionCatalog.resolve(intent, available: library.actionNames)
+        else { return nil }
+        return library.action(named: name)
+    }
+
     private func updatePresentationPose() {
+        let combat = combatCoordinator.body(actorID: runtimeActorID)
         gameplayRuntime.updateBodyPose(BodyPose(
             actorID: runtimeActorID,
             x: Double(model.x),
             yFeet: Double(model.yFeet),
             facingRight: model.facingRight,
             motion: model.walking ? "walking" : String(describing: model.state),
-            action: actions.performance?.clipKey,
+            action: combatVisualAction(for: combat) ?? actions.performance?.clipKey,
             horizontalSpeed: Double(model.vx),
+            hp: combat?.hp,
+            maxHP: combat.map { _ in combatProfile.maxHP },
+            combatPhase: combat?.phase.rawValue,
+            healthState: combat?.healthState.rawValue,
+            authoritativePlacement: combat.map {
+                $0.authority != .scripted ||
+                $0.healthState != .active ||
+                $0.currentMoveID != nil ||
+                $0.phase == .hitStun ||
+                $0.phase == .blockStun
+            } ?? false,
             displayHeight: Double(settings.displayHeight)))
     }
 
@@ -2040,19 +2133,21 @@ final class PetController {
         actions.clearPendingUserActions()
         cancelGoalAndScene(reason: "user opened action ring")
         actionRingOpen = true
-        actionRing.show(
-            at: cursor,
-            primary: ActionCatalog.rightClickMenuItems(available: Set(library.actionNames))
-                .filter(isAuthorizedMenuItem)
-                .map { item in
-                    RenderActionItem(
-                        id: item.intent.rawValue,
-                        label: item.label,
-                        enabled: ActionCatalog.resolve(
-                            item.intent,
-                            available: Set(library.actionNames)) != nil)
-                },
-            extended: [])
+        var primary = ActionCatalog.rightClickMenuItems(available: Set(library.actionNames))
+            .filter(isAuthorizedMenuItem)
+            .map { item in
+                RenderActionItem(
+                    id: item.intent.rawValue,
+                    label: item.label,
+                    enabled: ActionCatalog.resolve(
+                        item.intent,
+                        available: Set(library.actionNames)) != nil)
+            }
+        primary.append(RenderActionItem(id: "__manual_control__", label: "接管控制", enabled: true))
+        if combatEnabled {
+            primary.append(RenderActionItem(id: "__autonomous_combat__", label: "自主格斗", enabled: true))
+        }
+        actionRing.show(at: cursor, primary: primary, extended: [])
     }
 
     private func isAuthorizedMenuItem(_ item: ActionCatalog.MenuItem) -> Bool {
@@ -2122,6 +2217,89 @@ final class PetController {
         }
     }
 
+    // ---- Manual / autonomous combat control ----
+
+    private func wireManualControl() {
+        manualControlPanel.onInput = { [weak self] input in
+            guard let self else { return }
+            self.manualInput = input
+            self.combatCoordinator.setManualInput(input, actorID: self.runtimeActorID)
+        }
+        manualControlPanel.onExit = { [weak self] in
+            guard let self else { return }
+            self.manualInput = .neutral
+            self.previousManualInput = .neutral
+            self.combatCoordinator.endManual(actorID: self.runtimeActorID)
+        }
+    }
+
+    private func beginManualControl() {
+        guard !isStopped else { return }
+        cancelGoalAndScene(reason: "manual control")
+        actions.cancelPerformance()
+        model.wake()
+        actionRingOpen = false
+        combatCoordinator.beginManual(actorID: runtimeActorID)
+        manualControlPanel.begin(actorName: characterDefinition?.displayName ?? library.characterID)
+    }
+
+    private func beginAutonomousCombat(reason: String) {
+        guard combatEnabled, !isStopped else { return }
+        manualInput = .neutral
+        model.stopWalk()
+        actions.cancelPerformance()
+        combatCoordinator.beginAutonomousCombat(actorID: runtimeActorID)
+        pushRecentEvent("autonomous combat started: \(reason)")
+    }
+
+    private func applyManualLocomotion() {
+        guard manualControlPanel.isVisible else { return }
+        // Movement/jump are resolved by CombatWorld from the same input frame.
+        // PetModel is only the compatibility projection while combat owns the body.
+        if manualInput.down && !previousManualInput.down,
+           let crouch = ActionCatalog.resolve(.crouch, available: library.actionNames)
+                .flatMap(library.action(named:)) {
+            actions.inject(.perform(crouch), userInitiated: true)
+        }
+        previousManualInput = manualInput
+    }
+
+    func syncCombatPose() {
+        combatCoordinator.synchronize(
+            actorID: runtimeActorID,
+            x: model.x,
+            yFeet: model.yFeet,
+            facingRight: model.facingRight,
+            state: model.state,
+            displayHeight: settings.displayHeight)
+    }
+
+    func consumeCombatEvents(_ events: [CombatEvent]) {
+        guard !events.isEmpty else { return }
+        for event in events {
+            guard event.actorID == runtimeActorID || event.targetID == runtimeActorID else { continue }
+            switch event.kind {
+            case .hit where event.targetID == runtimeActorID,
+                 .blocked where event.targetID == runtimeActorID:
+                actions.cancelPerformance()
+                cancelGoalAndScene(reason: "combat contact")
+                pushRecentEvent("received combat contact")
+            case .knockedOut where event.actorID == runtimeActorID:
+                actions.cancelPerformance()
+                cancelGoalAndScene(reason: "combat knockout")
+                pushRecentEvent("knocked out")
+            case .downed where event.actorID == runtimeActorID:
+                pushRecentEvent("downed")
+            case .recoveryStarted where event.actorID == runtimeActorID:
+                pushRecentEvent("getting up")
+            case .recovered where event.actorID == runtimeActorID:
+                pushRecentEvent("combat recovered")
+            default:
+                break
+            }
+        }
+    }
+
     // ---- 前台跟随 ----
 
     private func handleForegroundChanged(_ window: WindowEntity?) {
@@ -2174,8 +2352,11 @@ final class PetController {
             self?.actionRingOpen = false
         }
         actionRing.onAction = { [weak self] id in
+            guard let self else { return }
+            if id == "__manual_control__" { self.beginManualControl(); return }
+            if id == "__autonomous_combat__" { self.beginAutonomousCombat(reason: "user"); return }
             guard let intent = ActionIntent(rawValue: id) else { return }
-            self?.performMenuAction(intent)
+            self.performMenuAction(intent)
         }
         actionRing.onChat = { [weak self] in
             self?.openChatInput()
@@ -2196,6 +2377,11 @@ final class PetController {
             self.cancelGoalAndScene(reason: "user grabbed")   // 用户接管：场景意图作废
             self.pullCursorStart = cursor
             self.model.beginDrag(at: cursor)
+            if !self.model.isPulling() {
+                self.combatCoordinator.beginPointerDrag(
+                    actorID: self.runtimeActorID,
+                    x: Double(self.model.x), y: Double(self.model.yFeet))
+            }
             if self.model.isPulling() {
                 self.beginPull()
             }
@@ -2203,6 +2389,12 @@ final class PetController {
         presentation.onMouseDragged = { [weak self] cursor in
             guard let self else { return }
             self.model.drag(to: cursor, dt: 1.0 / 40.0)
+            if !self.model.isPulling() {
+                self.combatCoordinator.updatePointerDrag(
+                    actorID: self.runtimeActorID,
+                    x: Double(self.model.x), y: Double(self.model.yFeet),
+                    elapsedSeconds: 1.0 / 40.0)
+            }
             if self.model.isPulling() {
                 self.updatePull(cursor: cursor)
             }
@@ -2212,7 +2404,12 @@ final class PetController {
             if self.model.isPulling() {
                 self.puller.end()
             }
+            let wasPulling = self.model.isPulling()
             self.model.endDrag(wasClick: wasClick)
+            if !wasPulling {
+                self.combatCoordinator.endPointerDrag(
+                    actorID: self.runtimeActorID, wasClick: wasClick)
+            }
             self.pullCursorStart = nil
             if wasClick {
                 self.registerPat()

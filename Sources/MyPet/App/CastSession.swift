@@ -22,6 +22,8 @@ final class CastSession: NSObject {
     private var castRuntime: CastRuntime?
     private var castControllers: [String: PetController] = [:]
     private let castSceneGraph = SceneGraph(rootID: "cast-scene")
+    /// One shared 60 Hz body/combat world for every visible cast member.
+    private let combatCoordinator = DesktopCombatCoordinator()
     private let castOverlays = CastOverlayPresentation()
     private var castTimer: Timer?
     private var pointerTimer: Timer?
@@ -171,6 +173,10 @@ final class CastSession: NSObject {
             syncCastControllers()
         }
         let effects = runtime.runtime.drainPresentationEffects()
+        for pet in castControllers.values { pet.syncCombatPose() }
+        let combatEvents = combatCoordinator.advance(
+            elapsedSeconds: dt, desktopWorld: perceptionHub.world)
+        for pet in castControllers.values { pet.consumeCombatEvents(combatEvents) }
         for (id, pet) in castControllers {
             pet.tickFrame(presentationEffects: effects.filter { $0.actorID.raw == id })
         }
@@ -260,6 +266,7 @@ final class CastSession: NSObject {
                     layoutCoordinator: layoutCoordinator,
                     perceptionHub: perceptionHub,
                     gameplayRuntime: runtime.runtime,
+                    combatCoordinator: combatCoordinator,
                     sceneGraph: castSceneGraph,
                     characterDefinition: runtime.characterDefinition(for: id),
                     capabilities: member.capabilities,

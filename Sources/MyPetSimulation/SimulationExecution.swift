@@ -1,4 +1,5 @@
 import Foundation
+import MyPetCombat
 import MyPetCore
 import MyPetEngine
 
@@ -108,6 +109,7 @@ public struct DataSimulationSnapshot: Codable, Equatable, Sendable {
     public let runtimeCheckpoint: GameRuntimeCheckpoint?
     public var desktop: VirtualDesktop
     public var pipeline: SemanticPipelineSnapshot?
+    public var combat: CombatSimulationSnapshot?
     private var legacyKernel: KernelSnapshot?
 
     public var kernel: KernelSnapshot { runtimeCheckpoint?.kernel ?? legacyKernel! }
@@ -116,12 +118,14 @@ public struct DataSimulationSnapshot: Codable, Equatable, Sendable {
         scenario: HarnessScenario,
         runtimeCheckpoint: GameRuntimeCheckpoint,
         desktop: VirtualDesktop,
-        pipeline: SemanticPipelineSnapshot?
+        pipeline: SemanticPipelineSnapshot?,
+        combat: CombatSimulationSnapshot? = nil
     ) {
         self.scenario = scenario
         self.runtimeCheckpoint = runtimeCheckpoint
         self.desktop = desktop
         self.pipeline = pipeline
+        self.combat = combat
         self.legacyKernel = nil
     }
 
@@ -135,11 +139,12 @@ public struct DataSimulationSnapshot: Codable, Equatable, Sendable {
         self.runtimeCheckpoint = nil
         self.desktop = desktop
         self.pipeline = pipeline
+        self.combat = nil
         self.legacyKernel = kernel
     }
 
     private enum CodingKeys: String, CodingKey {
-        case scenario, runtimeCheckpoint, kernel, desktop, pipeline
+        case scenario, runtimeCheckpoint, kernel, desktop, pipeline, combat
     }
 
     public init(from decoder: Decoder) throws {
@@ -153,6 +158,7 @@ public struct DataSimulationSnapshot: Codable, Equatable, Sendable {
         }
         desktop = try values.decode(VirtualDesktop.self, forKey: .desktop)
         pipeline = try values.decodeIfPresent(SemanticPipelineSnapshot.self, forKey: .pipeline)
+        combat = try values.decodeIfPresent(CombatSimulationSnapshot.self, forKey: .combat)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -165,6 +171,7 @@ public struct DataSimulationSnapshot: Codable, Equatable, Sendable {
         }
         try values.encode(desktop, forKey: .desktop)
         try values.encodeIfPresent(pipeline, forKey: .pipeline)
+        try values.encodeIfPresent(combat, forKey: .combat)
     }
 }
 
@@ -176,12 +183,23 @@ public final class DataSimulation {
     public var kernel: KernelSnapshot { runtime.snapshot() }
     public private(set) var desktop: VirtualDesktop
     public let pipeline: SemanticPipeline?
+    public private(set) var combatSimulation: CombatDataSimulation?
 
     public init(scenario: HarnessScenario) {
         self.scenario = scenario
         self.runtime = GameRuntime(kernel: GameKernel(scenario: scenario))
         self.desktop = scenario.desktop
         self.pipeline = scenario.pipeline.map { SemanticPipeline(configuration: $0) }
+        if !scenario.combatActors.isEmpty {
+            self.combatSimulation = CombatDataSimulation(scenario: VirtualCombatScenario(
+                id: scenario.id + "-combat",
+                desktop: scenario.desktop,
+                actors: scenario.combatActors,
+                inputs: scenario.combatInputs,
+                durationFrames: scenario.durationTicks * 3))
+        } else {
+            self.combatSimulation = nil
+        }
     }
 
     public init(snapshot: DataSimulationSnapshot) {
@@ -189,6 +207,7 @@ public final class DataSimulation {
         self.runtime = snapshot.runtimeCheckpoint.map(GameRuntime.init(checkpoint:))
             ?? GameRuntime(snapshot: snapshot.kernel)
         self.desktop = snapshot.desktop
+        self.combatSimulation = snapshot.combat.map(CombatDataSimulation.init(snapshot:))
         if let configuration = snapshot.scenario.pipeline {
             let pipeline = SemanticPipeline(configuration: configuration)
             if let snapshot = snapshot.pipeline { pipeline.restore(snapshot) }
@@ -202,13 +221,19 @@ public final class DataSimulation {
     public func step() -> TickReport {
         let tick = runtime.clock.tick
         let events = desktop.advance(to: tick)
+        let report: TickReport
         if let pipeline {
-            return runtime.step(
+            report = runtime.step(
                 events: events,
                 pipeline: pipeline,
                 context: desktop.runtimeContext)!
+        } else {
+            report = runtime.step(events: events)!
         }
-        return runtime.step(events: events)!
+        // 50 ms narrative ticks contain exactly three 60 Hz body/combat frames.
+        // Legacy scenarios without a combat track pay no cost.
+        if let combatSimulation { _ = combatSimulation.run(frames: 3) }
+        return report
     }
 
     @discardableResult
@@ -222,6 +247,7 @@ public final class DataSimulation {
             scenario: scenario,
             runtimeCheckpoint: runtime.checkpoint(),
             desktop: desktop,
-            pipeline: pipeline?.snapshot())
+            pipeline: pipeline?.snapshot(),
+            combat: combatSimulation?.snapshot())
     }
 }

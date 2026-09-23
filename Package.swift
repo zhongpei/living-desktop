@@ -13,6 +13,7 @@ let package = Package(
     ],
     products: [
         .library(name: "MyPetCore", targets: ["MyPetCore"]),
+        .library(name: "MyPetCombat", targets: ["MyPetCombat"]),
         .library(name: "MyPetEngine", targets: ["MyPetEngine"]),
         .library(name: "MyPetSimulation", targets: ["MyPetSimulation"]),
         .library(name: "MyPetAI", targets: ["MyPetAI"]),
@@ -38,13 +39,18 @@ let package = Package(
             path: "Sources/MyPetCore"
         ),
         .target(
-            name: "MyPetEngine",
+            name: "MyPetCombat",
             dependencies: ["MyPetCore"],
+            path: "Sources/MyPetCombat"
+        ),
+        .target(
+            name: "MyPetEngine",
+            dependencies: ["MyPetCore", "MyPetCombat"],
             path: "Sources/MyPetEngine"
         ),
         .target(
             name: "MyPetSimulation",
-            dependencies: ["MyPetCore", "MyPetEngine"],
+            dependencies: ["MyPetCore", "MyPetCombat", "MyPetEngine"],
             path: "Sources/MyPetSimulation"
         ),
         // Needle 3 C 接口：needle.h + shim（空实现，只为生成 C 模块），
@@ -77,7 +83,7 @@ let package = Package(
         ),
         .target(
             name: "MyPetContent",
-            dependencies: ["MyPetCore", "ZIPFoundation"],
+            dependencies: ["MyPetCore", "MyPetCombat", "ZIPFoundation"],
             path: "Sources/MyPetContent"
         ),
         .target(
@@ -89,6 +95,7 @@ let package = Package(
             name: "MyPetApp",
             dependencies: [
                 "MyPetCore",
+                "MyPetCombat",
                 "MyPetEngine",
                 "MyPetAI",
                 "MyPetPlatform",
@@ -103,13 +110,18 @@ let package = Package(
             path: "Sources/MyPetEntry"
         ),
         .testTarget(
+            name: "MyPetCombatTests",
+            dependencies: ["MyPetCombat", "MyPetCore"],
+            path: "Tests/MyPetCombatTests"
+        ),
+        .testTarget(
             name: "MyPetTests",
-            dependencies: ["MyPetApp", "MyPetCore", "MyPetEngine", "MyPetSimulation", "MyPetPlatform", "MyPetContent", "MyPetRender"],
+            dependencies: ["MyPetApp", "MyPetCore", "MyPetCombat", "MyPetEngine", "MyPetSimulation", "MyPetPlatform", "MyPetContent", "MyPetRender"],
             path: "Tests/MyPetTests"
         ),
         .testTarget(
             name: "MyPetCoreTests",
-            dependencies: ["MyPetCore", "MyPetEngine", "MyPetSimulation", "MyPetContent"],
+            dependencies: ["MyPetCore", "MyPetCombat", "MyPetEngine", "MyPetSimulation", "MyPetContent"],
             path: "Tests/MyPetCoreTests"
         ),
         .testTarget(
@@ -129,7 +141,7 @@ let package = Package(
         ),
         .testTarget(
             name: "MyPetContentTests",
-            dependencies: ["MyPetContent", "MyPetCore", "MyPetEngine", "ZIPFoundation"],
+            dependencies: ["MyPetContent", "MyPetCore", "MyPetCombat", "MyPetEngine", "ZIPFoundation"],
             path: "Tests/MyPetContentTests"
         )
     ]
