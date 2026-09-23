@@ -197,12 +197,13 @@ final class PetController {
             recipes: SceneCatalog.semanticRecipes,
             assetCatalog: AssetCatalog(exactActions: Set(library.actionNames)))
         self.usesSharedGameplayKernel = injectedRuntime != nil
-        let loadedCombatProfile = CombatProfileLoader.load(from: library.packURL)
-        self.combatProfile = loadedCombatProfile ?? CombatProfile(moves: [])
-        // A capability grants permission; an authored combat.json grants executable moves.
-        // Never create invisible damaging attacks just because the character catalog says combat.
-        self.combatEnabled = loadedCombatProfile != nil &&
-            (capabilities == nil || capabilities?.contains("combat") == true)
+        let combatLoad = CombatProfileLoader.inspect(
+            from: library.packURL,
+            capabilities: Set(capabilities ?? []))
+        self.combatProfile = combatLoad.profile ?? CombatProfile(moves: [])
+        // Version 1 and incomplete version 2 profiles remain presentation-only.
+        // Only validated v2 evidence may open a damage-producing CombatSession.
+        self.combatEnabled = combatLoad.readiness == .realCombatReady
         self.combatCoordinator = injectedCombatCoordinator ?? DesktopCombatCoordinator()
         self.usesSharedCombatWorld = injectedCombatCoordinator != nil
         self.characterDefinition = characterDefinition
