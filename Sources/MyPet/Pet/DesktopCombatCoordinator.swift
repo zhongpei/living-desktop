@@ -12,6 +12,8 @@ final class DesktopCombatCoordinator {
     private let policy = UtilityCombatPolicy()
     private var manualInputs: [String: FighterInputFrame] = [:]
     private var autonomousActors = Set<String>()
+    private var pointerActors = Set<String>()
+    private var pointerResumeAuthority: [String: CombatControlAuthority] = [:]
     private var registeredActors = Set<String>()
 
     func register(actorID: EntityID, profile: CombatProfile, x: CGFloat, yFeet: CGFloat,
@@ -33,6 +35,8 @@ final class DesktopCombatCoordinator {
     func unregister(actorID: EntityID) {
         registeredActors.remove(actorID.raw)
         autonomousActors.remove(actorID.raw)
+        pointerActors.remove(actorID.raw)
+        pointerResumeAuthority[actorID.raw] = nil
         manualInputs[actorID.raw] = nil
         world.unregister(actorID: actorID)
     }
@@ -61,6 +65,24 @@ final class DesktopCombatCoordinator {
     func endAutonomousCombat(actorID: EntityID) {
         autonomousActors.remove(actorID.raw)
         world.setInput(.neutral, for: actorID, authority: .scripted)
+    }
+
+    func beginPointerDrag(actorID: EntityID, x: Double, y: Double) {
+        let previous = world.body(for: actorID)?.authority ?? .scripted
+        pointerResumeAuthority[actorID.raw] = previous
+        pointerActors.insert(actorID.raw)
+        world.setInput(.neutral, for: actorID, authority: .pointer)
+        world.beginDrag(actorID: actorID, x: x, y: y)
+    }
+
+    func updatePointerDrag(actorID: EntityID, x: Double, y: Double, elapsedSeconds: Double) {
+        guard pointerActors.contains(actorID.raw) else { return }
+        world.drag(actorID: actorID, x: x, y: y, elapsedSeconds: elapsedSeconds)
+    }
+
+    func endPointerDrag(actorID: EntityID, wasClick: Bool) {
+        guard pointerActors.contains(actorID.raw) else { return }
+        world.endDrag(actorID: actorID, wasClick: wasClick)
     }
 
     func synchronize(
@@ -95,7 +117,9 @@ final class DesktopCombatCoordinator {
         for _ in 0..<frames {
             let snapshot = world.snapshot()
             for body in snapshot.bodies {
-                if let input = manualInputs[body.actorID.raw] {
+                if pointerActors.contains(body.actorID.raw) {
+                    world.setInput(.neutral, for: body.actorID, authority: .pointer)
+                } else if let input = manualInputs[body.actorID.raw] {
                     world.setInput(input, for: body.actorID, authority: .manual)
                 } else if autonomousActors.contains(body.actorID.raw) {
                     let opponents = snapshot.bodies.filter {
@@ -110,11 +134,23 @@ final class DesktopCombatCoordinator {
                 }
             }
             all.append(contentsOf: world.step(environment: Self.environment(from: desktopWorld)))
+            restorePointerAuthorityAfterLanding()
         }
         return all
     }
 
     func body(actorID: EntityID) -> CombatBodyState? { world.body(for: actorID) }
+
+    private func restorePointerAuthorityAfterLanding() {
+        for id in pointerActors.sorted() {
+            let actorID = EntityID(id)
+            guard let body = world.body(for: actorID),
+                  body.locomotion == .grounded else { continue }
+            pointerActors.remove(id)
+            let authority = pointerResumeAuthority.removeValue(forKey: id) ?? .scripted
+            world.setInput(.neutral, for: actorID, authority: authority)
+        }
+    }
 
     private static func environment(from desktopWorld: WindowWorld) -> CombatEnvironment {
         let virtual = Screens.virtualBox()
