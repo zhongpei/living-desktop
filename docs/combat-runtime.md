@@ -107,6 +107,14 @@ moves, downed recovery duration, get-up duration, revived HP fraction and tempor
 invulnerability. A move references an existing petpack action through `visualAction`;
 missing presentation content must not create a hidden damaging move.
 
+Version 1 is a transitional reader format and is always presentation-only. Version 2
+may enable a real `CombatSession` only when the pack declares `realCombatReady`, the
+character declares the `combat` capability, all six logical buttons are represented by
+authored commands, and evidence hashes prove every move box, move animation and required
+combat state animation. Manual and AI readiness are separate required evidence flags.
+Missing or stale evidence keeps the profile readable for presentation while preventing
+damage-producing sessions.
+
 This runtime provides MUGEN-style mechanics. It does **not** claim v1 compatibility with
 MUGEN CNS/AIR/SFF file formats or arbitrary existing MUGEN character packages.
 
