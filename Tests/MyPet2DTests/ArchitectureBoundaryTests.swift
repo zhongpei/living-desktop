@@ -25,4 +25,27 @@ final class ArchitectureBoundaryTests: XCTestCase {
             XCTAssertFalse(sources.contains(forbidden), "MyPetCombat still owns: \(forbidden)")
         }
     }
+
+    func testLegacyPetModelDoesNotIntegrateASecondBodyOrSynchronizePose() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let model = try String(
+            contentsOf: root.appendingPathComponent("Sources/MyPet/Pet/PetModel.swift"),
+            encoding: .utf8)
+        let combat = try String(
+            contentsOf: root.appendingPathComponent("Sources/MyPetCombat/CombatWorld.swift"),
+            encoding: .utf8)
+
+        for forbidden in [
+            "private func updateGrounded(",
+            "private func updateAirborne(",
+            "private func updateTossed(",
+            "PetMath.stepToss(",
+        ] {
+            XCTAssertFalse(model.contains(forbidden), "PetModel still integrates: \(forbidden)")
+        }
+        XCTAssertFalse(combat.contains("func synchronizePose("))
+    }
 }

@@ -62,32 +62,6 @@ final class PetMathTests: XCTestCase {
         XCTAssertEqual(PetMath.pullDelta(stretch: -500), -120)
     }
 
-    // ---- 抛掷 ----
-
-    func testTossBouncesOffFloor() {
-        let box = PetMath.Box(left: 0, top: 0, right: 1000, bottom: 800)
-        let (p, v, event) = PetMath.stepToss(
-            position: CGPoint(x: 500, y: 790),
-            velocity: CGPoint(x: 0, y: 400),
-            dt: 0.05, gravity: 1600, airDrag: 0.32,
-            bounds: box, radius: 46
-        )
-        XCTAssertEqual(event, .floor)
-        XCTAssertLessThanOrEqual(p.y, 754 + 0.001)
-        XCTAssertLessThan(v.y, 0) // 反弹向上
-    }
-
-    func testTossNoEventWhenAirborne() {
-        let box = PetMath.Box(left: 0, top: 0, right: 1000, bottom: 800)
-        let (_, _, event) = PetMath.stepToss(
-            position: CGPoint(x: 500, y: 400),
-            velocity: CGPoint(x: 0, y: 0),
-            dt: 0.025, gravity: 1600, airDrag: 0.32,
-            bounds: box, radius: 46
-        )
-        XCTAssertEqual(event, .none)
-    }
-
     // ---- 多显示器地板合并 ----
 
     func testMergeFloorSegmentsJoinsEqualHeightScreens() {

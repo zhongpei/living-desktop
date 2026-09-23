@@ -1,5 +1,8 @@
 import CoreGraphics
 import XCTest
+import MyPet2D
+import MyPetCore
+import MyPetCombat
 
 @testable import MyPetApp
 
@@ -16,8 +19,8 @@ final class PetModelTests: XCTestCase {
             live[id]
         }
 
-        func surfaces(near x: CGFloat, footY: CGFloat) -> [(surface: Surface, y: CGFloat, left: CGFloat, right: CGFloat)] {
-            var result: [(surface: Surface, y: CGFloat, left: CGFloat, right: CGFloat)] =
+        func surfaces(near x: CGFloat, footY: CGFloat) -> [(surface: MyPetApp.Surface, y: CGFloat, left: CGFloat, right: CGFloat)] {
+            var result: [(surface: MyPetApp.Surface, y: CGFloat, left: CGFloat, right: CGFloat)] =
                 floors.map { (.floor, $0.y, $0.left, $0.right) }
             for (id, b) in live.sorted(by: { $0.key < $1.key }) {
                 result.append((.windowTop(id), b.minY, b.minX, b.maxX))
@@ -26,7 +29,7 @@ final class PetModelTests: XCTestCase {
             return result
         }
 
-        func floorBeyond(edgeX: CGFloat, direction: CGFloat) -> (surface: Surface, y: CGFloat, left: CGFloat, right: CGFloat)? {
+        func floorBeyond(edgeX: CGFloat, direction: CGFloat) -> (surface: MyPetApp.Surface, y: CGFloat, left: CGFloat, right: CGFloat)? {
             let within: CGFloat = 160
             for seg in floors {
                 let isBeyond = direction > 0 ? seg.left > edgeX - 2 : seg.right < edgeX + 2
@@ -96,6 +99,89 @@ final class PetModelTests: XCTestCase {
         model.faceToward(1_000)
         XCTAssertTrue(model.facingRight)
         XCTAssertFalse(model.walking)
+    }
+
+    func testPetModelReadsPositionFromInjectedBodyWorld() {
+        let bodyWorld = BodyWorld()
+        let actorID = EntityID("shared-pet")
+        model = PetModel(
+            world: world,
+            displayHeight: 110,
+            startAt: CGPoint(x: 700, y: 800),
+            entityID: actorID,
+            bodyWorld: bodyWorld)
+
+        bodyWorld.update(actorID) { body in
+            body.position = Vec2(x: 321, y: 654)
+            body.facing = .left
+        }
+
+        XCTAssertEqual(model.x, 321)
+        XCTAssertEqual(model.yFeet, 654)
+        XCTAssertFalse(model.facingRight)
+    }
+
+    func testStandalonePetAdvancesInjectedBodyWorldInsteadOfPrivatePhysics() throws {
+        let bodyWorld = BodyWorld()
+        let actorID = EntityID("shared-pet")
+        model = PetModel(
+            world: world,
+            displayHeight: 110,
+            startAt: CGPoint(x: 700, y: 800),
+            entityID: actorID,
+            bodyWorld: bodyWorld)
+        model.spawn(onFloorAt: CGPoint(x: 700, y: 800))
+        model.startWalk(1)
+
+        model.update(dtIn: 1.0 / 60.0)
+
+        XCTAssertEqual(bodyWorld.frame, 1)
+        XCTAssertGreaterThan(model.x, 700)
+        XCTAssertEqual(
+            try XCTUnwrap(bodyWorld.state(for: actorID)).position.x,
+            Double(model.x), accuracy: 0.0001)
+    }
+
+    @MainActor
+    func testSharedCoordinatorAdvancesTwoPetFacadesExactlyOncePerFrame() {
+        let coordinator = DesktopCombatCoordinator()
+        let firstID = EntityID("a")
+        let secondID = EntityID("b")
+        let first = PetModel(
+            world: world, displayHeight: 110, startAt: CGPoint(x: 500, y: 800),
+            entityID: firstID, bodyWorld: coordinator.bodyWorld)
+        let second = PetModel(
+            world: world, displayHeight: 110, startAt: CGPoint(x: 900, y: 800),
+            entityID: secondID, bodyWorld: coordinator.bodyWorld)
+        coordinator.bodyWorld.update(firstID) {
+            $0.position = Vec2(x: 500, y: 800)
+            $0.locomotion = .grounded
+            $0.currentSurfaceID = "floor:0:800"
+        }
+        coordinator.bodyWorld.update(secondID) {
+            $0.position = Vec2(x: 900, y: 800)
+            $0.locomotion = .grounded
+            $0.currentSurfaceID = "floor:0:800"
+        }
+        coordinator.register(
+            actorID: firstID, profile: CombatProfile(), x: first.x, yFeet: first.yFeet,
+            facingRight: true, displayHeight: 110)
+        coordinator.register(
+            actorID: secondID, profile: CombatProfile(), x: second.x, yFeet: second.yFeet,
+            facingRight: true, displayHeight: 110)
+        first.startWalk(1)
+        second.startWalk(-1)
+
+        _ = coordinator.advance(
+            elapsedSeconds: 1.0 / 60.0,
+            environment: first.bodyEnvironmentSnapshot()) {
+                first.prepareBodySimulationFrame()
+                second.prepareBodySimulationFrame()
+            }
+
+        XCTAssertEqual(coordinator.bodyWorld.frame, 1)
+        XCTAssertEqual(first.x, 501.5, accuracy: 0.001)
+        XCTAssertEqual(second.x, 898.5, accuracy: 0.001)
     }
 
     func testWalkOffWindowEdgeFalls() {

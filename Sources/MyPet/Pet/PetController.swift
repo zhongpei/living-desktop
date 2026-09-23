@@ -235,7 +235,12 @@ final class PetController {
         let startY = startWork.bottom - displayH
         let spawnPoint = spawnAt ?? CGPoint(x: startX, y: startY)
 
-        self.model = PetModel(world: systemWorld, displayHeight: displayH, startAt: spawnPoint)
+        self.model = PetModel(
+            world: systemWorld,
+            displayHeight: displayH,
+            startAt: spawnPoint,
+            entityID: runtimeActorID,
+            bodyWorld: self.combatCoordinator.bodyWorld)
         model.spawn(onFloorAt: spawnPoint)
         self.actions = PetBodyDriver(model: model, library: library)
         self.combatCoordinator.register(
@@ -665,20 +670,13 @@ final class PetController {
         tickSceneMove()
         tickScenePerform()
         applyManualLocomotion()
-        syncCombatPose()
         if !usesSharedCombatWorld {
-            consumeCombatEvents(combatCoordinator.advance(elapsedSeconds: dt, desktopWorld: world))
+            consumeCombatEvents(combatCoordinator.advance(
+                elapsedSeconds: dt,
+                environment: model.bodyEnvironmentSnapshot(),
+                beforeFrame: { [weak self] in self?.prepareBodySimulationFrame() }))
         }
-        if let combatBody = combatCoordinator.body(actorID: runtimeActorID),
-           combatBody.authority != .scripted ||
-           combatBody.healthState != .active ||
-           combatBody.currentMoveID != nil ||
-           combatBody.phase == .hitStun ||
-           combatBody.phase == .blockStun {
-            model.applyCombatBodyState(combatBody)
-        } else {
-            model.update(dtIn: dt)
-        }
+        syncBodyProjection()
         actions.tick(now: clock)
         updatePresentationPose()
         renderFrame(dt: dt, effects: presentationEffects)
@@ -2264,14 +2262,19 @@ final class PetController {
         previousManualInput = manualInput
     }
 
-    func syncCombatPose() {
-        combatCoordinator.synchronize(
-            actorID: runtimeActorID,
-            x: model.x,
-            yFeet: model.yFeet,
-            facingRight: model.facingRight,
-            state: model.state,
-            displayHeight: settings.displayHeight)
+    func prepareBodySimulationFrame() {
+        guard let body = combatCoordinator.body(actorID: runtimeActorID),
+              body.authority == .scripted,
+              body.healthState == .active,
+              body.currentMoveID == nil,
+              body.phase != .hitStun,
+              body.phase != .blockStun else { return }
+        model.prepareBodySimulationFrame()
+    }
+
+    func syncBodyProjection() {
+        guard let body = combatCoordinator.body(actorID: runtimeActorID) else { return }
+        model.refreshCombatProjection(body)
     }
 
     func consumeCombatEvents(_ events: [CombatEvent]) {
@@ -2379,8 +2382,7 @@ final class PetController {
             self.model.beginDrag(at: cursor)
             if !self.model.isPulling() {
                 self.combatCoordinator.beginPointerDrag(
-                    actorID: self.runtimeActorID,
-                    x: Double(self.model.x), y: Double(self.model.yFeet))
+                    actorID: self.runtimeActorID)
             }
             if self.model.isPulling() {
                 self.beginPull()
@@ -2389,12 +2391,6 @@ final class PetController {
         presentation.onMouseDragged = { [weak self] cursor in
             guard let self else { return }
             self.model.drag(to: cursor, dt: 1.0 / 40.0)
-            if !self.model.isPulling() {
-                self.combatCoordinator.updatePointerDrag(
-                    actorID: self.runtimeActorID,
-                    x: Double(self.model.x), y: Double(self.model.yFeet),
-                    elapsedSeconds: 1.0 / 40.0)
-            }
             if self.model.isPulling() {
                 self.updatePull(cursor: cursor)
             }
@@ -2408,7 +2404,7 @@ final class PetController {
             self.model.endDrag(wasClick: wasClick)
             if !wasPulling {
                 self.combatCoordinator.endPointerDrag(
-                    actorID: self.runtimeActorID, wasClick: wasClick)
+                    actorID: self.runtimeActorID)
             }
             self.pullCursorStart = nil
             if wasClick {

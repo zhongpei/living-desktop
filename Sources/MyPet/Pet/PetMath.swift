@@ -1,7 +1,7 @@
 import CoreGraphics
 import Foundation
 
-/// 宠物世界的纯数学：栖息定位、跳跃初速、抛掷反弹、拉窗弹簧。
+/// 宠物世界的纯数学：栖息定位、跳跃初速、拉窗弹簧。
 /// 全部无副作用、无 AppKit 依赖 —— 状态机的可测核心。
 enum PetMath {
 
@@ -48,59 +48,6 @@ enum PetMath {
     /// 竖直初速 v 在重力 g 下能到的最高点。
     static func apexHeight(velocity: CGFloat, gravity: CGFloat) -> CGFloat {
         velocity * velocity / (2 * gravity)
-    }
-
-    // ---- 抛掷 ----
-
-    /// 抛掷物理一步：重力 + 空气阻力 + 四壁反弹。
-    /// - Parameters:
-    ///   - radius: 宠物半宽（各向同性近似）
-    ///   - restitutionY/X: 反弹恢复系数
-    static func stepToss(position: CGPoint, velocity: CGPoint, dt: Double,
-                         gravity: CGFloat, airDrag: Double,
-                         bounds: PetMath.Box, radius: CGFloat,
-                         restitutionY: CGFloat = 0.5, restitutionX: CGFloat = 0.58) -> (CGPoint, CGPoint, TossEvent) {
-        var p = position
-        var v = velocity
-        var event = TossEvent.none
-
-        v.y += gravity * CGFloat(dt)
-        v.x *= CGFloat(1 - airDrag * dt)
-
-        p.x += v.x * CGFloat(dt)
-        p.y += v.y * CGFloat(dt)
-
-        if p.y > bounds.bottom - radius {
-            p.y = bounds.bottom - radius
-            v.y = -v.y * restitutionY
-            v.x *= 0.74
-            event = .floor
-        }
-        if p.y < bounds.top + radius {
-            p.y = bounds.top + radius
-            v.y = abs(v.y) * 0.4
-            event = .ceiling
-        }
-        if p.x < bounds.left + radius {
-            p.x = bounds.left + radius
-            v.x = abs(v.x) * restitutionX
-            event = .wall
-        }
-        if p.x > bounds.right - radius {
-            p.x = bounds.right - radius
-            v.x = -abs(v.x) * restitutionX
-            event = .wall
-        }
-        return (p, v, event)
-    }
-
-    enum TossEvent { case none, floor, ceiling, wall }
-
-    struct Box {
-        var left: CGFloat
-        var top: CGFloat
-        var right: CGFloat
-        var bottom: CGFloat
     }
 
     // ---- 拉窗弹簧 ----

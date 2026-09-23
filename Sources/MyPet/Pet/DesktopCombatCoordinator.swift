@@ -1,13 +1,15 @@
 import Foundation
 import MyPetCombat
 import MyPetCore
+import MyPet2D
 
 /// Shared combat authority for every visible actor in one desktop session.
 /// Solo play owns one coordinator; CastSession injects one shared instance so
 /// hitboxes, HP and recovery are resolved on a single deterministic timeline.
 @MainActor
 final class DesktopCombatCoordinator {
-    let world = CombatWorld()
+    let bodyWorld: BodyWorld
+    let world: CombatWorld
     private var frameClock = CombatFrameClock()
     private let policy = UtilityCombatPolicy()
     private var manualInputs: [String: FighterInputFrame] = [:]
@@ -15,6 +17,12 @@ final class DesktopCombatCoordinator {
     private var pointerActors = Set<String>()
     private var pointerResumeAuthority: [String: CombatControlAuthority] = [:]
     private var registeredActors = Set<String>()
+
+    init() {
+        let bodyWorld = BodyWorld()
+        self.bodyWorld = bodyWorld
+        self.world = CombatWorld(bodyWorld: bodyWorld)
+    }
 
     func register(actorID: EntityID, profile: CombatProfile, x: CGFloat, yFeet: CGFloat,
                   facingRight: Bool, displayHeight: CGFloat) {
@@ -75,54 +83,27 @@ final class DesktopCombatCoordinator {
         }
     }
 
-    func beginPointerDrag(actorID: EntityID, x: Double, y: Double) {
+    func beginPointerDrag(actorID: EntityID) {
         let previous = world.body(for: actorID)?.authority ?? .scripted
         pointerResumeAuthority[actorID.raw] = previous
         pointerActors.insert(actorID.raw)
         world.setInput(.neutral, for: actorID, authority: .pointer)
-        world.beginDrag(actorID: actorID, x: x, y: y)
     }
 
-    func updatePointerDrag(actorID: EntityID, x: Double, y: Double, elapsedSeconds: Double) {
+    func endPointerDrag(actorID: EntityID) {
         guard pointerActors.contains(actorID.raw) else { return }
-        world.drag(actorID: actorID, x: x, y: y, elapsedSeconds: elapsedSeconds)
     }
 
-    func endPointerDrag(actorID: EntityID, wasClick: Bool) {
-        guard pointerActors.contains(actorID.raw) else { return }
-        world.endDrag(actorID: actorID, wasClick: wasClick)
-    }
-
-    func synchronize(
-        actorID: EntityID,
-        x: CGFloat,
-        yFeet: CGFloat,
-        facingRight: Bool,
-        state: PetModel.State,
-        displayHeight: CGFloat
-    ) {
-        let locomotion: BodyLocomotionState
-        switch state {
-        case .grounded, .perched: locomotion = .grounded
-        case .airborne: locomotion = .airborne
-        case .dragged: locomotion = .dragged
-        case .tossed: locomotion = .tossed
-        case .asleep: locomotion = .sleeping
-        }
-        world.synchronizePose(
-            actorID: actorID,
-            x: Double(x),
-            yFeet: Double(yFeet),
-            facing: facingRight ? .right : .left,
-            locomotion: locomotion,
-            visualScale: max(0.05, Double(displayHeight) / 110.0))
-    }
-
-    func advance(elapsedSeconds: Double, desktopWorld: WindowWorld) -> [CombatEvent] {
+    func advance(
+        elapsedSeconds: Double,
+        environment: BodyEnvironment,
+        beforeFrame: (() -> Void)? = nil
+    ) -> [CombatEvent] {
         let frames = frameClock.advance(elapsedSeconds: elapsedSeconds)
         guard frames > 0 else { return [] }
         var all: [CombatEvent] = []
         for _ in 0..<frames {
+            beforeFrame?()
             let snapshot = world.snapshot()
             for body in snapshot.bodies {
                 if pointerActors.contains(body.actorID.raw) {
@@ -141,7 +122,7 @@ final class DesktopCombatCoordinator {
                     world.setInput(.neutral, for: body.actorID, authority: .scripted)
                 }
             }
-            let frameEvents = world.step(environment: Self.environment(from: desktopWorld))
+            let frameEvents = world.step(environment: environment)
             all.append(contentsOf: frameEvents)
             endAutonomousSparringOnKnockout(frameEvents)
             restorePointerAuthorityAfterLanding()
@@ -174,31 +155,4 @@ final class DesktopCombatCoordinator {
         }
     }
 
-    private static func environment(from desktopWorld: WindowWorld) -> CombatEnvironment {
-        let virtual = Screens.virtualBox()
-        var surfaces: [CombatSurface] = Screens.mergedFloorSegments().enumerated().map { index, floor in
-            CombatSurface(
-                id: "floor:\(index):\(Int(floor.y.rounded()))",
-                kind: .floor,
-                left: Double(floor.left),
-                right: Double(floor.right),
-                y: Double(floor.y))
-        }
-        for window in desktopWorld.windows {
-            let host = EntityID("window:\(window.id)")
-            surfaces.append(CombatSurface(
-                id: "window:\(window.id):top", kind: .windowTop,
-                left: Double(window.bounds.minX), right: Double(window.bounds.maxX),
-                y: Double(window.topY), hostID: host))
-            surfaces.append(CombatSurface(
-                id: "window:\(window.id):bottom", kind: .windowBottom,
-                left: Double(window.bounds.minX), right: Double(window.bounds.maxX),
-                y: Double(window.bottomY), hostID: host))
-        }
-        return CombatEnvironment(
-            bounds: CombatRect(
-                x: Double(virtual.left), y: Double(virtual.top),
-                width: Double(virtual.width), height: Double(virtual.height)),
-            surfaces: surfaces)
-    }
 }

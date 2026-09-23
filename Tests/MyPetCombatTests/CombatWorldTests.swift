@@ -1,11 +1,37 @@
 import XCTest
 @testable import MyPetCombat
 import MyPetCore
+import MyPet2D
 
 final class CombatWorldTests: XCTestCase {
     private let floor = CombatEnvironment(
         bounds: CombatRect(x: 0, y: 0, width: 1200, height: 800),
         surfaces: [CombatSurface(id: "floor:0", kind: .floor, left: 0, right: 1200, y: 700)])
+
+    func testInjectedBodyWorldRemainsSinglePositionAuthorityForScriptedActor() {
+        let bodies = BodyWorld()
+        let actor = EntityID("scripted")
+        bodies.register(
+            BodyDefinition(entityID: actor),
+            state: BodyState(
+                entityID: actor,
+                position: Vec2(x: 100, y: 500),
+                velocity: Vec2(x: 2, y: 0),
+                locomotion: .grounded,
+                currentSurfaceID: "floor"))
+        let combat = CombatWorld(bodyWorld: bodies)
+        combat.register(actorID: actor, profile: CombatProfile(), x: 999, yFeet: 999)
+        combat.setAuthority(.scripted, for: actor)
+        let environment = BodyEnvironment(
+            bounds: Rect2D(x: 0, y: 0, width: 800, height: 600),
+            surfaces: [MyPet2D.Surface(
+                id: "floor", kind: .floor, left: 0, right: 800, y: 500)])
+
+        combat.step(environment: environment)
+
+        XCTAssertEqual(bodies.state(for: actor)?.position.x, 102)
+        XCTAssertEqual(combat.body(for: actor)?.position.x, 102)
+    }
 
     func testSixButtonContractUsesXYZASD() {
         XCTAssertEqual(Set(CombatButton.allCases.map(\.rawValue)), Set(["x", "y", "z", "a", "s", "d"]))

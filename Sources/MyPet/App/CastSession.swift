@@ -173,9 +173,19 @@ final class CastSession: NSObject {
             syncCastControllers()
         }
         let effects = runtime.runtime.drainPresentationEffects()
-        for pet in castControllers.values { pet.syncCombatPose() }
-        let combatEvents = combatCoordinator.advance(
-            elapsedSeconds: dt, desktopWorld: perceptionHub.world)
+        let firstController = castControllers.keys.sorted().first.flatMap { castControllers[$0] }
+        let combatEvents = firstController.map { controller in
+            combatCoordinator.advance(
+                elapsedSeconds: dt,
+                environment: controller.model.bodyEnvironmentSnapshot(),
+                beforeFrame: { [weak self] in
+                    guard let self else { return }
+                    for id in self.castControllers.keys.sorted() {
+                        self.castControllers[id]?.prepareBodySimulationFrame()
+                    }
+                })
+        } ?? []
+        for pet in castControllers.values { pet.syncBodyProjection() }
         for pet in castControllers.values { pet.consumeCombatEvents(combatEvents) }
         for (id, pet) in castControllers {
             pet.tickFrame(presentationEffects: effects.filter { $0.actorID.raw == id })
