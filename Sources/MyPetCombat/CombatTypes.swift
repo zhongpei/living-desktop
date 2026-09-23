@@ -222,3 +222,22 @@ public struct CombatWorldSnapshot: Codable, Equatable, Sendable {
         self.bodies = bodies.sorted { $0.actorID.raw < $1.actorID.raw }
     }
 }
+
+
+public struct CombatWorldCheckpoint: Codable, Equatable, Sendable {
+    public var frame: Int64
+    public var bodies: [String: CombatBodyState]
+    public var profiles: [String: CombatProfile]
+    public var inputs: [String: FighterInputFrame]
+    public var buffers: [String: CombatInputBuffer]
+
+    public init(frame: Int64, bodies: [String: CombatBodyState],
+                profiles: [String: CombatProfile], inputs: [String: FighterInputFrame],
+                buffers: [String: CombatInputBuffer]) {
+        self.frame = frame
+        self.bodies = bodies
+        self.profiles = profiles
+        self.inputs = inputs
+        self.buffers = buffers
+    }
+}
