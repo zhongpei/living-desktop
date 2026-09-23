@@ -54,8 +54,7 @@ public final class ActorPresentation {
     private let animator: SpriteAnimator
     private let voiceURL: (String) -> URL?
     private var voicePlayer: AVAudioPlayer?
-    private let panel: OverlayPanel
-    private let view: PetView
+    private let surface: any ActorRenderSurface
     private let bubble: SpeechBubble
     private let appearance: ActorAppearance
     private let actorID: EntityID
@@ -76,20 +75,20 @@ public final class ActorPresentation {
     }
 
     public var onMouseDown: ((CGPoint) -> Void)? {
-        get { view.onMouseDown }
-        set { view.onMouseDown = newValue }
+        get { surface.onMouseDown }
+        set { surface.onMouseDown = newValue }
     }
     public var onMouseDragged: ((CGPoint) -> Void)? {
-        get { view.onMouseDragged }
-        set { view.onMouseDragged = newValue }
+        get { surface.onMouseDragged }
+        set { surface.onMouseDragged = newValue }
     }
     public var onMouseUp: ((CGPoint, Bool) -> Void)? {
-        get { view.onMouseUp }
-        set { view.onMouseUp = newValue }
+        get { surface.onMouseUp }
+        set { surface.onMouseUp = newValue }
     }
     public var onRightMouseDown: ((CGPoint) -> Void)? {
-        get { view.onRightMouseDown }
-        set { view.onRightMouseDown = newValue }
+        get { surface.onRightMouseDown }
+        set { surface.onRightMouseDown = newValue }
     }
 
     public init(
@@ -98,13 +97,14 @@ public final class ActorPresentation {
         baselineRatio: Double = 0.88,
         layoutCoordinator: SpatialLayoutCoordinator? = nil,
         stepMilliseconds: Int64 = 50,
-        coordinateSpace: (any RenderCoordinateSpace)? = nil
+        coordinateSpace: (any RenderCoordinateSpace)? = nil,
+        renderBackend: (any ActorRenderBackend)? = nil
     ) {
         let space = coordinateSpace ?? AppKitRenderCoordinateSpace()
         animator = SpriteAnimator(source: source)
         voiceURL = (source as? ClipLibrary)?.voiceURL(for:) ?? { _ in nil }
-        view = PetView(frame: CGRect(origin: .zero, size: initialFrame.size), coordinateSpace: space)
-        panel = OverlayPanel(contentView: view, initialFrame: initialFrame)
+        surface = (renderBackend ?? CoreAnimationRenderBackend()).makeActorSurface(
+            initialFrame: initialFrame, coordinateSpace: space)
         bubble = SpeechBubble()
         self.appearance = appearance
         self.actorID = actorID
@@ -115,7 +115,7 @@ public final class ActorPresentation {
         visualSize = initialFrame.size
         idleClip = appearance.idle
         animator.play(appearance.idle)
-        if let image = animator.currentImage { view.display(image: image, mirrored: false) }
+        if let image = animator.currentImage { surface.display(image: image, mirrored: false) }
     }
 
     public var clipName: String { animator.clipName }
@@ -154,7 +154,7 @@ public final class ActorPresentation {
         let (image, changed) = animator.tick(dt: dt)
         if (changed || previous != animator.clipName || restart || mirrored != displayedMirrored),
            let image {
-            view.display(image: image, mirrored: mirrored)
+            surface.display(image: image, mirrored: mirrored)
             displayedMirrored = mirrored
         }
     }
@@ -175,7 +175,7 @@ public final class ActorPresentation {
 
     public func cancelTransition() {
         transition = nil
-        panel.alphaValue = 1
+        surface.alphaValue = 1
     }
 
     public func stop() {
@@ -216,7 +216,7 @@ public final class ActorPresentation {
             id: actorID, anchorX: pose.x, feetY: pose.yFeet,
             width: width, height: height, baselineRatio: baselineRatio, in: bounds)
         if transition == nil, let castFrame {
-            panel.alphaValue = 1
+            surface.alphaValue = 1
             show(frame: SpatialSafety.fit(castFrame, in: bounds))
             return
         }
@@ -229,25 +229,25 @@ public final class ActorPresentation {
             let progress = (now - transition.startedAt) / duration
             if progress >= 1 {
                 self.transition = nil
-                panel.alphaValue = 1
+                surface.alphaValue = 1
             } else {
                 let cue = transition.plan.presentation(
                     at: progress, leadingEdge: pose.x <= (bounds.minX + bounds.maxX) / 2)
                 frame.x += frame.width * cue.offsetXRatio
                 frame.y += frame.height * cue.offsetYRatio
-                panel.alphaValue = CGFloat(cue.opacity)
+                surface.alphaValue = CGFloat(cue.opacity)
             }
         } else {
-            panel.alphaValue = 1
+            surface.alphaValue = 1
         }
         show(frame: frame)
     }
 
     private func show(frame: LayoutRect) {
         projectedFrame = frame
-        panel.setFrame(coordinateSpace.appKitRect(
+        surface.setFrame(coordinateSpace.appKitRect(
             flippedTop: CGFloat(frame.y), x: CGFloat(frame.x),
-            width: CGFloat(frame.width), height: CGFloat(frame.height)), display: false)
+            width: CGFloat(frame.width), height: CGFloat(frame.height)))
     }
 
     private func selectedClip(for pose: BodyPose?, now: Double) -> String {
@@ -274,11 +274,11 @@ public final class ActorPresentation {
     }
 
     public func displayProp(image: CGImage?, rect: CGRect) {
-        view.displayProp(image: image, rect: rect)
+        surface.displayProp(image: image, rect: rect)
     }
 
-    public func show() { panel.orderFrontRegardless() }
-    public func hide() { stopVoice(); panel.orderOut(nil); bubble.dismiss() }
+    public func show() { surface.show() }
+    public func hide() { stopVoice(); surface.hide(); bubble.dismiss() }
     public func speak(_ text: String, headX: CGFloat, headY: CGFloat) {
         bubble.show(text, headX: headX, headY: headY)
     }
