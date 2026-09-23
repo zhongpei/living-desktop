@@ -1,8 +1,9 @@
 import Foundation
 import MyPetCore
+import MyPet2D
 
-/// Deterministic 60 Hz body/combat authority. Rendering, AppKit and models are consumers/producers
-/// of snapshots and inputs; none of them mutate authoritative body state.
+/// Deterministic combat rules layered over the authoritative MyPet2D BodyWorld.
+/// Rendering, AppKit and models consume snapshots and produce inputs; none mutate body state.
 public final class CombatWorld {
     private struct PendingHit {
         let attackerID: String
@@ -11,21 +12,21 @@ public final class CombatWorld {
         let guarding: Bool
     }
 
-    public static let framesPerSecond = 60
-    public static let gravityPerFrame = 1600.0 / 3600.0
+    public static let framesPerSecond = BodyWorld.framesPerSecond
 
     public private(set) var frame: Int64 = 0
-    private var bodies: [String: CombatBodyState] = [:]
+    private var bodyWorld = BodyWorld()
+    private var rules: [String: CombatRuleState] = [:]
     private var profiles: [String: CombatProfile] = [:]
     private var inputs: [String: FighterInputFrame] = [:]
     private var buffers: [String: CombatInputBuffer] = [:]
-    private var dragLast: [String: CombatPoint] = [:]
 
     public init() {}
 
     public init(checkpoint: CombatWorldCheckpoint) {
         self.frame = checkpoint.frame
-        self.bodies = checkpoint.bodies
+        self.bodyWorld = BodyWorld(checkpoint: checkpoint.bodyWorld)
+        self.rules = checkpoint.rules
         self.profiles = checkpoint.profiles
         self.inputs = checkpoint.inputs
         self.buffers = checkpoint.buffers
@@ -34,7 +35,8 @@ public final class CombatWorld {
     public func checkpoint() -> CombatWorldCheckpoint {
         CombatWorldCheckpoint(
             frame: frame,
-            bodies: bodies,
+            bodyWorld: bodyWorld.checkpoint(),
+            rules: rules,
             profiles: profiles,
             inputs: inputs,
             buffers: buffers)
@@ -44,39 +46,50 @@ public final class CombatWorld {
                          x: Double, yFeet: Double, facing: CombatFacing = .right,
                          visualScale: Double = 1) {
         profiles[actorID.raw] = profile
-        var body = CombatBodyState(actorID: actorID, x: x, yFeet: yFeet,
-                                   hp: profile.maxHP, facing: facing, visualScale: visualScale)
-        body.hp = profile.maxHP
-        bodies[actorID.raw] = body
+        bodyWorld.register(
+            BodyDefinition(entityID: actorID, pushRadius: profile.pushRadius, visualScale: visualScale),
+            state: BodyState(
+                entityID: actorID,
+                position: Vec2(x: x, y: yFeet),
+                facing: facing))
+        rules[actorID.raw] = CombatRuleState(
+            actorID: actorID, hp: profile.maxHP, visualScale: visualScale)
         buffers[actorID.raw] = CombatInputBuffer()
         inputs[actorID.raw] = .neutral
     }
 
     public func unregister(actorID: EntityID) {
-        bodies[actorID.raw] = nil
+        bodyWorld.unregister(actorID)
+        rules[actorID.raw] = nil
         profiles[actorID.raw] = nil
         inputs[actorID.raw] = nil
         buffers[actorID.raw] = nil
-        dragLast[actorID.raw] = nil
     }
 
     public func setProfile(_ profile: CombatProfile, for actorID: EntityID) {
         profiles[actorID.raw] = profile
-        guard var body = bodies[actorID.raw] else { return }
-        body.hp = min(max(0, body.hp), profile.maxHP)
-        bodies[actorID.raw] = body
+        guard var rule = rules[actorID.raw] else { return }
+        rule.hp = min(max(0, rule.hp), profile.maxHP)
+        rules[actorID.raw] = rule
+        let scale = rule.visualScale
+        bodyWorld.setDefinition(BodyDefinition(
+            entityID: actorID, pushRadius: profile.pushRadius,
+            visualScale: scale, pushEnabled: rule.healthState == .active))
     }
 
     public func setInput(_ input: FighterInputFrame, for actorID: EntityID,
                          authority: CombatControlAuthority? = nil) {
         inputs[actorID.raw] = input
-        if let authority, var body = bodies[actorID.raw] {
-            body.authority = authority
-            bodies[actorID.raw] = body
+        if let authority, var rule = rules[actorID.raw] {
+            rule.authority = authority
+            rules[actorID.raw] = rule
         }
     }
 
-    public func body(for actorID: EntityID) -> CombatBodyState? { bodies[actorID.raw] }
+    public func body(for actorID: EntityID) -> CombatBodyState? {
+        guard let body = bodyWorld.state(for: actorID), let rule = rules[actorID.raw] else { return nil }
+        return CombatBodyState(body: body, rules: rule)
+    }
 
     /// Synchronizes a legacy/semantic body pose into the unified combat world without
     /// resetting HP, stun, recovery or command history. This is the migration seam used by
@@ -89,7 +102,7 @@ public final class CombatWorld {
         locomotion: BodyLocomotionState,
         visualScale: Double = 1
     ) {
-        guard var body = bodies[actorID.raw],
+        guard var body = body(for: actorID),
               body.authority == .scripted,
               body.healthState == .active,
               body.phase != .hitStun,
@@ -101,38 +114,48 @@ public final class CombatWorld {
             body.locomotion = locomotion
         }
         body.visualScale = max(0.05, visualScale)
-        bodies[actorID.raw] = body
+        save(body)
     }
 
     public func setAuthority(_ authority: CombatControlAuthority, for actorID: EntityID) {
-        guard var body = bodies[actorID.raw] else { return }
-        body.authority = authority
-        bodies[actorID.raw] = body
+        guard var rule = rules[actorID.raw] else { return }
+        rule.authority = authority
+        rules[actorID.raw] = rule
     }
 
     public func snapshot() -> CombatWorldSnapshot {
-        CombatWorldSnapshot(frame: frame, bodies: Array(bodies.values))
+        CombatWorldSnapshot(frame: frame, bodies: rules.keys.sorted().compactMap {
+            body(for: EntityID($0))
+        })
     }
 
     @discardableResult
     public func step(environment: CombatEnvironment) -> [CombatEvent] {
         var events: [CombatEvent] = []
-        let ids = bodies.keys.sorted()
-        let frameSnapshot = bodies
+        let ids = rules.keys.sorted()
+        let frameSnapshot = Dictionary(uniqueKeysWithValues: snapshot().bodies.map {
+            ($0.actorID.raw, $0)
+        })
 
         for id in ids {
-            guard var body = bodies[id], let profile = profiles[id] else { continue }
+            let actorID = EntityID(id)
+            guard var body = body(for: actorID), let profile = profiles[id] else { continue }
             let input = inputs[id] ?? .neutral
             var buffer = buffers[id] ?? CombatInputBuffer()
             buffer.push(input)
             buffers[id] = buffer
 
-            syncAttachedSurface(&body, environment: environment, profile: profile)
             if body.invulnerabilityFrames > 0 { body.invulnerabilityFrames -= 1 }
 
             if body.hitStopFrames > 0 {
                 body.hitStopFrames -= 1
-                bodies[id] = body
+                save(body)
+                bodyWorld.setDefinition(BodyDefinition(
+                    entityID: actorID,
+                    pushRadius: profile.pushRadius,
+                    visualScale: body.visualScale,
+                    pushEnabled: body.healthState == .active,
+                    simulationEnabled: false))
                 continue
             }
 
@@ -143,21 +166,30 @@ public final class CombatWorld {
                 acceptControl(&body, profile: profile, input: input, buffer: buffer, events: &events)
                 advanceMove(&body, profile: profile)
             }
-            integrate(&body, profile: profile, environment: environment)
-            bodies[id] = body
+            if body.healthState == .knockedOut && body.locomotion == .grounded {
+                body.locomotion = .airborne
+            }
+            body.body.landingHorizontalVelocityRetention = body.healthState == .knockedOut ? 0.75 : 0
+            save(body)
+            bodyWorld.setDefinition(BodyDefinition(
+                entityID: actorID,
+                pushRadius: profile.pushRadius,
+                visualScale: body.visualScale,
+                pushEnabled: body.healthState == .active,
+                simulationEnabled: true))
         }
 
-        resolvePushboxes(environment: environment)
+        bodyWorld.advance(environment)
         resolveHits(events: &events)
         // A KO becomes downed only after its physical knockback has actually landed.
         for id in ids {
-            guard var body = bodies[id], let profile = profiles[id] else { continue }
+            guard var body = body(for: EntityID(id)), let profile = profiles[id] else { continue }
             if body.healthState == .knockedOut && body.locomotion == .grounded {
                 body.healthState = .downed
                 body.recoveryFramesRemaining = profile.downedRecoveryFrames
                 body.phase = .neutral
                 events.append(CombatEvent(frame: frame, kind: .downed, actorID: body.actorID))
-                bodies[id] = body
+                save(body)
             }
         }
 
@@ -166,43 +198,23 @@ public final class CombatWorld {
     }
 
     public func beginDrag(actorID: EntityID, x: Double, y: Double) {
-        guard var body = bodies[actorID.raw] else { return }
-        body.locomotion = .dragged
-        body.currentSurfaceID = nil
-        body.surfaceFraction = nil
-        body.currentMoveID = nil
-        body.moveFrame = 0
-        body.phase = .neutral
-        body.velocity = CombatPoint()
-        dragLast[actorID.raw] = CombatPoint(x: x, y: y)
-        bodies[actorID.raw] = body
+        guard var rule = rules[actorID.raw] else { return }
+        rule.currentMoveID = nil
+        rule.moveFrame = 0
+        rule.phase = .neutral
+        rules[actorID.raw] = rule
+        bodyWorld.beginDrag(entityID: actorID, position: Vec2(x: x, y: y))
     }
 
     public func drag(actorID: EntityID, x: Double, y: Double, elapsedSeconds: Double) {
-        guard var body = bodies[actorID.raw], body.locomotion == .dragged else { return }
-        let previous = dragLast[actorID.raw] ?? body.position
-        let dt = max(1.0 / 240.0, elapsedSeconds)
-        let sampleVX = (x - previous.x) / dt / 60.0
-        let sampleVY = (y - previous.y) / dt / 60.0
-        body.velocity.x += (sampleVX - body.velocity.x) * 0.35
-        body.velocity.y += (sampleVY - body.velocity.y) * 0.35
-        body.position = CombatPoint(x: x, y: y)
-        dragLast[actorID.raw] = body.position
-        bodies[actorID.raw] = body
+        bodyWorld.drag(
+            entityID: actorID,
+            position: Vec2(x: x, y: y),
+            elapsedSeconds: elapsedSeconds)
     }
 
     public func endDrag(actorID: EntityID, wasClick: Bool) {
-        guard var body = bodies[actorID.raw], body.locomotion == .dragged else { return }
-        dragLast[actorID.raw] = nil
-        if wasClick {
-            body.locomotion = .airborne
-            body.velocity.y = min(body.velocity.y, -4.0)
-        } else {
-            body.locomotion = .tossed
-            body.velocity.x = min(43, max(-43, body.velocity.x))
-            body.velocity.y = min(43, max(-43, body.velocity.y))
-        }
-        bodies[actorID.raw] = body
+        bodyWorld.endDrag(entityID: actorID, wasClick: wasClick)
     }
 
     private func acceptControl(_ body: inout CombatBodyState, profile: CombatProfile,
@@ -298,109 +310,6 @@ public final class CombatWorld {
         }
     }
 
-    private func syncAttachedSurface(_ body: inout CombatBodyState, environment: CombatEnvironment,
-                                     profile: CombatProfile) {
-        guard body.locomotion == .grounded, let id = body.currentSurfaceID else { return }
-        guard let surface = environment.surface(id: id) else {
-            body.currentSurfaceID = nil
-            body.surfaceFraction = nil
-            body.locomotion = .airborne
-            return
-        }
-        body.position.y = surface.y
-        if surface.kind != .floor, let fraction = body.surfaceFraction {
-            let margin = profile.pushRadius
-            let usable = max(1, (surface.right - surface.left) - margin * 2)
-            body.position.x = surface.left + margin + min(1, max(0, fraction)) * usable
-        }
-    }
-
-    private func integrate(_ body: inout CombatBodyState, profile: CombatProfile,
-                           environment: CombatEnvironment) {
-        guard body.locomotion != .dragged && body.locomotion != .sleeping else { return }
-        let previousY = body.position.y
-
-        if body.locomotion == .grounded && body.currentSurfaceID == nil {
-            if let support = environment.surfaces.first(where: {
-                $0.contains(x: body.position.x) && abs($0.y - body.position.y) <= 2
-            }) {
-                body.currentSurfaceID = support.id
-                body.position.y = support.y
-                let usable = max(1, support.right - support.left - profile.pushRadius * 2)
-                body.surfaceFraction = min(1, max(0,
-                    (body.position.x - support.left - profile.pushRadius) / usable))
-            } else {
-                body.locomotion = .airborne
-            }
-        }
-
-        if body.locomotion == .grounded {
-            body.position.x += body.velocity.x
-            if let surface = environment.surface(id: body.currentSurfaceID) {
-                let margin = profile.pushRadius * 0.6
-                if !surface.contains(x: body.position.x, margin: margin) {
-                    body.currentSurfaceID = nil
-                    body.surfaceFraction = nil
-                    body.locomotion = .airborne
-                    body.position.y += 0.01
-                } else if surface.right - surface.left > margin * 2 {
-                    body.surfaceFraction = (body.position.x - surface.left - margin) /
-                        max(1, surface.right - surface.left - margin * 2)
-                }
-            }
-        }
-
-        if body.locomotion == .airborne || body.locomotion == .tossed ||
-           body.healthState == .knockedOut {
-            body.velocity.y += Self.gravityPerFrame
-            body.position.x += body.velocity.x
-            body.position.y += body.velocity.y
-
-            if body.velocity.y >= 0,
-               let landing = environment.landingSurface(
-                    x: body.position.x, previousFeetY: previousY, nextFeetY: body.position.y) {
-                body.position.y = landing.y
-                body.currentSurfaceID = landing.id
-                let margin = profile.pushRadius
-                let usable = max(1, landing.right - landing.left - margin * 2)
-                body.surfaceFraction = min(1, max(0,
-                    (body.position.x - landing.left - margin) / usable))
-                if body.locomotion == .tossed && abs(body.velocity.y) > 4.5 {
-                    body.velocity.y = -abs(body.velocity.y) * 0.28
-                    body.velocity.x *= 0.72
-                } else {
-                    body.locomotion = .grounded
-                    body.velocity.y = 0
-                    body.velocity.x *= body.healthState == .knockedOut ? 0.75 : 0
-                }
-            }
-        }
-
-        // Recover from a fall through a physical gap between monitors. The virtual
-        // desktop bounding rectangle is not itself a floor.
-        if body.velocity.y >= 0,
-           body.position.y >= environment.bounds.maxY,
-           body.locomotion != .grounded,
-           let floor = environment.surfaces
-                .filter({ $0.kind == .floor })
-                .min(by: {
-                    Self.distanceToSpan(body.position.x, $0.left, $0.right) <
-                    Self.distanceToSpan(body.position.x, $1.left, $1.right)
-                }) {
-            let margin = profile.pushRadius * 0.6
-            body.position.x = min(floor.right - margin, max(floor.left + margin, body.position.x))
-            body.position.y = floor.y
-            body.currentSurfaceID = floor.id
-            body.surfaceFraction = nil
-            body.locomotion = .grounded
-            body.velocity.y = 0
-            body.velocity.x = 0
-        }
-
-        body.position.x = min(environment.bounds.maxX, max(environment.bounds.minX, body.position.x))
-        body.position.y = min(environment.bounds.maxY, max(environment.bounds.minY, body.position.y))
-    }
-
     private func orientTowardNearestOpponent(
         _ body: inout CombatBodyState,
         snapshot: [String: CombatBodyState]
@@ -421,62 +330,18 @@ public final class CombatWorld {
         }
     }
 
-    private func refreshSurfaceFraction(
-        _ body: inout CombatBodyState,
-        profile: CombatProfile,
-        environment: CombatEnvironment
-    ) {
-        guard body.locomotion == .grounded,
-              let surface = environment.surface(id: body.currentSurfaceID),
-              surface.kind != .floor else {
-            if let id = body.currentSurfaceID,
-               environment.surface(id: id)?.kind == .floor {
-                body.surfaceFraction = nil
-            }
-            return
-        }
-        let margin = profile.pushRadius
-        let usable = max(1, surface.right - surface.left - margin * 2)
-        body.surfaceFraction = min(1, max(0,
-            (body.position.x - surface.left - margin) / usable))
-    }
-
-    private static func distanceToSpan(_ x: Double, _ left: Double, _ right: Double) -> Double {
-        if x < left { return left - x }
-        if x > right { return x - right }
-        return 0
-    }
-
-    private func resolvePushboxes(environment: CombatEnvironment) {
-        let ids = bodies.keys.sorted()
-        guard ids.count > 1 else { return }
-        for i in 0..<(ids.count - 1) {
-            for j in (i + 1)..<ids.count {
-                guard var a = bodies[ids[i]], var b = bodies[ids[j]],
-                      let ap = profiles[ids[i]], let bp = profiles[ids[j]],
-                      a.healthState == .active, b.healthState == .active,
-                      a.locomotion == .grounded, b.locomotion == .grounded,
-                      abs(a.position.y - b.position.y) < 8 else { continue }
-                let required = ap.pushRadius + bp.pushRadius
-                let dx = b.position.x - a.position.x
-                let overlap = required - abs(dx)
-                guard overlap > 0 else { continue }
-                let sign = dx >= 0 ? 1.0 : -1.0
-                a.position.x -= sign * overlap * 0.5
-                b.position.x += sign * overlap * 0.5
-                refreshSurfaceFraction(&a, profile: ap, environment: environment)
-                refreshSurfaceFraction(&b, profile: bp, environment: environment)
-                bodies[ids[i]] = a
-                bodies[ids[j]] = b
-            }
-        }
+    private func save(_ body: CombatBodyState) {
+        rules[body.actorID.raw] = body.rules
+        bodyWorld.update(body.actorID) { $0 = body.body }
     }
 
     private func resolveHits(events: inout [CombatEvent]) {
         // Detect against one immutable frame snapshot first. Resolution happens only
         // after every legal contact is known, so A<->B trades are independent of
         // actor iteration order.
-        let snapshot = bodies
+        let snapshot = Dictionary(uniqueKeysWithValues: self.snapshot().bodies.map {
+            ($0.actorID.raw, $0)
+        })
         let ids = snapshot.keys.sorted()
         var pending: [PendingHit] = []
 
@@ -519,10 +384,10 @@ public final class CombatWorld {
         // Mark every attacker's contact before mutating defenders. This preserves
         // per-move hit de-duplication even when multiple actors trade on one frame.
         for hit in pending {
-            guard var attacker = bodies[hit.attackerID] else { continue }
+            guard var attacker = body(for: EntityID(hit.attackerID)) else { continue }
             attacker.hitTargets.insert(hit.defenderID)
             attacker.hitStopFrames = max(attacker.hitStopFrames, hit.move.hit.hitStopFrames)
-            bodies[hit.attackerID] = attacker
+            save(attacker)
         }
 
         for hit in pending.sorted(by: {
@@ -531,7 +396,7 @@ public final class CombatWorld {
                 : $0.defenderID < $1.defenderID
         }) {
             guard let attackerAtDetection = snapshot[hit.attackerID],
-                  var defender = bodies[hit.defenderID] else { continue }
+                  var defender = body(for: EntityID(hit.defenderID)) else { continue }
             let definition = hit.move.hit
             let defenderWasAlive = defender.hp > 0
 
@@ -576,7 +441,7 @@ public final class CombatWorld {
                     targetID: attackerAtDetection.actorID,
                     moveID: hit.move.id))
             }
-            bodies[hit.defenderID] = defender
+            save(defender)
         }
     }
 }

@@ -13,6 +13,7 @@ let package = Package(
     ],
     products: [
         .library(name: "MyPetCore", targets: ["MyPetCore"]),
+        .library(name: "MyPet2D", targets: ["MyPet2D"]),
         .library(name: "MyPetCombat", targets: ["MyPetCombat"]),
         .library(name: "MyPetEngine", targets: ["MyPetEngine"]),
         .library(name: "MyPetSimulation", targets: ["MyPetSimulation"]),
@@ -39,8 +40,13 @@ let package = Package(
             path: "Sources/MyPetCore"
         ),
         .target(
-            name: "MyPetCombat",
+            name: "MyPet2D",
             dependencies: ["MyPetCore"],
+            path: "Sources/MyPet2D"
+        ),
+        .target(
+            name: "MyPetCombat",
+            dependencies: ["MyPetCore", "MyPet2D"],
             path: "Sources/MyPetCombat"
         ),
         .target(
@@ -108,6 +114,11 @@ let package = Package(
             name: "MyPet",
             dependencies: ["MyPetApp"],
             path: "Sources/MyPetEntry"
+        ),
+        .testTarget(
+            name: "MyPet2DTests",
+            dependencies: ["MyPet2D", "MyPetCore"],
+            path: "Tests/MyPet2DTests"
         ),
         .testTarget(
             name: "MyPetCombatTests",

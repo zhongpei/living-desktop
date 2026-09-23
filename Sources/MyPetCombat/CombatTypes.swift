@@ -1,9 +1,6 @@
 import Foundation
 import MyPetCore
-
-public enum BodyLocomotionState: String, Codable, Sendable {
-    case grounded, airborne, dragged, tossed, sleeping
-}
+import MyPet2D
 
 public enum CombatPhase: String, Codable, Sendable {
     case neutral, startup, active, recovery, guarding, hitStun, blockStun
@@ -145,17 +142,11 @@ public struct CombatProfile: Codable, Equatable, Sendable {
     }
 }
 
-public struct CombatBodyState: Codable, Equatable, Sendable {
+public struct CombatRuleState: Codable, Equatable, Sendable {
     public var actorID: EntityID
-    public var position: CombatPoint
-    public var velocity: CombatPoint
-    public var facing: CombatFacing
-    public var locomotion: BodyLocomotionState
     public var phase: CombatPhase
     public var healthState: CombatHealthState
     public var hp: Int
-    public var currentSurfaceID: String?
-    public var surfaceFraction: Double?
     public var currentMoveID: String?
     public var moveFrame: Int
     public var hitStopFrames: Int
@@ -166,18 +157,11 @@ public struct CombatBodyState: Codable, Equatable, Sendable {
     public var hitTargets: Set<String>
     public var visualScale: Double
 
-    public init(actorID: EntityID, x: Double, yFeet: Double, hp: Int = 1000,
-                facing: CombatFacing = .right, visualScale: Double = 1) {
+    public init(actorID: EntityID, hp: Int = 1000, visualScale: Double = 1) {
         self.actorID = actorID
-        self.position = CombatPoint(x: x, y: yFeet)
-        self.velocity = CombatPoint()
-        self.facing = facing
-        self.locomotion = .grounded
         self.phase = .neutral
         self.healthState = .active
         self.hp = hp
-        self.currentSurfaceID = nil
-        self.surfaceFraction = nil
         self.currentMoveID = nil
         self.moveFrame = 0
         self.hitStopFrames = 0
@@ -193,6 +177,76 @@ public struct CombatBodyState: Codable, Equatable, Sendable {
         healthState == .active && hitStopFrames == 0 && stunFrames == 0 &&
         (phase == .neutral || phase == .guarding)
     }
+}
+
+/// Read/write compatibility view combining MyPet2D physical state with combat-only rules.
+public struct CombatBodyState: Codable, Equatable, Sendable {
+    public var body: BodyState
+    public var rules: CombatRuleState
+
+    public init(body: BodyState, rules: CombatRuleState) {
+        precondition(body.entityID == rules.actorID)
+        self.body = body
+        self.rules = rules
+    }
+
+    public init(actorID: EntityID, x: Double, yFeet: Double, hp: Int = 1000,
+                facing: CombatFacing = .right, visualScale: Double = 1) {
+        body = BodyState(entityID: actorID, position: Vec2(x: x, y: yFeet), facing: facing)
+        rules = CombatRuleState(actorID: actorID, hp: hp, visualScale: visualScale)
+    }
+
+    public var actorID: EntityID { body.entityID }
+    public var position: Vec2 { get { body.position } set { body.position = newValue } }
+    public var velocity: Vec2 { get { body.velocity } set { body.velocity = newValue } }
+    public var facing: Facing2D { get { body.facing } set { body.facing = newValue } }
+    public var locomotion: LocomotionState { get { body.locomotion } set { body.locomotion = newValue } }
+    public var currentSurfaceID: String? {
+        get { body.currentSurfaceID }
+        set { body.currentSurfaceID = newValue }
+    }
+    public var surfaceFraction: Double? {
+        get { body.surfaceFraction }
+        set { body.surfaceFraction = newValue }
+    }
+    public var phase: CombatPhase { get { rules.phase } set { rules.phase = newValue } }
+    public var healthState: CombatHealthState {
+        get { rules.healthState }
+        set { rules.healthState = newValue }
+    }
+    public var hp: Int { get { rules.hp } set { rules.hp = newValue } }
+    public var currentMoveID: String? {
+        get { rules.currentMoveID }
+        set { rules.currentMoveID = newValue }
+    }
+    public var moveFrame: Int { get { rules.moveFrame } set { rules.moveFrame = newValue } }
+    public var hitStopFrames: Int {
+        get { rules.hitStopFrames }
+        set { rules.hitStopFrames = newValue }
+    }
+    public var stunFrames: Int { get { rules.stunFrames } set { rules.stunFrames = newValue } }
+    public var recoveryFramesRemaining: Int {
+        get { rules.recoveryFramesRemaining }
+        set { rules.recoveryFramesRemaining = newValue }
+    }
+    public var invulnerabilityFrames: Int {
+        get { rules.invulnerabilityFrames }
+        set { rules.invulnerabilityFrames = newValue }
+    }
+    public var authority: CombatControlAuthority {
+        get { rules.authority }
+        set { rules.authority = newValue }
+    }
+    public var hitTargets: Set<String> {
+        get { rules.hitTargets }
+        set { rules.hitTargets = newValue }
+    }
+    public var visualScale: Double {
+        get { rules.visualScale }
+        set { rules.visualScale = max(0.05, newValue) }
+    }
+
+    public var canAcceptAction: Bool { rules.canAcceptAction }
 }
 
 public enum CombatEventKind: String, Codable, Sendable {
@@ -226,16 +280,18 @@ public struct CombatWorldSnapshot: Codable, Equatable, Sendable {
 
 public struct CombatWorldCheckpoint: Codable, Equatable, Sendable {
     public var frame: Int64
-    public var bodies: [String: CombatBodyState]
+    public var bodyWorld: BodyWorldCheckpoint
+    public var rules: [String: CombatRuleState]
     public var profiles: [String: CombatProfile]
     public var inputs: [String: FighterInputFrame]
     public var buffers: [String: CombatInputBuffer]
 
-    public init(frame: Int64, bodies: [String: CombatBodyState],
+    public init(frame: Int64, bodyWorld: BodyWorldCheckpoint, rules: [String: CombatRuleState],
                 profiles: [String: CombatProfile], inputs: [String: FighterInputFrame],
                 buffers: [String: CombatInputBuffer]) {
         self.frame = frame
-        self.bodies = bodies
+        self.bodyWorld = bodyWorld
+        self.rules = rules
         self.profiles = profiles
         self.inputs = inputs
         self.buffers = buffers
