@@ -56,6 +56,26 @@ actor LocalBrain: GoalBrain {
         var error: String?
     }
 
+    struct PromptTestResult: Sendable, Equatable {
+        var prefixMessages: [[String: String]]
+        var system: String
+        var user: String
+        var output: String?
+        var attemptOutputs: [String]
+        var rejectionReasons: [[String]]
+        var includeFewShot: Bool
+        var sampling: BrainProfile.Sampling
+        var latency: TimeInterval
+        var error: String?
+    }
+
+    private struct SpeechRun {
+        var reply: SpeechReply?
+        var attemptOutputs: [String]
+        var rejectionReasons: [[String]]
+        var error: String?
+    }
+
     /// 运行时设置覆盖的采样参数；前缀档案仍由 BrainProfile 决定。
     struct Configuration: Sendable, Equatable {
         /// 目标 JSON：低温结构化输出。
@@ -63,6 +83,7 @@ actor LocalBrain: GoalBrain {
         /// 短聊天单行台词：0.8B 实测使用低温、短输出。
         var chatSampling = BrainProfile.Sampling(
             temperature: 0.3, topP: 1.0, topK: 0, maxTokens: 48, seed: nil)
+        var speechPolicy = RuntimeSpeechPolicy.builtIn
     }
 
     // ---- 调度门闩（nonisolated 可达，锁守卫）----
@@ -110,12 +131,15 @@ actor LocalBrain: GoalBrain {
     /// 本地决策脑生成短聊天单行台词；模型未就绪、生成失败或格式非法时，调用方走 Quips。
     @discardableResult
     nonisolated func requestSpeech(intent: SpeechIntent, world: BrainContextSnapshot, brain: BrainState,
-                                   personality: Personality, characterID: String,
+                                   personality: Personality, characterID: String, characterName: String,
                                    dialogue: DialogueProfile?, traceID: String?,
+                                   confirmedContext: String?,
                                    completion: @escaping (SpeechReply?) -> Void) -> Bool {
         requestSpeech(intent: intent, world: world, brain: brain,
                       personality: personality, characterID: characterID,
+                      characterName: characterName,
                       dialogue: dialogue, traceID: traceID, userText: nil,
+                      confirmedContext: confirmedContext,
                       completion: completion)
     }
 
@@ -123,20 +147,23 @@ actor LocalBrain: GoalBrain {
     /// 目标或坐标权限；用户输入只在本次请求内存在，不写入日志。
     @discardableResult
     nonisolated func requestSpeech(intent: SpeechIntent, world: BrainContextSnapshot, brain: BrainState,
-                                   personality: Personality, characterID: String,
+                                   personality: Personality, characterID: String, characterName: String,
                                    dialogue: DialogueProfile?, traceID: String?, userText: String?,
+                                   confirmedContext: String? = nil,
                                    completion: @escaping (SpeechReply?) -> Void) -> Bool {
         guard LocalBrainModel.isInstalled, gate.claim() else { return false }
         let configuration = configurationStore.get()
         let input = SpeechInput(intent: intent, world: world, brain: brain,
                                 personality: personality, characterID: characterID,
+                                characterName: characterName,
                                 dialogue: dialogue, traceID: traceID,
-                                userText: userText.map { String($0.prefix(120)) })
+                                userText: userText.map { String($0.prefix(120)) },
+                                confirmedContext: confirmedContext.map { String($0.prefix(500)) })
         Task {
             defer { gate.release() }
-            let reply = await self.speak(input: input, configuration: configuration)
+            let run = await self.speak(input: input, configuration: configuration)
             await MainActor.run {
-                completion(reply)
+                completion(run.reply)
             }
         }
         return true
@@ -145,38 +172,87 @@ actor LocalBrain: GoalBrain {
     /// 设置窗使用的真实本地聊天测试。它复用生产单行台词管线、独立聊天前缀
     /// 和聊天采样；不伪造网络响应，也不走 Quips。
     func testChat(personality: Personality) async -> ChatTestResult {
+        let configuration = configurationStore.get()
+        let result = await testPrompt(
+            personality: personality, characterID: "settings-test",
+            characterName: "桌面宠物", dialogue: nil, intent: .greet,
+            confirmedContext: nil, includeFewShot: false,
+            policy: configuration.speechPolicy,
+            sampling: SpeechSamplingPolicy.resolve(
+                .greet, from: configuration.chatSampling,
+                policy: configuration.speechPolicy))
+        return ChatTestResult(
+            text: result.output, emotion: result.output == nil ? nil : Self.emotion(for: .greet),
+            latency: result.latency, error: result.error)
+    }
+
+    /// Prompt 管理器的单次真实调用。传入的草稿 policy 只影响这次测试，
+    /// 不写设置，也不替换运行中的 policy。
+    func testPrompt(
+        personality: Personality,
+        characterID: String,
+        characterName: String,
+        dialogue: DialogueProfile?,
+        intent: SpeechIntent,
+        confirmedContext: String?,
+        includeFewShot: Bool,
+        policy: LocalSpeechPolicy,
+        sampling: BrainProfile.Sampling
+    ) async -> PromptTestResult {
         let t0 = Date()
+        let profile = BrainProfile.resolved()
+        let world = Self.promptTestWorld()
+        let boundedContext = confirmedContext.map { String($0.prefix(500)) }
+        let prefixMessages = BrainPrefixBuilder.chatPrefixMessages(
+            personality: personality, profile: profile, dialogue: dialogue,
+            intent: intent, characterName: characterName,
+            includeFewShot: includeFewShot, policy: policy)
+        let system = prefixMessages.first?["content"] ?? ""
+        let user = BrainPrefixBuilder.chatMessage(
+            intent: intent, world: world, brain: BrainState(), personality: personality,
+            confirmedContext: boundedContext, policy: policy)
         guard LocalBrainModel.isInstalled else {
-            return ChatTestResult(text: nil, emotion: nil,
-                                  latency: Date().timeIntervalSince(t0),
-                                  error: "本地模型未就位，请先从 URL 下载并校验")
+            return PromptTestResult(
+                prefixMessages: prefixMessages, system: system, user: user,
+                output: nil, attemptOutputs: [],
+                rejectionReasons: [], includeFewShot: includeFewShot, sampling: sampling,
+                latency: Date().timeIntervalSince(t0),
+                error: "本地模型未就位，请先从 URL 下载并校验")
         }
         guard gate.claim() else {
-            return ChatTestResult(text: nil, emotion: nil,
-                                  latency: Date().timeIntervalSince(t0),
-                                  error: "本地决策脑正在处理另一项请求")
+            return PromptTestResult(
+                prefixMessages: prefixMessages, system: system, user: user,
+                output: nil, attemptOutputs: [],
+                rejectionReasons: [], includeFewShot: includeFewShot, sampling: sampling,
+                latency: Date().timeIntervalSince(t0),
+                error: "本地决策脑正在处理另一项请求")
         }
         defer { gate.release() }
-        let world = BrainContextSnapshot(
-            capturedAt: Date().timeIntervalSince1970,
-            activeApp: "MyPet",
-            windowTitle: "",
-            appActivity: "unknown",
-            userActivity: "idle",
-            focusRole: "",
-            visibleContext: [],
-            salientUI: [],
-            nearbyWindows: [],
-            recentEvents: [])
-        let input = SpeechInput(intent: .greet, world: world, brain: BrainState(),
-                                personality: personality, characterID: "settings-test",
-                                dialogue: nil, traceID: nil)
-        let reply = await speak(input: input, configuration: configurationStore.get())
-        return ChatTestResult(
-            text: reply?.text,
-            emotion: reply?.emotion,
+        let input = SpeechInput(
+            intent: intent, world: world, brain: BrainState(), personality: personality,
+            characterID: characterID, characterName: characterName,
+            dialogue: dialogue, traceID: nil)
+        var configuration = configurationStore.get()
+        configuration.speechPolicy = policy
+        let run = await speak(
+            input: input, configuration: configuration,
+            exactSampling: sampling, confirmedContext: boundedContext,
+            includeFewShot: includeFewShot)
+        return PromptTestResult(
+            prefixMessages: prefixMessages, system: system, user: user,
+            output: run.reply?.text,
+            attemptOutputs: run.attemptOutputs, rejectionReasons: run.rejectionReasons,
+            includeFewShot: includeFewShot, sampling: sampling,
             latency: Date().timeIntervalSince(t0),
-            error: reply == nil ? "本地模型未返回合法单行台词" : nil)
+            error: run.error ?? (run.reply == nil ? "本地模型未返回合法单行台词" : nil))
+    }
+
+    private static func promptTestWorld() -> BrainContextSnapshot {
+        BrainContextSnapshot(
+            capturedAt: Date().timeIntervalSince1970,
+            activeApp: "MyPet", windowTitle: "", appActivity: "unknown",
+            userActivity: "idle", focusRole: "", visibleContext: [], salientUI: [],
+            nearbyWindows: [], recentEvents: [])
     }
 
     // MARK: 决策
@@ -191,9 +267,11 @@ actor LocalBrain: GoalBrain {
         var brain: BrainState
         var personality: Personality
         var characterID: String
+        var characterName: String
         var dialogue: DialogueProfile?
         var traceID: String?
         var userText: String? = nil
+        var confirmedContext: String? = nil
     }
 
     private func plan(input: GoalBrainInput, configuration: Configuration) async -> PlanOutcome {
@@ -267,36 +345,53 @@ actor LocalBrain: GoalBrain {
         }
     }
 
-    private func speak(input: SpeechInput, configuration: Configuration) async -> SpeechReply? {
+    private func speak(input: SpeechInput, configuration: Configuration,
+                       exactSampling: BrainProfile.Sampling? = nil,
+                       confirmedContext: String? = nil,
+                       includeFewShot: Bool = false) async -> SpeechRun {
         let t0 = Date()
+        var attemptOutputs: [String] = []
+        var rejectionReasons: [[String]] = []
         do {
             let profile = BrainProfile.resolved()
             let promptKind = "chat-\(input.intent.rawValue)"
             var reply: SpeechReply?
-            var output = ""
-            for attempt in 0...1 {
+            let sampling = exactSampling ?? SpeechSamplingPolicy.resolve(
+                input.intent, from: configuration.chatSampling,
+                policy: configuration.speechPolicy)
+            for attempt in 0...configuration.speechPolicy.retryCount {
                 let dynamic = BrainPrefixBuilder.chatMessage(
                     intent: input.intent, world: input.world, brain: input.brain,
                     personality: input.personality, userText: input.userText,
-                    retryHint: attempt == 0 ? nil : BrainPrefixBuilder.chatRetryHint)
-                output = try await generateText(
+                    confirmedContext: confirmedContext ?? input.confirmedContext,
+                    retryHint: attempt == 0 ? nil : BrainPrefixBuilder.chatRetryHint,
+                    policy: configuration.speechPolicy)
+                let output = try await generateText(
                     petID: input.characterID, personality: input.personality, profile: profile,
                     promptKind: promptKind, dialogue: input.dialogue, speechIntent: input.intent,
-                    dynamicText: dynamic,
-                    sampling: SpeechSamplingPolicy.resolve(input.intent, from: configuration.chatSampling)).text
-                reply = Self.parseLocalSpeech(output, intent: input.intent)
+                    characterName: input.characterName, includeFewShot: includeFewShot,
+                    speechPolicy: configuration.speechPolicy,
+                    dynamicText: dynamic, sampling: sampling).text
+                attemptOutputs.append(output)
+                rejectionReasons.append(configuration.speechPolicy.rejectionReasons(output))
+                reply = Self.parseLocalSpeech(
+                    output, intent: input.intent, policy: configuration.speechPolicy)
                 if reply != nil { break }
             }
             BrainDecisionLog.logSpeech(intent: input.intent, reply: reply,
                                        latency: Date().timeIntervalSince(t0),
                                        traceID: input.traceID, mode: "local")
-            return reply
+            return SpeechRun(
+                reply: reply, attemptOutputs: attemptOutputs,
+                rejectionReasons: rejectionReasons, error: nil)
         } catch {
             NSLog("MyPet LocalBrain: 聊天生成失败 %@", error.localizedDescription)
             BrainDecisionLog.logSpeech(intent: input.intent, reply: nil,
                                        latency: Date().timeIntervalSince(t0),
                                        traceID: input.traceID, mode: "local")
-            return nil
+            return SpeechRun(
+                reply: nil, attemptOutputs: attemptOutputs,
+                rejectionReasons: rejectionReasons, error: error.localizedDescription)
         }
     }
 
@@ -305,30 +400,45 @@ actor LocalBrain: GoalBrain {
     private func generateText(
         petID: String, personality: Personality, profile: BrainProfile,
         promptKind: String = "goal", dialogue: DialogueProfile? = nil,
-        speechIntent: SpeechIntent? = nil, dynamicText: String,
+        speechIntent: SpeechIntent? = nil, characterName: String = "",
+        includeFewShot: Bool = false,
+        speechPolicy: LocalSpeechPolicy = RuntimeSpeechPolicy.builtIn, dynamicText: String,
         sampling: BrainProfile.Sampling
     ) async throws -> MLXGenerationResult {
         guard LocalBrainModel.isInstalled else { throw BrainError.modelMissing }
         let modelDir = LocalBrainModel.installDirectory
-        let dialogueHash = dialogue.flatMap { value -> String? in
+        let prefixContentHash: String = {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys]
-            return (try? encoder.encode(value)).map { BrainProfile.sha8(String(decoding: $0, as: UTF8.self)) }
-        } ?? "-"
+            struct PrefixContent: Encodable {
+                var dialogue: DialogueProfile?
+                var includeFewShot: Bool
+                var speechPolicy: LocalSpeechPolicy?
+            }
+            let content = PrefixContent(
+                dialogue: dialogue,
+                includeFewShot: includeFewShot,
+                speechPolicy: speechIntent == nil ? nil : speechPolicy)
+            return (try? encoder.encode(content)).map {
+                BrainProfile.sha8(String(decoding: $0, as: UTF8.self))
+            } ?? "-"
+        }()
         let key = BrainCacheManager.makeKey(petID: petID, personality: personality,
                                             profile: profile, modelDir: modelDir,
                                             promptKind: promptKind,
                                             promptVersion: promptKind.hasPrefix("chat-")
                                                 ? BrainPrefixBuilder.chatPromptVersion
                                                 : BrainPrefixBuilder.brainPromptVersion,
-                                            contentHash: dialogueHash)
+                                            contentHash: prefixContentHash)
         LocalBrainModel.writeProcessorShim(into: modelDir)
         let traitsApplied = profile.applyingTraits(to: personality)
         let messages: [[String: String]]
         if let speechIntent {
             messages = BrainPrefixBuilder.chatPrefixMessages(
                 personality: traitsApplied, profile: profile,
-                dialogue: dialogue, intent: speechIntent)
+                dialogue: dialogue, intent: speechIntent, characterName: characterName,
+                includeFewShot: includeFewShot,
+                policy: speechPolicy)
         } else {
             messages = BrainPrefixBuilder.prefixMessages(
                 personality: traitsApplied, profile: profile)
@@ -344,16 +454,10 @@ actor LocalBrain: GoalBrain {
             diskEntries: profile.cache.diskEntries)
     }
 
-    private static func validSpeech(_ text: String) -> Bool {
-        guard !text.isEmpty, !text.contains("\n"), text.count <= 50 else { return false }
-        for leaked in ["KNOWN_FACTS", "SPEECH_ACT", "CONSTRAINT", "系统", "示例"]
-            where text.contains(leaked) { return false }
-        return true
-    }
-
-    static func parseLocalSpeech(_ output: String, intent: SpeechIntent) -> SpeechReply? {
+    static func parseLocalSpeech(_ output: String, intent: SpeechIntent,
+                                 policy: LocalSpeechPolicy = RuntimeSpeechPolicy.builtIn) -> SpeechReply? {
         let text = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard validSpeech(text) else { return nil }
+        guard policy.accepts(text) else { return nil }
         return SpeechReply(text: text, emotion: emotion(for: intent))
     }
 

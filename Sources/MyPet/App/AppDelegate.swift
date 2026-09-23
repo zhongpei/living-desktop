@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var activeController: PetController? { castSession?.primaryController ?? controller }
     private var tray: Tray?
     private var settingsWindow: SettingsWindowController?
+    private var promptManagerWindow: PromptManagerWindowController?
     private var contentManagerWindow: ContentManagerWindowController?
     private var storyLibraryWindow: StoryLibraryWindowController?
     private var contentDiagnostics: [String] = []
@@ -28,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let sharedNeedle = NeedleBrain()
     private let sharedLocalBrain = LocalBrain()
     private let sharedTeacherBrain = TeacherBrain()
+    private let speechDirector = SpeechDirector()
     /// 生产 Cast 的唯一时钟、面板和 Story 身体 owner。
     private var castSession: CastSession?
     /// 同一内容目录投影供启动、菜单与 Runtime 消费。
@@ -226,6 +228,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 layoutCoordinator: layoutCoordinator,
                 perceptionHub: perceptionHub,
                 characterDefinition: entry.definition,
+                speechDirector: speechDirector,
                 needle: sharedNeedle,
                 localBrain: sharedLocalBrain,
                 teacherBrain: sharedTeacherBrain)
@@ -249,9 +252,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let settings else { return }
         // A closed settings window retains its old draft; reopen from the latest saved settings.
         if settingsWindow?.window?.isVisible != true {
-            let win = SettingsWindowController(settings: settings, castPacks: castPacks)
+            let win = SettingsWindowController(
+                settings: settings,
+                castPacks: castPacks,
+                characters: library.compactMap(\.definition))
             win.onApply = { [weak self] applied in
-                self?.applySettings(applied)
+                guard let self else { return }
+                var merged = applied
+                // Prompt 管理器是独立窗口；普通设置窗不编辑这两项，不能用旧草稿覆盖它。
+                if let current = self.settings {
+                    merged.localSpeechPromptUsesCustom = current.localSpeechPromptUsesCustom
+                    merged.localSpeechPromptOverrides = current.localSpeechPromptOverrides
+                }
+                self.applySettings(merged)
             }
             win.onOpenContentManager = { [weak self] in self?.showContentManager() }
             win.onOpenStoryLibrary = { [weak self] in self?.showStoryLibrary() }
@@ -270,6 +283,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             settingsWindow = win
         }
         settingsWindow?.show()
+    }
+
+    private func showPromptManager() {
+        guard let settings else { return }
+        promptManagerWindow?.close()
+        let definitions = Dictionary(
+            (library.map(\.definition) + resolvedCastPacks.flatMap { $0.characters.values })
+                .map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }).values.map { $0 }
+        let manager = PromptManagerWindowController(
+            settings: settings, characters: definitions,
+            currentCharacterID: settings.currentPet)
+        manager.onSave = { [weak self] usesCustom, overrides in
+            guard let self, var updated = self.settings else { return }
+            updated.localSpeechPromptUsesCustom = usesCustom
+            updated.localSpeechPromptOverrides = overrides
+            self.applySettings(updated)
+        }
+        manager.onTest = { [weak self] character, policy, intent, context, includeFewShot, sampling in
+            guard let self else {
+                return LocalBrain.PromptTestResult(
+                    prefixMessages: [], system: "", user: "", output: nil, attemptOutputs: [],
+                    rejectionReasons: [], includeFewShot: includeFewShot,
+                    sampling: sampling, latency: 0,
+                    error: "Prompt 测试上下文不可用")
+            }
+            return await self.sharedLocalBrain.testPrompt(
+                personality: Personality.forDefinition(character),
+                characterID: character.id, characterName: character.displayNames.zhHans,
+                dialogue: character.dialogue, intent: intent,
+                confirmedContext: context, includeFewShot: includeFewShot,
+                policy: policy, sampling: sampling)
+        }
+        promptManagerWindow = manager
+        manager.show()
     }
 
     private func showStoryLibrary() {
@@ -365,7 +413,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             perceptionHub: perceptionHub,
             sharedNeedle: sharedNeedle,
             sharedLocalBrain: sharedLocalBrain,
-            sharedTeacherBrain: sharedTeacherBrain)
+            sharedTeacherBrain: sharedTeacherBrain,
+            speechDirector: speechDirector)
         session.onSync = { [weak self] activeIDs in
             guard let self, let settings = self.settings else { return }
             self.tray?.updatePets(self.library.map { $0.id }, current: settings.currentPet)
@@ -481,6 +530,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.applySettings(settings, pointerOnly: true)
         }
         tray.onOpenSettings = { [weak self] in self?.showSettings() }
+        tray.onOpenPromptManager = { [weak self] in self?.showPromptManager() }
         tray.onOpenContentManager = { [weak self] in self?.showContentManager() }
         tray.onOpenLogs = { [weak self] in self?.showBrainLogs() }
         tray.brainAvailable = NeedleBrain.modelURL() != nil
@@ -519,12 +569,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 } else {
                     NSLog("MyPet: 高阶教师脑 = %@", settings.teacherBrainEnabled ? "开" : "关闭")
                 }
+            case .localPersonaSpeech:
+                settings.localBrainSpeechEnabled.toggle()
+                if settings.localBrainSpeechEnabled, !LocalBrainModel.isInstalled {
+                    NSLog("MyPet: 人物台词已开启但本地模型未就位（设置 → 大脑 → 下载 / 校验模型）")
+                } else {
+                    NSLog("MyPet: 人物台词 = %@", settings.localBrainSpeechEnabled ? "开" : "关")
+                }
             case .localDecisionBrain:
                 settings.localBrainEnabled.toggle()
                 if settings.localBrainEnabled, !LocalBrainModel.isInstalled {
-                    NSLog("MyPet: 本地决策脑已开启但模型未就位（设置 → 大脑 → 下载 / 校验模型）")
+                    NSLog("MyPet: 目标决策已开启但本地模型未就位（设置 → 大脑 → 下载 / 校验模型）")
                 } else {
-                    NSLog("MyPet: 本地决策脑 = %@（可与高阶教师脑并行）",
+                    NSLog("MyPet: 目标决策 = %@（实验，可与高阶教师脑并行）",
                           settings.localBrainEnabled ? "开" : "关")
                 }
             case .speech:

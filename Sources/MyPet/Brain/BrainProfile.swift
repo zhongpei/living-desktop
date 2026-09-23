@@ -1,5 +1,6 @@
 import Foundation
 import Crypto
+import MyPetCore
 
 // BrainProfile —— 本地大脑配置档案 v1（brain-local.md §7）。
 //
@@ -247,16 +248,17 @@ struct BrainProfile: Equatable {
 
 /// 场景只调整用户配置的基准温度；其他参数和 seed 原样保留。
 enum SpeechSamplingPolicy {
-    static func resolve(_ intent: SpeechIntent, from base: BrainProfile.Sampling) -> BrainProfile.Sampling {
-        let offset: Double
-        switch intent {
-        case .commentActivity: offset = -0.1
-        case .complain: offset = 0
-        case .greet, .chatter: offset = 0.05
-        case .tease: offset = 0.1
-        }
+    static func resolve(_ intent: SpeechIntent, from base: BrainProfile.Sampling,
+                        policy: LocalSpeechPolicy = RuntimeSpeechPolicy.builtIn) -> BrainProfile.Sampling {
+        let offset = policy.scene(intent.policyID)?.temperatureOffset ?? 0
         var value = base
         value.temperature = min(1, max(0, base.temperature + offset))
         return value
+    }
+}
+
+extension SpeechIntent {
+    var policyID: LocalSpeechSceneID {
+        LocalSpeechSceneID(rawValue: rawValue) ?? .chatter
     }
 }

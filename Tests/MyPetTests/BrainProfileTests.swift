@@ -231,6 +231,25 @@ final class BrainProfileTests: XCTestCase {
         XCTAssertEqual(runtimeResult?.1, .teacher)
     }
 
+    func testCoordinatorCanUseLocalSpeechWhileLocalGoalIsDisabled() {
+        let local = StubGoalBrain()
+        let teacher = StubGoalBrain()
+        let coordinator = GoalBrainCoordinator(local: local, teacher: teacher)
+        coordinator.configure(localEnabled: false, localSpeechEnabled: true,
+                              teacherEnabled: false, interval: 0...0)
+        let world = BrainContextSnapshot(
+            capturedAt: 1, activeApp: "Code", windowTitle: "", appActivity: "coding",
+            userActivity: "editing_text", focusRole: "textarea", visibleContext: [],
+            salientUI: [], nearbyWindows: [], recentEvents: [])
+
+        XCTAssertTrue(coordinator.requestSpeech(
+            intent: .complain, world: world, brain: BrainState(), personality: .default,
+            characterID: "asuka", characterName: "明日香",
+            dialogue: nil, traceID: "speech-only") { _ in })
+        XCTAssertEqual(local.speechIntents, [.complain])
+        XCTAssertTrue(teacher.speechIntents.isEmpty)
+    }
+
     func testCoordinatorExpediteInvalidatesInFlightPlanAndAcceptsFreshResult() {
         let local = StubGoalBrain()
         let teacher = StubGoalBrain()
@@ -322,8 +341,9 @@ private final class SingleFlightGoalBrain: GoalBrain {
     }
 
     func requestSpeech(intent: SpeechIntent, world: BrainContextSnapshot, brain: BrainState,
-                       personality: Personality, characterID: String,
+                       personality: Personality, characterID: String, characterName: String,
                        dialogue: DialogueProfile?, traceID: String?,
+                       confirmedContext: String?,
                        completion: @escaping (SpeechReply?) -> Void) -> Bool { false }
 
     func finish(_ decision: GoalDecision?) {
@@ -337,6 +357,7 @@ private final class StubGoalBrain: GoalBrain {
     let isAvailable = true
     var inputs: [GoalBrainInput] = []
     var cancelPendingPlanCount = 0
+    var speechIntents: [SpeechIntent] = []
     private var completions: [(GoalDecision?) -> Void] = []
 
     func expedite() {}
@@ -352,10 +373,13 @@ private final class StubGoalBrain: GoalBrain {
 
     @discardableResult
     func requestSpeech(intent: SpeechIntent, world: BrainContextSnapshot, brain: BrainState,
-                       personality: Personality, characterID: String,
+                       personality: Personality, characterID: String, characterName: String,
                        dialogue: DialogueProfile?, traceID: String?,
+                       confirmedContext: String?,
                        completion: @escaping (SpeechReply?) -> Void) -> Bool {
-        false
+        speechIntents.append(intent)
+        completion(SpeechReply(text: "ok", emotion: "neutral"))
+        return true
     }
 
     func finish(_ decision: GoalDecision?) {

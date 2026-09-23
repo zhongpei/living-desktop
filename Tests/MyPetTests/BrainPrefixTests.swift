@@ -1,6 +1,8 @@
 import XCTest
 @testable import MyPetApp
 import struct MyPetCore.DialogueProfile
+import struct MyPetCore.LocalSpeechPromptOverrides
+import enum MyPetCore.LocalSpeechSceneID
 import struct MyPetCore.LocalizedLabel
 
 /// 本地大脑两段式 prompt：九段前缀 / 动态消息 / 决策解析 / 6 词表映射
@@ -83,18 +85,40 @@ final class BrainPrefixTests: XCTestCase {
 
         let text = BrainPrefixBuilder.chatMessage(
             intent: .tease, world: makeWorld(), brain: BrainState(), personality: .linDaiyu)
-        XCTAssertTrue(text.contains("用户刚刚在桌面上逗了你一下"))
-        XCTAssertTrue(text.contains("有角色味的玩笑或挑衅"))
+        XCTAssertTrue(text.contains("用户刚刚逗了宠物一下"))
+        XCTAssertTrue(text.contains("不要说成宠物先逗用户"))
         XCTAssertTrue(text.contains("active_app=Codex"))
 
         let chat = BrainPrefixBuilder.chatMessage(
             intent: .chatter, world: makeWorld(), brain: BrainState(),
-            personality: .linDaiyu, userText: "今天辛苦了")
+            personality: .linDaiyu, userText: "今天辛苦了",
+            confirmedContext: "用户刚切换到浏览器。")
         XCTAssertTrue(chat.contains("USER_MESSAGE_BEGIN"))
         XCTAssertTrue(chat.contains("今天辛苦了"))
+        XCTAssertTrue(chat.contains("系统确认的当前情境"))
     }
 
-    func testChatPrefixUsesCharacterVoiceWithoutCopyableDialogueFewShot() {
+    func testCustomSpeechPolicyReachesSystemAndSelectedSceneOnly() {
+        let policy = LocalSpeechPromptOverrides(
+            role: "自定义角色任务",
+            sceneDirections: [LocalSpeechSceneID.tease.rawValue: "以轻松玩笑回应。"])
+            .applying(to: RuntimeSpeechPolicy.builtIn)
+        let system = BrainPrefixBuilder.chatPrefixMessages(
+            personality: .default, profile: .fallback, dialogue: nil,
+            intent: .tease, policy: policy)[0]["content"] ?? ""
+        let tease = BrainPrefixBuilder.chatMessage(
+            intent: .tease, world: makeWorld(), brain: BrainState(),
+            personality: .default, policy: policy)
+        let greet = BrainPrefixBuilder.chatMessage(
+            intent: .greet, world: makeWorld(), brain: BrainState(),
+            personality: .default, policy: policy)
+
+        XCTAssertTrue(system.contains("自定义角色任务"))
+        XCTAssertTrue(tease.contains("以轻松玩笑回应"))
+        XCTAssertFalse(greet.contains("以轻松玩笑回应"))
+    }
+
+    func testChatPrefixCanToggleCharacterFewShotForManualComparison() {
         let label: (String) -> LocalizedLabel = { LocalizedLabel(zhHans: $0, en: $0) }
         let dialogue = DialogueProfile(
             dialogueStyle: label("傲气短句"), selfReference: label("俺老孙"),
@@ -106,12 +130,24 @@ final class BrainPrefixTests: XCTestCase {
             ], fallbackLines: [:])
         let messages = BrainPrefixBuilder.chatPrefixMessages(
             personality: .default, profile: .fallback,
-            dialogue: dialogue, intent: .tease)
+            dialogue: dialogue, intent: .tease, characterName: "孙悟空")
         let combined = messages.compactMap { $0["content"] }.joined(separator: "\n")
         XCTAssertTrue(combined.contains("傲气短句"))
         XCTAssertTrue(combined.contains("俺老孙"))
+        XCTAssertTrue(combined.contains("客服腔"))
+        XCTAssertTrue(combined.contains("孙悟空"))
         XCTAssertFalse(combined.contains("这也瞒得过俺老孙？"), "0.8B 不应获得可直接照抄的完整台词")
         XCTAssertEqual(messages.filter { $0["role"] == "assistant" }.count, 0)
+
+        let withFewShot = BrainPrefixBuilder.chatPrefixMessages(
+            personality: .default, profile: .fallback,
+            dialogue: dialogue, intent: .tease, characterName: "孙悟空",
+            includeFewShot: true)
+        XCTAssertEqual(withFewShot.map { $0["role"] },
+                       ["system", "user", "assistant", "user"])
+        XCTAssertTrue(withFewShot[1]["content"]?.contains("用户没发现我") == true)
+        XCTAssertEqual(withFewShot[2]["content"], "这也瞒得过俺老孙？")
+        XCTAssertEqual(withFewShot.last?["content"], "")
     }
 
     func testChatMessagesUseNaturalChineseDirectionsPerScene() {
@@ -120,8 +156,8 @@ final class BrainPrefixTests: XCTestCase {
             intent: .complain, world: world, brain: BrainState(), personality: .default)
         let comment = BrainPrefixBuilder.chatMessage(
             intent: .commentActivity, world: world, brain: BrainState(), personality: .default)
-        XCTAssertTrue(complain.contains("轻松的桌宠互动"))
-        XCTAssertTrue(comment.contains("不虚构成功或失败"))
+        XCTAssertTrue(complain.contains("直接表达一点不满"))
+        XCTAssertTrue(comment.contains("不要自称正在写、改或完成代码"))
         XCTAssertFalse(complain.contains("INTENT"))
         XCTAssertFalse(comment.contains("PET_STYLE"))
     }
