@@ -303,6 +303,20 @@ public final class CombatWorld {
         guard body.locomotion != .dragged && body.locomotion != .sleeping else { return }
         let previousY = body.position.y
 
+        if body.locomotion == .grounded && body.currentSurfaceID == nil {
+            if let support = environment.surfaces.first(where: {
+                $0.contains(x: body.position.x) && abs($0.y - body.position.y) <= 2
+            }) {
+                body.currentSurfaceID = support.id
+                body.position.y = support.y
+                let usable = max(1, support.right - support.left - profile.pushRadius * 2)
+                body.surfaceFraction = min(1, max(0,
+                    (body.position.x - support.left - profile.pushRadius) / usable))
+            } else {
+                body.locomotion = .airborne
+            }
+        }
+
         if body.locomotion == .grounded {
             body.position.x += body.velocity.x
             if let surface = environment.surface(id: body.currentSurfaceID) {
