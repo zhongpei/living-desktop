@@ -314,14 +314,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// 设置窗保存 / 菜单开关 共用的落盘 + 热更新路径。
-    private func applySettings(_ applied: Settings) {
+    private func applySettings(_ applied: Settings, pointerOnly: Bool = false) {
         var normalized = applied
         normalized.castSelection = normalized.castSelection.normalized(availablePacks: castPacks)
         normalized.storySettings.intervalTicks = max(0, normalized.storySettings.intervalTicks)
         normalized.storySettings.maxDurationTicks = max(1, normalized.storySettings.maxDurationTicks)
+        if ![20, 40, 60].contains(normalized.pointerInputHz) { normalized.pointerInputHz = 20 }
         normalized.save()
         settings = normalized
-        if normalized.castSelection.isRuntimeEnabled, !castPacks.isEmpty {
+        if pointerOnly, let castSession {
+            castSession.updateSettings(normalized)
+        } else if normalized.castSelection.isRuntimeEnabled, !castPacks.isEmpty {
             startCastRuntime()
         } else if castSession != nil {
             let fallback = library.first(where: { $0.id == normalized.currentPet })?.id
@@ -465,6 +468,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.tray?.openScreenRecordingPrompt()
             }
             self.applySettings(settings)
+        }
+        tray.onPointerInputToggle = { [weak self] in
+            guard let self, var settings = self.settings else { return }
+            settings.pointerInputEnabled.toggle()
+            self.applySettings(settings, pointerOnly: true)
+        }
+        tray.onPointerInputRateChange = { [weak self] hz in
+            guard let self, var settings = self.settings,
+                  [20, 40, 60].contains(hz) else { return }
+            settings.pointerInputHz = hz
+            self.applySettings(settings, pointerOnly: true)
         }
         tray.onOpenSettings = { [weak self] in self?.showSettings() }
         tray.onOpenContentManager = { [weak self] in self?.showContentManager() }

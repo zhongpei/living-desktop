@@ -746,8 +746,8 @@ public struct VirtualDesktop: Codable, Equatable, Sendable {
             return apply(VirtualDesktopEvent(atTick: tick, action: .closeWindow(id)), outputTick: tick)
         case .moveCursor:
             if let position = action.position { cursor.position = position }
-            appendTrace(tick, "user", "move_cursor")
-            return [GameEvent(kind: .userInteraction, actorID: action.actorID, userAction: action.kind.rawValue)]
+            appendTrace(tick, "pointer", "move_cursor:\(cursor.position.x),\(cursor.position.y)")
+            return []
         case .type, .talk:
             if let id = user.focusedWindowID, var window = windows[id.raw], let text = action.text {
                 window.content.text.append(text)

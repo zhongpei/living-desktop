@@ -83,6 +83,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var axStatusLabel: NSTextField!
     private var ocrBox: NSButton!
     private var ocrStatusLabel: NSTextField!
+    private var pointerInputBox: NSButton!
+    private var pointerInputRatePopup: NSPopUpButton!
     private struct InputPluginControls {
         let id: String
         let enabled: NSButton
@@ -660,8 +662,18 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private func buildSensesTab() -> NSView {
         inputPluginControls.removeAll()
+        pointerInputBox = checkbox("鼠标靠近反应", draft.pointerInputEnabled,
+                                   #selector(toggleDraft(_:)))
+        pointerInputRatePopup = NSPopUpButton()
+        for hz in [20, 40, 60] {
+            pointerInputRatePopup.addItem(withTitle: "\(hz) Hz")
+            pointerInputRatePopup.lastItem?.tag = hz
+        }
+        pointerInputRatePopup.selectItem(withTag: draft.pointerInputHz)
         var windowViews: [NSView] = [
-            note("窗口标题、辅助功能和 OCR 可分别开关；权限状态在本页底部。")
+            note("窗口标题、辅助功能和 OCR 可分别开关；权限状态在本页底部。"),
+            separator(), pointerInputBox, row("鼠标采样频率", pointerInputRatePopup),
+            note("鼠标坐标只用于即时反射，不进入内容插件或抢占队列。默认 20 Hz。")
         ]
         var contentViews: [NSView] = [
             note("聊天、编码与浏览器内容只提供有界观察，不直接执行动作。")
@@ -810,6 +822,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         draft.actionBrainMaxTokens = max(1, parsedInt(actionMaxTokensField, fallback: 128))
         draft.sensesEnabled = sensesBox.state == .on
         draft.ocrEnabled = ocrBox.state == .on
+        draft.pointerInputEnabled = pointerInputBox.state == .on
+        draft.pointerInputHz = pointerInputRatePopup.selectedItem?.tag ?? 20
         for entry in inputPluginControls {
             guard var config = draft.inputPlugins.configuration(for: entry.id) else { continue }
             config.enabled = entry.enabled.state == .on

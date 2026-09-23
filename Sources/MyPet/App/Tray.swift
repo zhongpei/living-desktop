@@ -11,6 +11,8 @@ final class Tray: NSObject {
     var onQuit: (() -> Void)?
     var onToggle: ((Toggle) -> Void)?
     var onInputPluginToggle: ((String) -> Void)?
+    var onPointerInputToggle: (() -> Void)?
+    var onPointerInputRateChange: ((Int) -> Void)?
     /// 角色组／角色选择变化；AppDelegate 负责持久化并把选择交给世界运行时。
     var onCastSelectionChange: ((CastSelection) -> Void)?
     /// 邀请一个候选角色出场；是否允许、是否已满由 CastRuntime 决定。
@@ -470,7 +472,7 @@ final class Tray: NSObject {
     /// 外界输入的快速开关；TTL、字符预算和白名单仍只在设置窗完整编辑。
     private func buildPerceptionMenu() -> NSMenu {
         let submenu = NSMenu(title: "感知")
-        let inputParent = NSMenuItem(title: "外界输入插件", action: nil, keyEquivalent: "")
+        let inputParent = NSMenuItem(title: "外部输入", action: nil, keyEquivalent: "")
         inputParent.submenu = buildInputPluginMenu()
         submenu.addItem(inputParent)
         return submenu
@@ -484,7 +486,26 @@ final class Tray: NSObject {
     }
 
     private func buildInputPluginMenu() -> NSMenu {
-        let menu = NSMenu(title: "外界输入插件")
+        let menu = NSMenu(title: "外部输入")
+        let pointer = NSMenuItem(title: "鼠标靠近反应", action: #selector(togglePointerInput), keyEquivalent: "")
+        pointer.target = self
+        pointer.identifier = NSUserInterfaceItemIdentifier("pointer-input.enabled")
+        pointer.state = settings.pointerInputEnabled ? .on : .off
+        menu.addItem(pointer)
+        let rate = NSMenuItem(title: "鼠标采样频率", action: nil, keyEquivalent: "")
+        let rates = NSMenu(title: "鼠标采样频率")
+        for hz in [20, 40, 60] {
+            let item = NSMenuItem(title: "\(hz) Hz", action: #selector(setPointerInputRate(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.identifier = NSUserInterfaceItemIdentifier("pointer-input.hz.\(hz)")
+            item.representedObject = hz
+            item.state = settings.pointerInputHz == hz ? .on : .off
+            rates.addItem(item)
+        }
+        rate.submenu = rates
+        menu.addItem(rate)
+        menu.addItem(.separator())
         for pluginID in settings.inputPlugins.plugins.keys.sorted() {
             guard let config = settings.inputPlugins.configuration(for: pluginID) else { continue }
             let item = NSMenuItem(
@@ -604,6 +625,13 @@ final class Tray: NSObject {
         onInputPluginToggle?(pluginID)
     }
 
+    @objc private func togglePointerInput() { onPointerInputToggle?() }
+
+    @objc private func setPointerInputRate(_ sender: NSMenuItem) {
+        guard let hz = sender.representedObject as? Int else { return }
+        onPointerInputRateChange?(hz)
+    }
+
     /// 辅助功能授权引导弹窗。
     func showAccessibilityPrompt() {
         let alert = NSAlert()
@@ -671,6 +699,12 @@ extension Tray: NSMenuDelegate {
                 case MenuID.senses: item.state = settings.sensesEnabled ? .on : .off
                 case MenuID.ocr: item.state = settings.ocrEnabled ? .on : .off
                 default:
+                    if item.identifier?.rawValue == "pointer-input.enabled" {
+                        item.state = settings.pointerInputEnabled ? .on : .off
+                    } else if item.identifier?.rawValue.hasPrefix("pointer-input.hz.") == true,
+                              let hz = item.representedObject as? Int {
+                        item.state = settings.pointerInputHz == hz ? .on : .off
+                    }
                     if let pluginID = item.representedObject as? String,
                        item.identifier?.rawValue.hasPrefix("input-plugin.") == true {
                         item.state = settings.inputPlugins.isEnabled(pluginID) ? .on : .off

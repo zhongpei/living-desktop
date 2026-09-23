@@ -183,6 +183,10 @@ struct Settings: Codable {
     var ocrEnabled = false
     /// 外部输入插件总表；旧的 sensesEnabled/ocrEnabled 仍保留作为迁移兼容键。
     var inputPlugins = InputPluginCatalog()
+    /// 鼠标坐标是高频外部输入，不投递为有 TTL 的内容插件事件。
+    var pointerInputEnabled = true
+    var pointerInputHz = 20
+    var pointerSampleInterval: TimeInterval { 1.0 / Double(pointerInputHz) }
 
     /// Effective runtime switch for a plugin. The two legacy permission keys
     /// remain valid for callers that construct Settings directly or still have
@@ -276,7 +280,7 @@ struct Settings: Codable {
         case speechEnabled, voicePlaybackEnabled, brainTraceEnabled
         case slowBrainLogEnabled, teacherLogEnabled // legacy wire keys
         case scenesEnabled, propsEnabled
-        case sensesEnabled, ocrEnabled, inputPlugins
+        case sensesEnabled, ocrEnabled, inputPlugins, pointerInputEnabled, pointerInputHz
         case castSelection, storySettings
     }
 
@@ -345,6 +349,8 @@ struct Settings: Codable {
         try c.encode(sensesEnabled, forKey: .sensesEnabled)
         try c.encode(ocrEnabled, forKey: .ocrEnabled)
         try c.encode(inputPlugins, forKey: .inputPlugins)
+        try c.encode(pointerInputEnabled, forKey: .pointerInputEnabled)
+        try c.encode(pointerInputHz, forKey: .pointerInputHz)
         try c.encode(castSelection, forKey: .castSelection)
         try c.encode(storySettings, forKey: .storySettings)
     }
@@ -419,6 +425,9 @@ struct Settings: Codable {
         propsEnabled = try c.decodeIfPresent(Bool.self, forKey: .propsEnabled) ?? true
         sensesEnabled = try c.decodeIfPresent(Bool.self, forKey: .sensesEnabled) ?? false
         ocrEnabled = try c.decodeIfPresent(Bool.self, forKey: .ocrEnabled) ?? false
+        pointerInputEnabled = try c.decodeIfPresent(Bool.self, forKey: .pointerInputEnabled) ?? true
+        let configuredPointerHz = try c.decodeIfPresent(Int.self, forKey: .pointerInputHz) ?? 20
+        pointerInputHz = [20, 40, 60].contains(configuredPointerHz) ? configuredPointerHz : 20
         if let configured = try c.decodeIfPresent(InputPluginCatalog.self, forKey: .inputPlugins) {
             // Keep newly added built-in sources visible when an older settings
             // file already contains a partial catalog. Explicit entries win;

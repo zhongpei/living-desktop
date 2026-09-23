@@ -131,6 +131,8 @@ final class PetController {
     private var lastWorldFingerprint = ""
 
     private var timer: Timer?
+    private var pointerTimer: Timer?
+    private var pointerTimerHz: Int?
     private var lastTick = ProcessInfo.processInfo.systemUptime
     private var runtimeFrameClock: FixedStepClock
     private var pollAccumulator: Double = 0
@@ -257,6 +259,7 @@ final class PetController {
         let t = Timer(timeInterval: 1.0 / 40.0, target: self, selector: #selector(tick), userInfo: nil, repeats: true)
         RunLoop.main.add(t, forMode: .common)
         timer = t
+        configurePointerTimer()
     }
 
     /// 角色组入场后由 AppDelegate 调用；素材包没有专属入场 clip 时静默降级
@@ -487,6 +490,9 @@ final class PetController {
         presentation.stop()
         timer?.invalidate()
         timer = nil
+        pointerTimer?.invalidate()
+        pointerTimer = nil
+        pointerTimerHz = nil
         cancelPendingRuntimeActions()
         // A shared Cast graph must not retain a departed actor root. Props are
         // cleared by closePanel, while this removes the actor/socket container
@@ -565,6 +571,7 @@ final class PetController {
         // 右键操作环是一个短暂的直接操控态。角色停在当前位姿，自动脑、
         // 场景和移动都暂时让出控制权；关闭环后下一帧自然恢复规划。
         if actionRingOpen {
+            cancelPointerResponse()
             for _ in 0..<runtimeSteps {
                 _ = gameplayRuntime.step { [weak self] _ in
                     self?.submitPendingMenuAction()
@@ -609,7 +616,7 @@ final class PetController {
             submitPendingMenuAction()
             drainCommittedRuntimeActions()
         }
-        tickStartle()
+        advancePointerResponse()
         tickSceneMove()
         tickScenePerform()
         model.update(dtIn: dt)
@@ -1736,6 +1743,8 @@ final class PetController {
             || s.sensesEnabled != settings.sensesEnabled
             || s.ocrEnabled != settings.ocrEnabled
         settings = s
+        if !s.pointerInputEnabled { cancelPointerResponse() }
+        configurePointerTimer()
         presentation.voicePlaybackEnabled = s.voicePlaybackEnabled
         props.userScale = s.propScale
         if heightChanged {
@@ -2174,6 +2183,7 @@ final class PetController {
 
         presentation.onMouseDown = { [weak self] cursor in
             guard let self else { return }
+            self.cancelPointerResponse()
             self.actionRing.dismiss()
             self.actionRingOpen = false
             // Direct user control temporarily owns the panel. The next Cast
@@ -2234,31 +2244,89 @@ final class PetController {
         }
     }
 
-    /// 「鼠标突然靠近」即时反射（game.md §13 第一层）：
-    /// 光标高速逼近到身边 → 惊一下（stress 微涨 + 后撤）。慢速靠近不触发。
-    /// 场景运行中让位（正在演戏的宠物注意力在戏上）；睡着不惊（真惊醒太吵）。
-    private func tickStartle() {
-        guard !isDeparting else {
-            startle.reset()
-            return
-        }
-        guard semanticActiveSceneID == nil,
-              model.state == .grounded || model.state == .perched else {
-            startle.reset()
-            return
-        }
-        let mouse = NSEvent.mouseLocation
-        let cursor = CGPoint(x: mouse.x, y: Screens.primaryTopY - mouse.y)  // → 翻转坐标
-        let bodyCenter = CGPoint(x: model.x, y: model.yFeet - settings.displayHeight * 0.5)
-        if startle.update(cursor: cursor, pet: bodyCenter, now: clock) {
-            brainState.apply(event: .startled, now: clock)
-            pushRecentEvent("startled by a fast cursor")
-            flee(distance: 90)
-        }
+    private var pointerReflex = PointerReflex()
+    private var pointerRetreat: (target: CGFloat, at: Double, recovery: String?)?
+    private var pointerRecovery: String?
+    private var pointerQuietUntil: Double = 0
+
+    private func cancelPointerResponse() {
+        pointerRetreat = nil
+        pointerRecovery = nil
+        pointerReflex.reset()
+        pointerQuietUntil = clock + 0.5
     }
 
-    /// 光标逼近检测器（纯逻辑，Game/Startle.swift）。
-    var startle = StartleDetector()
+    var pointerActor: PointerActor {
+        let canReact = !isStopped && !isDeparting && !actionRingOpen
+            && clock >= pointerQuietUntil
+            && semanticActiveSceneID == nil
+            && (model.state == .grounded || model.state == .perched)
+        return PointerActor(
+            id: runtimeActorID, x: Double(model.x), yFeet: Double(model.yFeet),
+            displayHeight: Double(settings.displayHeight),
+            availableClips: Set(library.actionNames), interactive: canReact,
+            ambient: canReact && !model.walking && actions.performance == nil
+                && pointerRetreat == nil && pointerRecovery == nil,
+            allowsStartle: canReact && pointerRetreat == nil && pointerRecovery == nil)
+    }
+
+    private func configurePointerTimer() {
+        guard !usesSharedGameplayKernel, !isStopped, timer != nil else { return }
+        let hz = settings.pointerInputEnabled ? settings.pointerInputHz : nil
+        guard pointerTimerHz != hz else { return }
+        pointerTimer?.invalidate()
+        pointerTimer = nil
+        pointerTimerHz = hz
+        guard hz != nil else { return }
+        let timer = Timer(timeInterval: settings.pointerSampleInterval, target: self,
+                          selector: #selector(tickPointerResponse), userInfo: nil, repeats: true)
+        RunLoop.main.add(timer, forMode: .common)
+        pointerTimer = timer
+    }
+
+    @objc private func tickPointerResponse() {
+        let mouse = NSEvent.mouseLocation
+        let plan = pointerReflex.sample(
+            x: mouse.x, y: Screens.primaryTopY - mouse.y,
+            time: ProcessInfo.processInfo.systemUptime,
+            buttonDown: NSEvent.pressedMouseButtons != 0, actors: [pointerActor])
+        if let plan { applyPointerResponse(plan) }
+    }
+
+    func applyPointerResponse(_ plan: PointerResponsePlan) {
+        guard plan.actorID == runtimeActorID, pointerActor.interactive else { return }
+        model.faceToward(CGFloat(plan.faceRight ? Double(model.x) + 1 : Double(model.x) - 1))
+        if let clip = plan.initialClip { actions.inject(.perform(clip)) }
+        guard plan.kind == .fastApproach, let retreatX = plan.retreatX else { return }
+        brainState.apply(event: .startled, now: clock)
+        pushRecentEvent("startled by a fast cursor")
+        let floor = world.floorSpan(near: model.x, footY: model.yFeet)
+        let left = model.stance?.left ?? floor.left
+        let right = model.stance?.right ?? floor.right
+        let target = right - left > 80
+            ? min(max(CGFloat(retreatX), left + 40), right - 40) : model.x
+        pointerRetreat = (target, clock + (plan.initialClip == nil ? 0 : 0.25), plan.recoveryClip)
+    }
+
+    private func advancePointerResponse() {
+        guard semanticActiveSceneID == nil, pointerActor.interactive else {
+            pointerRetreat = nil
+            pointerRecovery = nil
+            return
+        }
+        if let retreat = pointerRetreat, clock >= retreat.at {
+            pointerRetreat = nil
+            if abs(retreat.target - model.x) > 24 {
+                actions.inject(.moveTo(retreat.target))
+                pointerRecovery = retreat.recovery
+            } else if let recovery = retreat.recovery {
+                actions.inject(.perform(recovery))
+            }
+        } else if let recovery = pointerRecovery, actions.strollTarget == nil, !model.walking {
+            pointerRecovery = nil
+            actions.inject(.perform(recovery))
+        }
+    }
 
     /// 后撤反射：从当前位置快速挪开一段距离（用户召唤逻辑反向用）。
     private func flee(distance: CGFloat) {

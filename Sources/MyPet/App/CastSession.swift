@@ -24,9 +24,12 @@ final class CastSession: NSObject {
     private let castSceneGraph = SceneGraph(rootID: "cast-scene")
     private let castOverlays = CastOverlayPresentation()
     private var castTimer: Timer?
+    private var pointerTimer: Timer?
+    private var pointerTimerHz: Int?
     private var castFrameClock: FixedStepClock?
     private var lastCastFrameAt = ProcessInfo.processInfo.systemUptime
     private var castDepartureDeadlines: [String: Int64] = [:]
+    private var pointerReflex = PointerReflex()
     private var reportedMissingCastVisuals = Set<String>()
     private var controller: PetController?
     var onSync: (([String]) -> Void)?
@@ -60,6 +63,8 @@ final class CastSession: NSObject {
 
     func updateSettings(_ settings: Settings) {
         for pet in castControllers.values { pet.updateSettings(settings) }
+        if !settings.pointerInputEnabled { pointerReflex.reset() }
+        configurePointerTimer()
     }
 
     @discardableResult
@@ -112,12 +117,16 @@ final class CastSession: NSObject {
                           selector: #selector(tickCastRuntime), userInfo: nil, repeats: true)
         RunLoop.main.add(timer, forMode: .common)
         castTimer = timer
+        configurePointerTimer()
     }
 
     func stop() {
         let wasCastActive = castRuntime != nil || !castControllers.isEmpty
         castTimer?.invalidate()
         castTimer = nil
+        pointerTimer?.invalidate()
+        pointerTimer = nil
+        pointerTimerHz = nil
         castFrameClock = nil
         for pet in castControllers.values {
             pet.stop()
@@ -127,6 +136,7 @@ final class CastSession: NSObject {
         castSceneGraph.removeAll()
         castOverlays.close()
         castDepartureDeadlines.removeAll()
+        pointerReflex.reset()
         reportedMissingCastVisuals.removeAll()
         castRuntime = nil
         if wasCastActive {
@@ -163,6 +173,33 @@ final class CastSession: NSObject {
         let effects = runtime.runtime.drainPresentationEffects()
         for (id, pet) in castControllers {
             pet.tickFrame(presentationEffects: effects.filter { $0.actorID.raw == id })
+        }
+    }
+
+    private func configurePointerTimer() {
+        guard castTimer != nil else { return }
+        let hz = castRuntime != nil && settings?.pointerInputEnabled == true
+            ? settings?.pointerInputHz : nil
+        guard pointerTimerHz != hz else { return }
+        pointerTimer?.invalidate()
+        pointerTimer = nil
+        pointerTimerHz = hz
+        guard hz != nil else { return }
+        let timer = Timer(timeInterval: settings?.pointerSampleInterval ?? 0.05, target: self,
+                          selector: #selector(tickPointerInput), userInfo: nil, repeats: true)
+        RunLoop.main.add(timer, forMode: .common)
+        pointerTimer = timer
+    }
+
+    @objc private func tickPointerInput() {
+        guard castRuntime != nil else { return }
+        let mouse = NSEvent.mouseLocation
+        if let plan = pointerReflex.sample(
+            x: mouse.x, y: Screens.primaryTopY - mouse.y,
+            time: ProcessInfo.processInfo.systemUptime,
+            buttonDown: NSEvent.pressedMouseButtons != 0,
+            actors: castControllers.values.map(\.pointerActor)) {
+            castControllers[plan.actorID.raw]?.applyPointerResponse(plan)
         }
     }
 
