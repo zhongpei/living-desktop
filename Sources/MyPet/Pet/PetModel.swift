@@ -144,6 +144,12 @@ final class PetModel {
         return body
     }
 
+    var actionTimeline: ActionTimeline? { body.actionTimeline }
+
+    func setActionTimeline(_ timeline: ActionTimeline?) {
+        bodyWorld.update(entityID) { $0.actionTimeline = timeline }
+    }
+
     // ============ 指令（大脑 / 菜单 / 鼠标进来）============
 
     /// 出生：站上某点所在工作区的地板。

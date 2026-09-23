@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import MyPet2D
 import MyPetContent
 
 /// AppKit 身体动作 driver：只执行 Runtime 已提交的身体指令。
@@ -28,7 +29,21 @@ final class PetBodyDriver {
 
     private let model: PetModel
     private let library: ClipLibrary
-    private(set) var performance: Performance?
+    var actionTimeline: ActionTimeline? { model.actionTimeline }
+    private var actionStartedAt: Double = 0
+    private var nextActionInstanceID: Int64 = 0
+    private var lastTimelineTick: Double?
+    private var timelineFrameRemainder: Double = 0
+    var performance: Performance? {
+        guard let timeline = actionTimeline,
+              timeline.definition.locomotionPolicy == .stationary else { return nil }
+        let endsAt = timeline.definition.durationFrames.map {
+            actionStartedAt + Double($0) / Double(BodyWorld.framesPerSecond)
+        }
+        return Performance(
+            clipKey: timeline.definition.animationBinding,
+            endsAt: endsAt)
+    }
     /// moveTo 的散步目标；到达（±24pt）自动停步。
     private(set) var strollTarget: CGFloat?
     /// 运行时自己的时钟（由 tick 喂），用于 loop 型表演的收尾时刻。
@@ -67,6 +82,15 @@ final class PetBodyDriver {
                 model.strollTo(target)
                 strollTarget = abs(target - model.x) >= 24 ? target : nil
             }
+            if strollTarget != nil {
+                startAction(ActionDefinition(
+                    actionID: "move_to",
+                    durationFrames: nil,
+                    animationBinding: "base/walk",
+                    domain: .locomotion,
+                    locomotionPolicy: .authored,
+                    endState: .locomotion))
+            }
         case .perform(let clipKey):
             guard canAct else {
                 if userInitiated { pendingPerform = clipKey } // 空中点动作：落地即演
@@ -75,14 +99,28 @@ final class PetBodyDriver {
             startPerformance(clipKey)
         case .interact(let window):
             guard canAct else { return }
-            cancelPerformance()
+            cancelAction()
             model.leapTo(window: window)
+            startAction(ActionDefinition(
+                actionID: "jump",
+                durationFrames: nil,
+                animationBinding: "base/jump",
+                domain: .locomotion,
+                locomotionPolicy: .authored,
+                endState: .locomotion))
         case .sleep:
+            cancelAction()
             model.sleep()
+            startAction(ActionDefinition(
+                actionID: "sleep",
+                durationFrames: nil,
+                animationBinding: "base/sleep",
+                locomotionPolicy: .stationary,
+                endState: .hold))
         case .wait:
             model.stopWalk()
             strollTarget = nil
-            cancelPerformance()
+            cancelAction()
         }
     }
 
@@ -90,15 +128,23 @@ final class PetBodyDriver {
     /// clip 不存在直接忽略——否则性能会挂在"永远播不完"的表演上。
     private func startPerformance(_ clipKey: String) {
         guard library.clip(clipKey) != nil else { return }
-        cancelPerformance()
+        model.stopWalk()
+        strollTarget = nil
+        cancelAction()
         lastPerformAt[clipKey] = clock
-        let endsAt: Double?
+        let durationFrames: Int?
         if library.playback(for: clipKey) == .loop, let meta = library.meta(for: clipKey) {
-            endsAt = clock + 2.0 * Double(meta.frames) / max(meta.fps, 0.001)
+            durationFrames = Int(ceil(
+                2.0 * Double(meta.frames) / max(meta.fps, 0.001) *
+                Double(BodyWorld.framesPerSecond)))
         } else {
-            endsAt = nil
+            durationFrames = nil
         }
-        performance = Performance(clipKey: clipKey, endsAt: endsAt)
+        startAction(ActionDefinition(
+            actionID: clipKey,
+            durationFrames: durationFrames,
+            animationBinding: clipKey,
+            locomotionPolicy: .stationary))
     }
 
     /// 每帧推进：落实取消规则、收尾到期的散步/表演、执行排队的用户指令。
@@ -111,6 +157,13 @@ final class PetBodyDriver {
                 pendingSummon = nil
                 model.summonTo(targetX: target)
                 strollTarget = target
+                startAction(ActionDefinition(
+                    actionID: "move_to",
+                    durationFrames: nil,
+                    animationBinding: "base/walk",
+                    domain: .locomotion,
+                    locomotionPolicy: .authored,
+                    endState: .locomotion))
             }
             if let clip = pendingPerform {
                 pendingPerform = nil
@@ -121,24 +174,55 @@ final class PetBodyDriver {
         if let target = strollTarget, abs(model.x - target) < 24 {
             model.stopWalk()
             strollTarget = nil
+            if actionTimeline?.definition.locomotionPolicy == .authored {
+                cancelAction()
+            }
         }
 
+        advanceTimeline(to: now)
         guard performance != nil else { return }
         // 规则 1/2：身体动了，表演立刻取消（不补演）。
         guard canAct, !model.walking else {
-            performance = nil
+            cancelAction()
             return
-        }
-        // 规则 3：loop 型到点收尾。
-        if let endsAt = performance?.endsAt, now > endsAt {
-            performance = nil
         }
     }
 
     /// once 型表演播完由控制器调用（运行时不持有动画器）；
     /// 用户触摸等反射也可直接调用来取消当前表演。
     func cancelPerformance() {
-        performance = nil
+        guard actionTimeline?.definition.locomotionPolicy == .stationary else { return }
+        cancelAction()
+    }
+
+    private func startAction(_ definition: ActionDefinition) {
+        model.setActionTimeline(ActionTimeline(
+            instanceID: nextActionInstanceID,
+            definition: definition))
+        nextActionInstanceID += 1
+        actionStartedAt = clock
+        lastTimelineTick = clock
+        timelineFrameRemainder = 0
+    }
+
+    private func cancelAction() {
+        if var timeline = actionTimeline { _ = timeline.cancel() }
+        model.setActionTimeline(nil)
+        timelineFrameRemainder = 0
+    }
+
+    private func advanceTimeline(to now: Double) {
+        let previous = lastTimelineTick ?? now
+        lastTimelineTick = now
+        timelineFrameRemainder += max(0, now - previous) * Double(BodyWorld.framesPerSecond)
+        let frames = Int(timelineFrameRemainder)
+        guard frames > 0, var timeline = actionTimeline else { return }
+        timelineFrameRemainder -= Double(frames)
+        if timeline.advance(frames: frames) == .finished {
+            model.setActionTimeline(nil)
+        } else {
+            model.setActionTimeline(timeline)
+        }
     }
 
     /// 用户抓起宠物 = 接管控制，之前排队的菜单指令作废。

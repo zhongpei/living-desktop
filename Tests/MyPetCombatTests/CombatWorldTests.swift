@@ -63,6 +63,96 @@ final class CombatWorldTests: XCTestCase {
         XCTAssertTrue([CombatPhase.hitStun, .neutral].contains(world.body(for: EntityID("b"))!.phase))
     }
 
+    func testCombatMoveUsesSharedActionTimelineAsItsFrameAuthority() {
+        let move = CombatMoveDefinition(
+            id: "timed", command: .button(.x),
+            startupFrames: 2, activeFrames: 2, recoveryFrames: 2,
+            hit: CombatHitDefinition(damage: 0), visualAction: "attack")
+        let world = CombatWorld()
+        world.register(
+            actorID: EntityID("a"),
+            profile: CombatProfile(moves: [move]),
+            x: 300, yFeet: 700)
+
+        world.setInput(FighterInputFrame(buttons: [.x]), for: EntityID("a"))
+        _ = world.step(environment: floor)
+        let timeline = world.body(for: EntityID("a"))?.actionTimeline
+
+        XCTAssertEqual(timeline?.definition.actionID, "timed")
+        XCTAssertEqual(timeline?.definition.animationBinding, "attack")
+        XCTAssertEqual(timeline?.frame, 1)
+        XCTAssertEqual(timeline?.phase, .startup)
+    }
+
+    func testSingleActiveFrameIsResolvedBeforeTimelineIsCleared() {
+        let move = CombatMoveDefinition(
+            id: "one-frame", command: .button(.x),
+            startupFrames: 0, activeFrames: 1, recoveryFrames: 0,
+            hit: CombatHitDefinition(damage: 25, hitStopFrames: 0),
+            visualAction: "attack")
+        let world = CombatWorld()
+        world.register(actorID: EntityID("a"), profile: CombatProfile(moves: [move]),
+                       x: 400, yFeet: 700)
+        world.register(actorID: EntityID("b"), x: 445, yFeet: 700, facing: .left)
+        world.setInput(FighterInputFrame(buttons: [.x]), for: EntityID("a"))
+
+        _ = world.step(environment: floor)
+
+        XCTAssertEqual(world.body(for: EntityID("b"))?.hp, 975)
+        XCTAssertEqual(world.body(for: EntityID("a"))?.actionTimeline?.phase, .finished)
+    }
+
+    func testCombatHitStopFreezesSharedActionTimelineFrame() {
+        let move = CombatMoveDefinition(
+            id: "freeze", command: .button(.x),
+            startupFrames: 0, activeFrames: 2, recoveryFrames: 2,
+            hit: CombatHitDefinition(damage: 10, hitStopFrames: 2),
+            visualAction: "attack")
+        let world = CombatWorld()
+        world.register(actorID: EntityID("a"), profile: CombatProfile(moves: [move]),
+                       x: 400, yFeet: 700)
+        world.register(actorID: EntityID("b"), x: 445, yFeet: 700, facing: .left)
+        world.setInput(FighterInputFrame(buttons: [.x]), for: EntityID("a"))
+        _ = world.step(environment: floor)
+        let contactFrame = world.body(for: EntityID("a"))?.actionTimeline?.frame
+        XCTAssertEqual(world.body(for: EntityID("a"))?.hitStopFrames, 2)
+
+        world.setInput(.neutral, for: EntityID("a"))
+        _ = world.step(environment: floor)
+
+        XCTAssertEqual(world.body(for: EntityID("a"))?.actionTimeline?.frame, contactFrame)
+        XCTAssertEqual(world.body(for: EntityID("a"))?.hitStopFrames, 1)
+    }
+
+    func testLegacyPresentationAttackNeverBecomesDamagingCombat() {
+        let bodies = BodyWorld()
+        let actor = EntityID("story-actor")
+        bodies.register(
+            BodyDefinition(entityID: actor),
+            state: BodyState(
+                entityID: actor,
+                position: Vec2(x: 400, y: 700),
+                locomotion: .grounded,
+                currentSurfaceID: "floor:0",
+                actionTimeline: ActionTimeline(
+                    instanceID: 4,
+                    definition: ActionDefinition(
+                        actionID: "attack",
+                        durationFrames: 30,
+                        animationBinding: "attack",
+                        domain: .presentation))))
+        let world = CombatWorld(bodyWorld: bodies)
+        world.register(actorID: actor, x: 400, yFeet: 700)
+        world.register(actorID: EntityID("target"), x: 445, yFeet: 700, facing: .left)
+        world.setAuthority(.scripted, for: actor)
+
+        for _ in 0..<12 { _ = world.step(environment: floor) }
+
+        XCTAssertEqual(world.body(for: EntityID("target"))?.hp, 1000)
+        XCTAssertEqual(world.body(for: actor)?.actionTimeline?.definition.domain, .presentation)
+        XCTAssertEqual(world.body(for: actor)?.currentMoveID, nil)
+    }
+
     func testZeroHPLandsThenRecoversInsteadOfDeletingActor() {
         let finisher = CombatMoveDefinition(
             id: "ko", command: .button(.x), startupFrames: 0, activeFrames: 1, recoveryFrames: 1,

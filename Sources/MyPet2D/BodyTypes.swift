@@ -39,6 +39,7 @@ public struct BodyState: Codable, Equatable, Sendable {
     public var currentSurfaceID: String?
     public var surfaceFraction: Double?
     public var landingHorizontalVelocityRetention: Double
+    public var actionTimeline: ActionTimeline?
 
     public init(
         entityID: EntityID,
@@ -48,7 +49,8 @@ public struct BodyState: Codable, Equatable, Sendable {
         locomotion: LocomotionState = .grounded,
         currentSurfaceID: String? = nil,
         surfaceFraction: Double? = nil,
-        landingHorizontalVelocityRetention: Double = 0
+        landingHorizontalVelocityRetention: Double = 0,
+        actionTimeline: ActionTimeline? = nil
     ) {
         self.entityID = entityID
         self.position = position
@@ -58,6 +60,7 @@ public struct BodyState: Codable, Equatable, Sendable {
         self.currentSurfaceID = currentSurfaceID
         self.surfaceFraction = surfaceFraction
         self.landingHorizontalVelocityRetention = min(1, max(0, landingHorizontalVelocityRetention))
+        self.actionTimeline = actionTimeline
     }
 }
 

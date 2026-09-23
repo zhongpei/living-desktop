@@ -181,10 +181,9 @@ public final class CombatWorld {
 
     public func beginDrag(actorID: EntityID, x: Double, y: Double) {
         guard var rule = rules[actorID.raw] else { return }
-        rule.currentMoveID = nil
-        rule.moveFrame = 0
         rule.phase = .neutral
         rules[actorID.raw] = rule
+        bodyWorld.update(actorID) { $0.actionTimeline = nil }
         bodyWorld.beginDrag(entityID: actorID, position: Vec2(x: x, y: y))
     }
 
@@ -204,13 +203,16 @@ public final class CombatWorld {
                                events: inout [CombatEvent]) {
         guard body.authority != .scripted else { return }
         guard body.locomotion != .dragged && body.locomotion != .tossed else { return }
-        if body.currentMoveID != nil { return }
+        if body.actionTimeline != nil { return }
 
         if let move = profile.moves.first(where: {
             CombatCommandRecognizer.matches($0.command, buffer: buffer, facing: body.facing)
         }) {
-            body.currentMoveID = move.id
-            body.moveFrame = 0
+            let instanceID = body.rules.actionSequence ?? 0
+            body.rules.actionSequence = instanceID + 1
+            body.actionTimeline = ActionTimeline(
+                instanceID: instanceID,
+                definition: move.actionDefinition)
             body.hitTargets.removeAll()
             body.phase = .startup
             events.append(CombatEvent(frame: frame, kind: .moveStarted,
@@ -236,23 +238,30 @@ public final class CombatWorld {
     }
 
     private func advanceMove(_ body: inout CombatBodyState, profile: CombatProfile) {
-        guard let move = profile.move(id: body.currentMoveID) else {
-            body.currentMoveID = nil
+        guard var timeline = body.actionTimeline else {
             if body.stunFrames == 0 { body.phase = .neutral }
             return
         }
-        let activeStart = move.startupFrames
-        let recoveryStart = activeStart + move.activeFrames
-        if body.moveFrame < activeStart { body.phase = .startup }
-        else if body.moveFrame < recoveryStart { body.phase = .active }
-        else { body.phase = .recovery }
-        body.moveFrame += 1
-        if body.moveFrame >= move.totalFrames {
-            body.currentMoveID = nil
-            body.moveFrame = 0
+        guard timeline.definition.domain == .combat else { return }
+        guard profile.move(id: timeline.definition.actionID) != nil else {
+            body.actionTimeline = nil
+            if body.stunFrames == 0 { body.phase = .neutral }
+            return
+        }
+        switch timeline.phase {
+        case .startup: body.phase = .startup
+        case .active: body.phase = .active
+        case .recovery: body.phase = .recovery
+        case .finished, .cancelled:
+            body.actionTimeline = nil
             body.hitTargets.removeAll()
             body.phase = .neutral
+            return
         }
+        // Keep the terminal cursor through hit resolution. A one-frame active
+        // action must still own that frame; it is cleared on the next step.
+        _ = timeline.advance()
+        body.actionTimeline = timeline
     }
 
     private func advanceStun(_ body: inout CombatBodyState) {
@@ -395,8 +404,7 @@ public final class CombatWorld {
                     moveID: hit.move.id, amount: definition.chipDamage))
             } else {
                 defender.hp = max(0, defender.hp - definition.damage)
-                defender.currentMoveID = nil
-                defender.moveFrame = 0
+                defender.actionTimeline = nil
                 defender.hitTargets.removeAll()
                 defender.phase = .hitStun
                 defender.stunFrames = max(defender.stunFrames, definition.hitStunFrames)

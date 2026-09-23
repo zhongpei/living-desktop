@@ -79,6 +79,17 @@ public struct CombatMoveDefinition: Codable, Equatable, Sendable {
     }
 
     public var totalFrames: Int { startupFrames + activeFrames + recoveryFrames }
+
+    public var actionDefinition: ActionDefinition {
+        ActionDefinition(
+            actionID: id,
+            durationFrames: totalFrames,
+            animationBinding: visualAction,
+            domain: .combat,
+            startupFrames: startupFrames,
+            activeFrames: activeFrames,
+            locomotionPolicy: .stationary)
+    }
 }
 
 public struct CombatProfile: Codable, Equatable, Sendable {
@@ -147,8 +158,8 @@ public struct CombatRuleState: Codable, Equatable, Sendable {
     public var phase: CombatPhase
     public var healthState: CombatHealthState
     public var hp: Int
-    public var currentMoveID: String?
-    public var moveFrame: Int
+    /// Optional so checkpoints written before ActionTimeline continue to decode.
+    public var actionSequence: Int64?
     public var hitStopFrames: Int
     public var stunFrames: Int
     public var recoveryFramesRemaining: Int
@@ -162,8 +173,7 @@ public struct CombatRuleState: Codable, Equatable, Sendable {
         self.phase = .neutral
         self.healthState = .active
         self.hp = hp
-        self.currentMoveID = nil
-        self.moveFrame = 0
+        self.actionSequence = nil
         self.hitStopFrames = 0
         self.stunFrames = 0
         self.recoveryFramesRemaining = 0
@@ -215,11 +225,14 @@ public struct CombatBodyState: Codable, Equatable, Sendable {
         set { rules.healthState = newValue }
     }
     public var hp: Int { get { rules.hp } set { rules.hp = newValue } }
-    public var currentMoveID: String? {
-        get { rules.currentMoveID }
-        set { rules.currentMoveID = newValue }
+    public var actionTimeline: ActionTimeline? {
+        get { body.actionTimeline }
+        set { body.actionTimeline = newValue }
     }
-    public var moveFrame: Int { get { rules.moveFrame } set { rules.moveFrame = newValue } }
+    public var currentMoveID: String? {
+        body.actionTimeline?.definition.domain == .combat
+            ? body.actionTimeline?.definition.actionID : nil
+    }
     public var hitStopFrames: Int {
         get { rules.hitStopFrames }
         set { rules.hitStopFrames = newValue }
