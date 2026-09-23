@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import MyPetCombat
 
 /// 世界读取接口：PetModel 只依赖它，测试时塞假世界。
 /// 生产环境由 SystemWorld（WindowWorld + Screens + 系统空闲时间）实现。
@@ -65,6 +66,10 @@ final class PetModel {
 
     private let world: WorldReading
     private var clock: Double = 0
+    /// All body physics now advance on the same fixed 60 Hz frame grid as combat.
+    /// Public callers may still provide variable render deltas; this accumulator
+    /// converts them to deterministic body frames.
+    private var combatFrameClock = CombatFrameClock()
 
     // 拖拽
     private var grabOffset = CGPoint.zero
@@ -252,9 +257,16 @@ final class PetModel {
     // ============ 主循环 ============
 
     func update(dtIn: Double) {
-        let dt = min(dtIn, 0.1)
-        clock += dt
+        let clamped = min(max(dtIn, 0), 0.25)
+        clock += clamped
+        let frames = combatFrameClock.advance(elapsedSeconds: clamped)
+        for _ in 0..<frames {
+            stepSimulationFrame()
+        }
+    }
 
+    private func stepSimulationFrame() {
+        let dt = 1.0 / Double(CombatWorld.framesPerSecond)
         switch state {
         case .grounded: updateGrounded(dt, asleep: false)
         case .asleep: updateGrounded(dt, asleep: true)
@@ -263,8 +275,17 @@ final class PetModel {
         case .dragged: break
         case .tossed: updateTossed(dt)
         }
-
         clampToVirtual()
+    }
+
+    /// Combat hit/throw impulse enters the same body physics used by mouse toss,
+    /// jumping and window falls. Values are points per combat frame.
+    func applyCombatImpulse(vxPerFrame: Double, vyPerFrame: Double) {
+        guard state != .dragged else { return }
+        detach()
+        vx = CGFloat(vxPerFrame * Double(CombatWorld.framesPerSecond))
+        vy = CGFloat(vyPerFrame * Double(CombatWorld.framesPerSecond))
+        state = .airborne
     }
 
     // ---- 站立（地板 / 窗口底沿）----
