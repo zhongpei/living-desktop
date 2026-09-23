@@ -141,13 +141,27 @@ final class DesktopCombatCoordinator {
                     world.setInput(.neutral, for: body.actorID, authority: .scripted)
                 }
             }
-            all.append(contentsOf: world.step(environment: Self.environment(from: desktopWorld)))
+            let frameEvents = world.step(environment: Self.environment(from: desktopWorld))
+            all.append(contentsOf: frameEvents)
+            endAutonomousSparringOnKnockout(frameEvents)
             restorePointerAuthorityAfterLanding()
         }
         return all
     }
 
     func body(actorID: EntityID) -> CombatBodyState? { world.body(for: actorID) }
+
+    private func endAutonomousSparringOnKnockout(_ events: [CombatEvent]) {
+        for event in events where event.kind == .knockedOut {
+            let involved = [event.actorID, event.targetID].compactMap { $0 }
+            for actorID in involved where autonomousActors.remove(actorID.raw) != nil {
+                if !pointerActors.contains(actorID.raw),
+                   manualInputs[actorID.raw] == nil {
+                    world.setInput(.neutral, for: actorID, authority: .scripted)
+                }
+            }
+        }
+    }
 
     private func restorePointerAuthorityAfterLanding() {
         for id in pointerActors.sorted() {
