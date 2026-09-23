@@ -83,7 +83,7 @@ let package = Package(
         ),
         .target(
             name: "MyPetContent",
-            dependencies: ["MyPetCore", "ZIPFoundation"],
+            dependencies: ["MyPetCore", "MyPetCombat", "ZIPFoundation"],
             path: "Sources/MyPetContent"
         ),
         .target(
