@@ -2379,7 +2379,7 @@ final class PetController {
             if !self.model.isPulling() {
                 self.combatCoordinator.beginPointerDrag(
                     actorID: self.runtimeActorID,
-                    x: Double(cursor.x), y: Double(cursor.y))
+                    x: Double(self.model.x), y: Double(self.model.yFeet))
             }
             if self.model.isPulling() {
                 self.beginPull()
@@ -2391,7 +2391,7 @@ final class PetController {
             if !self.model.isPulling() {
                 self.combatCoordinator.updatePointerDrag(
                     actorID: self.runtimeActorID,
-                    x: Double(cursor.x), y: Double(cursor.y),
+                    x: Double(self.model.x), y: Double(self.model.yFeet),
                     elapsedSeconds: 1.0 / 40.0)
             }
             if self.model.isPulling() {
