@@ -2,6 +2,7 @@ import Foundation
 import MyPetCombat
 import MyPetCore
 import MyPet2D
+import MyPetEngine
 
 /// Shared combat authority for every visible actor in one desktop session.
 /// Solo play owns one coordinator; CastSession injects one shared instance so
@@ -12,10 +13,7 @@ final class DesktopCombatCoordinator {
     let world: CombatWorld
     private var frameClock = CombatFrameClock()
     private let policy = UtilityCombatPolicy()
-    private var manualInputs: [String: FighterInputFrame] = [:]
-    private var autonomousActors = Set<String>()
-    private var pointerActors = Set<String>()
-    private var pointerResumeAuthority: [String: CombatControlAuthority] = [:]
+    private var controlRouter = ControlRouter()
     private var registeredActors = Set<String>()
 
     init() {
@@ -43,61 +41,45 @@ final class DesktopCombatCoordinator {
 
     func unregister(actorID: EntityID) {
         registeredActors.remove(actorID.raw)
-        autonomousActors.remove(actorID.raw)
-        pointerActors.remove(actorID.raw)
-        pointerResumeAuthority[actorID.raw] = nil
-        manualInputs[actorID.raw] = nil
+        controlRouter.removeActor(actorID)
         world.unregister(actorID: actorID)
         refreshSession()
     }
 
     func setManualInput(_ input: FighterInputFrame, actorID: EntityID) {
-        manualInputs[actorID.raw] = input
-        world.setAuthority(.manual, for: actorID)
+        controlRouter.setInput(input, source: .manual, for: actorID)
     }
 
     func beginManual(actorID: EntityID) {
-        autonomousActors.remove(actorID.raw)
-        manualInputs[actorID.raw] = .neutral
-        world.setAuthority(.manual, for: actorID)
+        controlRouter.deactivate(.autonomous, for: actorID)
+        controlRouter.activate(.manual, for: actorID)
         refreshSession()
     }
 
     func endManual(actorID: EntityID) {
-        manualInputs[actorID.raw] = nil
-        if pointerActors.contains(actorID.raw) {
-            pointerResumeAuthority[actorID.raw] = .scripted
-        } else {
-            world.setInput(.neutral, for: actorID, authority: .scripted)
-        }
+        controlRouter.deactivate(.manual, for: actorID)
+        applyResolvedInput(for: actorID)
         refreshSession()
     }
 
     func beginAutonomousCombat(actorID: EntityID) {
-        autonomousActors.insert(actorID.raw)
-        world.setAuthority(.autonomous, for: actorID)
+        controlRouter.activate(.autonomous, for: actorID)
         refreshSession()
     }
 
     func endAutonomousCombat(actorID: EntityID) {
-        autonomousActors.remove(actorID.raw)
-        if pointerActors.contains(actorID.raw) {
-            pointerResumeAuthority[actorID.raw] = .scripted
-        } else {
-            world.setInput(.neutral, for: actorID, authority: .scripted)
-        }
+        controlRouter.deactivate(.autonomous, for: actorID)
+        applyResolvedInput(for: actorID)
         refreshSession()
     }
 
     func beginPointerDrag(actorID: EntityID) {
-        let previous = world.body(for: actorID)?.authority ?? .scripted
-        pointerResumeAuthority[actorID.raw] = previous
-        pointerActors.insert(actorID.raw)
-        world.setInput(.neutral, for: actorID, authority: .pointer)
+        controlRouter.activate(.pointer, for: actorID)
+        applyResolvedInput(for: actorID)
     }
 
     func endPointerDrag(actorID: EntityID) {
-        guard pointerActors.contains(actorID.raw) else { return }
+        guard controlRouter.isActive(.pointer, for: actorID) else { return }
     }
 
     func advance(
@@ -112,21 +94,16 @@ final class DesktopCombatCoordinator {
             beforeFrame?()
             let snapshot = world.snapshot()
             for body in snapshot.bodies {
-                if pointerActors.contains(body.actorID.raw) {
-                    world.setInput(.neutral, for: body.actorID, authority: .pointer)
-                } else if let input = manualInputs[body.actorID.raw] {
-                    world.setInput(input, for: body.actorID, authority: .manual)
-                } else if autonomousActors.contains(body.actorID.raw) {
+                if controlRouter.isActive(.autonomous, for: body.actorID) {
                     let opponents = snapshot.bodies.filter {
                         $0.actorID != body.actorID && $0.healthState == .active
                     }
-                    world.setInput(
+                    controlRouter.setInput(
                         policy.decide(CombatObservation(selfBody: body, opponents: opponents)),
-                        for: body.actorID,
-                        authority: .autonomous)
-                } else {
-                    world.setInput(.neutral, for: body.actorID, authority: .scripted)
+                        source: .autonomous,
+                        for: body.actorID)
                 }
+                applyResolvedInput(for: body.actorID)
             }
             let frameEvents = world.step(environment: environment)
             all.append(contentsOf: frameEvents)
@@ -142,36 +119,43 @@ final class DesktopCombatCoordinator {
         var changed = false
         for event in events where event.kind == .knockedOut {
             let involved = [event.actorID, event.targetID].compactMap { $0 }
-            for actorID in involved where autonomousActors.remove(actorID.raw) != nil {
+            for actorID in involved
+            where controlRouter.isActive(.autonomous, for: actorID) {
                 changed = true
-                if !pointerActors.contains(actorID.raw),
-                   manualInputs[actorID.raw] == nil {
-                    world.setInput(.neutral, for: actorID, authority: .scripted)
-                }
+                controlRouter.deactivate(.autonomous, for: actorID)
+                applyResolvedInput(for: actorID)
             }
         }
         if changed { refreshSession() }
     }
 
     private func restorePointerAuthorityAfterLanding() {
-        for id in pointerActors.sorted() {
+        for id in registeredActors.sorted() {
             let actorID = EntityID(id)
-            guard let body = world.body(for: actorID),
+            guard controlRouter.isActive(.pointer, for: actorID),
+                  let body = world.body(for: actorID),
                   body.locomotion == .grounded else { continue }
-            pointerActors.remove(id)
-            let authority = pointerResumeAuthority.removeValue(forKey: id) ?? .scripted
-            world.setInput(.neutral, for: actorID, authority: authority)
+            controlRouter.deactivate(.pointer, for: actorID)
+            applyResolvedInput(for: actorID)
         }
     }
 
     private func refreshSession() {
-        let requested = !autonomousActors.isEmpty || !manualInputs.isEmpty
+        let requested = controlRouter.hasAnyActive([.manual, .authored, .autonomous])
         if requested, registeredActors.count >= 2 {
             _ = world.beginSession(
                 id: "desktop",
                 participants: registeredActors.sorted().map(EntityID.init))
         } else if world.session?.state == .active {
             world.endSession(cancelled: false)
+        }
+    }
+
+    private func applyResolvedInput(for actorID: EntityID) {
+        if let route = controlRouter.resolve(for: actorID) {
+            world.setInput(route.input, for: actorID, authority: route.authority)
+        } else {
+            world.setInput(.neutral, for: actorID, authority: .scripted)
         }
     }
 

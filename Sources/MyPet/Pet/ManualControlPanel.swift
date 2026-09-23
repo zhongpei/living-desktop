@@ -11,6 +11,7 @@ final class ManualControlPanel: NSPanel {
     private let inputView = ManualControlView()
     private let label = NSTextField(labelWithString: "")
     private(set) var actorName = ""
+    private var mappings = ManualControlMappingCatalog()
 
     init() {
         super.init(
@@ -38,20 +39,26 @@ final class ManualControlPanel: NSPanel {
         NotificationCenter.default.addObserver(
             forName: NSWindow.didResignKeyNotification, object: self, queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.inputView.releaseAll() }
+            Task { @MainActor in self?.inputView.focusLost() }
         }
     }
 
-    func begin(actorName: String) {
+    func setMapping(_ mapping: ManualControlMapping, for characterID: String) {
+        mappings.set(mapping, for: characterID)
+    }
+
+    func begin(actorName: String, characterID: String) {
         self.actorName = actorName
-        label.stringValue = "控制：\(actorName)\n方向键移动/跳/蹲 · Z X C / A S D 攻击 · Esc 退出"
+        let mapping = mappings.mapping(for: characterID)
+        label.stringValue = "控制：\(actorName)\n键位方案：\(mapping.id) · Esc 退出"
+        inputView.beginSession(mapping: mapping)
         center()
         makeKeyAndOrderFront(nil)
         makeFirstResponder(inputView)
     }
 
     func finish() {
-        inputView.releaseAll()
+        inputView.endSession()
         orderOut(nil)
         onExit?()
     }
@@ -64,39 +71,40 @@ final class ManualControlPanel: NSPanel {
 private final class ManualControlView: NSView {
     var onInput: ((FighterInputFrame) -> Void)?
     var onExit: (() -> Void)?
-    private var pressed = Set<UInt16>()
+    private var session = ManualControlSession()
 
     override var acceptsFirstResponder: Bool { true }
 
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 53 { onExit?(); return }
-        pressed.insert(event.keyCode)
-        emit()
+        guard let key = Self.key(for: event.keyCode) else { return }
+        onInput?(session.press(key))
     }
 
     override func keyUp(with event: NSEvent) {
-        pressed.remove(event.keyCode)
-        emit()
+        guard let key = Self.key(for: event.keyCode) else { return }
+        onInput?(session.release(key))
     }
 
-    func releaseAll() {
-        guard !pressed.isEmpty else { return }
-        pressed.removeAll()
-        emit()
+    func beginSession(mapping: ManualControlMapping) {
+        onInput?(session.begin(mapping: mapping))
     }
 
-    private func emit() {
-        let chars: [UInt16: CombatButton] = [
-            6: .x, 7: .y, 8: .z, // physical Z X C -> logical X Y Z
-            0: .a, 1: .s, 2: .d  // a s d
+    func focusLost() {
+        onInput?(session.focusLost())
+    }
+
+    func endSession() {
+        onInput?(session.end())
+    }
+
+    private static func key(for keyCode: UInt16) -> KeyboardControlKey? {
+        let keys: [UInt16: KeyboardControlKey] = [
+            123: .arrowLeft, 124: .arrowRight,
+            126: .arrowUp, 125: .arrowDown,
+            6: .keyZ, 7: .keyX, 8: .keyC,
+            0: .keyA, 1: .keyS, 2: .keyD,
         ]
-        var buttons = Set<CombatButton>()
-        for (key, button) in chars where pressed.contains(key) { buttons.insert(button) }
-        onInput?(FighterInputFrame(
-            left: pressed.contains(123),
-            right: pressed.contains(124),
-            up: pressed.contains(126),
-            down: pressed.contains(125),
-            buttons: buttons))
+        return keys[keyCode]
     }
 }

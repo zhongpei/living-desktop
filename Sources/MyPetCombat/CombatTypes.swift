@@ -11,7 +11,7 @@ public enum CombatHealthState: String, Codable, Sendable {
 }
 
 public enum CombatControlAuthority: String, Codable, Sendable {
-    case autonomous, manual, pointer, scripted
+    case autonomous, authored, manual, pointer, scripted
 }
 
 public enum CombatAttackHeight: String, Codable, Sendable {

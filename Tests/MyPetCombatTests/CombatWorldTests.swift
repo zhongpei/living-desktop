@@ -221,6 +221,46 @@ final class CombatWorldTests: XCTestCase {
         XCTAssertTrue(CombatCommandRecognizer.matches(command, buffer: buffer, facing: .right))
     }
 
+    func testUtilityAIAndManualInputUseTheSameCommandMatcher() throws {
+        func startedMove(input: FighterInputFrame) -> String? {
+            let world = CombatWorld()
+            world.register(actorID: EntityID("a"), x: 400, yFeet: 700)
+            world.register(actorID: EntityID("b"), x: 450, yFeet: 700, facing: .left)
+            XCTAssertTrue(beginSession(world))
+            world.setInput(input, for: EntityID("a"))
+            return world.step(environment: floor).first(where: {
+                $0.kind == .moveStarted && $0.actorID == EntityID("a")
+            })?.moveID
+        }
+        let observationWorld = CombatWorld()
+        observationWorld.register(actorID: EntityID("a"), x: 400, yFeet: 700)
+        observationWorld.register(actorID: EntityID("b"), x: 450, yFeet: 700, facing: .left)
+        let bodies = observationWorld.snapshot().bodies
+        let me = try XCTUnwrap(bodies.first { $0.actorID == EntityID("a") })
+        let target = try XCTUnwrap(bodies.first { $0.actorID == EntityID("b") })
+        let aiInput = UtilityCombatPolicy().decide(
+            CombatObservation(selfBody: me, opponents: [target]))
+
+        XCTAssertEqual(startedMove(input: FighterInputFrame(buttons: [.x])), "light")
+        XCTAssertEqual(startedMove(input: aiInput), "light")
+    }
+
+    func testCharacterMoveCommandsAreIndependentFromPhysicalKeyboardMapping() {
+        var manual = ManualControlSession(mapping: ManualControlMapping(
+            id: "custom",
+            bindings: [.keyD: .buttonX]))
+        _ = manual.begin()
+        let world = CombatWorld()
+        world.register(actorID: EntityID("a"), x: 400, yFeet: 700)
+        world.register(actorID: EntityID("b"), x: 450, yFeet: 700, facing: .left)
+        XCTAssertTrue(beginSession(world))
+
+        world.setInput(manual.press(.keyD), for: EntityID("a"), authority: .manual)
+        let events = world.step(environment: floor)
+
+        XCTAssertEqual(events.first(where: { $0.kind == .moveStarted })?.moveID, "light")
+    }
+
     func testHitUsesActualBoxesAndAppliesHitstun() {
         let world = CombatWorld()
         world.register(actorID: EntityID("a"), x: 400, yFeet: 700)
