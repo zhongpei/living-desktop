@@ -261,7 +261,7 @@ public final class CombatWorld {
         if body.actionTimeline != nil { return }
 
         if let move = profile.moves.first(where: {
-            CombatCommandRecognizer.matches($0.command, buffer: buffer, facing: body.facing)
+            CommandMatcher.matches($0.command, buffer: buffer, facing: body.facing)
         }) {
             let instanceID = body.rules.actionSequence ?? 0
             body.rules.actionSequence = instanceID + 1
