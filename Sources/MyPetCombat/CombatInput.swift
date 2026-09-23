@@ -37,7 +37,7 @@ public struct CombatInputBuffer: Codable, Equatable, Sendable {
     }
 
     public var newest: FighterInputFrame { storage.last ?? .neutral }
-    public var framesNewestFirst: [FighterInputFrame] { storage.reversed() }
+    public var framesNewestFirst: [FighterInputFrame] { Array(storage.reversed()) }
 }
 
 public enum CombatDirectionToken: String, Codable, Sendable {
@@ -118,16 +118,18 @@ public enum CombatCommandSynthesizer {
             if let direction = step.direction {
                 switch direction {
                 case .neutral: break
-                case .forward: facing == .right ? (frame.right = true) : (frame.left = true)
-                case .back: facing == .right ? (frame.left = true) : (frame.right = true)
+                case .forward:
+                    if facing == .right { frame.right = true } else { frame.left = true }
+                case .back:
+                    if facing == .right { frame.left = true } else { frame.right = true }
                 case .up: frame.up = true
                 case .down: frame.down = true
                 case .downForward:
                     frame.down = true
-                    facing == .right ? (frame.right = true) : (frame.left = true)
+                    if facing == .right { frame.right = true } else { frame.left = true }
                 case .downBack:
                     frame.down = true
-                    facing == .right ? (frame.left = true) : (frame.right = true)
+                    if facing == .right { frame.left = true } else { frame.right = true }
                 }
             }
             if let button = step.button { frame.buttons.insert(button) }
