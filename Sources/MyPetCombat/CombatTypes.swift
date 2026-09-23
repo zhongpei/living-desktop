@@ -14,7 +14,7 @@ public enum CombatHealthState: String, Codable, Sendable {
 }
 
 public enum CombatControlAuthority: String, Codable, Sendable {
-    case autonomous, manual, scripted
+    case autonomous, manual, pointer, scripted
 }
 
 public struct CollisionBox: Codable, Equatable, Sendable {
