@@ -129,8 +129,8 @@ struct Settings: Codable {
     var localBrainGoalSeed: Int? = 42
     /// 本地决策脑聊天采样：与目标 JSON 分开，允许更自然的短句。
     var localBrainChatTemperature = 0.3
-    var localBrainChatTopP = 0.8
-    var localBrainChatTopK = 20
+    var localBrainChatTopP = 1.0
+    var localBrainChatTopK = 0
     var localBrainChatMaxTokens = 48
     var localBrainChatSeed: Int?
 

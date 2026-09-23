@@ -66,7 +66,7 @@ struct BrainProfile: Equatable {
     struct SamplingSection: Equatable {
         var `default` = Sampling()
         /// 0.8B 实测稳定区间：一句话角色反应使用低温和短输出。
-        var chat = Sampling(temperature: 0.3, topP: 0.8, topK: 20, maxTokens: 48, seed: nil)
+        var chat = Sampling(temperature: 0.3, topP: 1.0, topK: 0, maxTokens: 48, seed: nil)
     }
 
     struct CacheSection: Equatable {
@@ -242,5 +242,21 @@ struct BrainProfile: Equatable {
         static let valid: Set<String> = [
             "social", "curiosity", "playfulness", "diligence", "empathy", "independence", "teasing",
         ]
+    }
+}
+
+/// 场景只调整用户配置的基准温度；其他参数和 seed 原样保留。
+enum SpeechSamplingPolicy {
+    static func resolve(_ intent: SpeechIntent, from base: BrainProfile.Sampling) -> BrainProfile.Sampling {
+        let offset: Double
+        switch intent {
+        case .commentActivity: offset = -0.1
+        case .complain: offset = 0
+        case .greet, .chatter: offset = 0.05
+        case .tease: offset = 0.1
+        }
+        var value = base
+        value.temperature = min(1, max(0, base.temperature + offset))
+        return value
     }
 }

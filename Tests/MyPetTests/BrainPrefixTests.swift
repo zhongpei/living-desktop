@@ -76,14 +76,15 @@ final class BrainPrefixTests: XCTestCase {
                        "没有角色同类示例时使用 0-shot 前缀")
         XCTAssertFalse(messages[0]["content"]?.contains("chat JSON") ?? false,
                        "前缀不依赖实现术语")
-        XCTAssertTrue(messages[0]["content"]?.contains("OUTPUT SCHEMA") == true)
-        XCTAssertTrue(messages[0]["content"]?.contains("emotion") == true)
+        XCTAssertTrue(messages[0]["content"]?.contains("只输出台词本身") == true)
+        XCTAssertTrue(messages[0]["content"]?.contains("不加解释、标签、JSON") == true)
+        XCTAssertFalse(messages[0]["content"]?.contains("emotion") == true)
         XCTAssertEqual(messages.last?["content"], "")
 
         let text = BrainPrefixBuilder.chatMessage(
             intent: .tease, world: makeWorld(), brain: BrainState(), personality: .linDaiyu)
-        XCTAssertTrue(text.contains("INTENT tease"))
-        XCTAssertTrue(text.contains("PET_STYLE"))
+        XCTAssertTrue(text.contains("用户刚刚在桌面上逗了你一下"))
+        XCTAssertTrue(text.contains("有角色味的玩笑或挑衅"))
         XCTAssertTrue(text.contains("active_app=Codex"))
 
         let chat = BrainPrefixBuilder.chatMessage(
@@ -93,7 +94,7 @@ final class BrainPrefixTests: XCTestCase {
         XCTAssertTrue(chat.contains("今天辛苦了"))
     }
 
-    func testChatPrefixUsesOnlyTheMatchingCharacterFewShot() {
+    func testChatPrefixUsesCharacterVoiceWithoutCopyableDialogueFewShot() {
         let label: (String) -> LocalizedLabel = { LocalizedLabel(zhHans: $0, en: $0) }
         let dialogue = DialogueProfile(
             dialogueStyle: label("傲气短句"), selfReference: label("俺老孙"),
@@ -108,9 +109,21 @@ final class BrainPrefixTests: XCTestCase {
             dialogue: dialogue, intent: .tease)
         let combined = messages.compactMap { $0["content"] }.joined(separator: "\n")
         XCTAssertTrue(combined.contains("傲气短句"))
-        XCTAssertTrue(combined.contains("这也瞒得过俺老孙？"))
-        XCTAssertFalse(combined.contains("俺老孙来也！"), "不得混入其他言语行为的示例")
-        XCTAssertEqual(messages.filter { $0["role"] == "assistant" }.count, 1)
+        XCTAssertTrue(combined.contains("俺老孙"))
+        XCTAssertFalse(combined.contains("这也瞒得过俺老孙？"), "0.8B 不应获得可直接照抄的完整台词")
+        XCTAssertEqual(messages.filter { $0["role"] == "assistant" }.count, 0)
+    }
+
+    func testChatMessagesUseNaturalChineseDirectionsPerScene() {
+        let world = makeWorld()
+        let complain = BrainPrefixBuilder.chatMessage(
+            intent: .complain, world: world, brain: BrainState(), personality: .default)
+        let comment = BrainPrefixBuilder.chatMessage(
+            intent: .commentActivity, world: world, brain: BrainState(), personality: .default)
+        XCTAssertTrue(complain.contains("轻松的桌宠互动"))
+        XCTAssertTrue(comment.contains("不虚构成功或失败"))
+        XCTAssertFalse(complain.contains("INTENT"))
+        XCTAssertFalse(comment.contains("PET_STYLE"))
     }
 
     func testFewshotTurnsAreWellFormedAndDeterministic() {
