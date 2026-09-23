@@ -18,12 +18,56 @@
 - 使用范围：`Sources/MyPet/AX/AXWindow.swift`（AXUIElement 属性读写的调用
   模式，提取自其 `AXExtension.swift` / `AccessibilityElement.swift` 并按需重写）。
 
-以上文件均保留了指向原始项目的许可声明。其余部分为本仓库原创（MIT，
-见仓库根 LICENSE）。
+以上文件均保留了指向原始项目的许可声明。本仓库整体以 GNU GPL v3
+发布，见仓库根 LICENSE；上述 MIT 代码可在 GPL v3 下再分发。
 
 仅作行为/思想参考、未复制代码的项目：clawd（无许可证，零拷贝）、
 ModDrag（无许可证，零拷贝）、MacArkPet（GPL-3.0，零拷贝）、
 perchling（MIT，仅动画时间线思想）。
+
+## F.LF — GNU GPL v3
+
+- 来源：https://github.com/Project-F/F.LF
+- 本次核对版本：`21341737e4154d06d9784e9a629c9dd4db9148d6`
+- 使用范围：`Sources/MyPetCombatCPU/ReferenceAlgorithms.swift` 中
+  `keypress`、`keyseq`、缓冲与 `fetch` 的控制器边界。实现从 JavaScript
+  控制器移植为强类型 Swift，并由固定行为测试约束。
+- 许可证：GNU GPL v3，与本仓库根 LICENSE 相同。
+
+## Surfacer — MIT License
+
+- 来源：https://github.com/SnoringCatGames/surfacer
+- 本次核对版本：`04058c560e8804a15697e6592fda3f4bfa5057cc`
+- Copyright (c) 2021-2026 Snoring Cat LLC
+- Copyright (c) 2019-2021 Levi Lindsey
+- 使用范围：`Sources/MyPetCombatCPU/SurfaceGraph.swift` 的 surface/trajectory
+  分层、确定性路径图与行走/跳跃/下落边语义；实现缩减并改写为 Swift。
+
+## MctsAi23i — no license, compatibility only
+
+- 来源：https://github.com/TeamFightingICE/MctsAi23i
+- 本次核对版本：`b05afc13f6b0815ff154d19ca7e76c99c172799b`
+- 使用范围：只复现公开可观察的 UCT 参数和通用 UCB1 数学公式；没有复制
+  Java 源码。仓库许可证改为 GPL v3 不会替无许可证代码补授权。
+
+## FightingICE — author-approved GPL v3 use
+
+- 来源：https://github.com/TeamFightingICE/FightingICE
+- 本次核对版本：`188fca0c13151b559ec3a4ca60b90a9b7efb6cc3`
+- 授权依据：项目所有者已向 FightingICE 作者确认可在本 GPL-3.0 仓库中
+  直接参考和移植。
+- 使用范围：`Sources/MyPetCombatCPU/ReferenceAlgorithms.swift` 的
+  CommandCenter 队列边界，以及 `ClassicCombatCPU` 使用真实 CombatWorld
+  checkpoint 执行固定帧数 rollout 的 simulator 边界。
+
+## OpenBOR — BSD-style License
+
+- 来源：https://github.com/DCurrent/openbor
+- 本次核对版本：`787b6770409935137579715febf80cf7a529b748`
+- Copyright (c) 2003, Roel van Mastbergen & Senile Team
+- Copyright (c) 2004, OpenBOR Team
+- 使用范围：Classic Combat CPU 的 chase、avoid、aggression 和地形风险行为
+  词汇参考；没有复制 OpenBOR C 源码。
 
 
 ## Fighters Paradise — MIT License

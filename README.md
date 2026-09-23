@@ -63,4 +63,4 @@ docs/combat-runtime.md 当前过渡 v1 的实现与限制
 
 ## 许可证
 
-代码采用 MIT License。第三方归属见 [NOTICE.md](NOTICE.md)。
+代码采用 GNU GPL v3。第三方归属与兼容许可证见 [NOTICE.md](NOTICE.md)。
