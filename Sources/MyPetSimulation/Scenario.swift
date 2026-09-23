@@ -62,6 +62,9 @@ public struct HarnessScenario: Codable, Sendable, Equatable {
     /// Director-level relationship/objective input; contains no spatial facts.
     public var playBrief: QwenPlayBrief?
     public var pipeline: SemanticPipelineConfiguration?
+    /// Optional combat track. Empty keeps legacy story-only scenarios byte-compatible.
+    public var combatActors: [VirtualCombatActor]
+    public var combatInputs: [CombatInputEvent]
     public var expectations: ScenarioExpectations
 
     public init(
@@ -77,6 +80,8 @@ public struct HarnessScenario: Codable, Sendable, Equatable {
         playSpace: VirtualPlaySpace? = nil,
         playBrief: QwenPlayBrief? = nil,
         pipeline: SemanticPipelineConfiguration? = nil,
+        combatActors: [VirtualCombatActor] = [],
+        combatInputs: [CombatInputEvent] = [],
         expectations: ScenarioExpectations = ScenarioExpectations()
     ) {
         self.id = id
@@ -91,12 +96,15 @@ public struct HarnessScenario: Codable, Sendable, Equatable {
         self.playSpace = playSpace
         self.playBrief = playBrief
         self.pipeline = pipeline
+        self.combatActors = combatActors
+        self.combatInputs = combatInputs
         self.expectations = expectations
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, seed, stepMilliseconds, durationTicks, entities, slots, events
-        case requireAllClaimsReleased, desktop, playSpace, playBrief, pipeline, expectations
+        case requireAllClaimsReleased, desktop, playSpace, playBrief, pipeline
+        case combatActors, combatInputs, expectations
     }
 
     public init(from decoder: Decoder) throws {
@@ -114,6 +122,8 @@ public struct HarnessScenario: Codable, Sendable, Equatable {
             playSpace: try values.decodeIfPresent(VirtualPlaySpace.self, forKey: .playSpace),
             playBrief: try values.decodeIfPresent(QwenPlayBrief.self, forKey: .playBrief),
             pipeline: try values.decodeIfPresent(SemanticPipelineConfiguration.self, forKey: .pipeline),
+            combatActors: try values.decodeIfPresent([VirtualCombatActor].self, forKey: .combatActors) ?? [],
+            combatInputs: try values.decodeIfPresent([CombatInputEvent].self, forKey: .combatInputs) ?? [],
             expectations: try values.decodeIfPresent(ScenarioExpectations.self, forKey: .expectations) ?? ScenarioExpectations())
     }
 
@@ -131,6 +141,8 @@ public struct HarnessScenario: Codable, Sendable, Equatable {
         try values.encodeIfPresent(playSpace, forKey: .playSpace)
         try values.encodeIfPresent(playBrief, forKey: .playBrief)
         try values.encodeIfPresent(pipeline, forKey: .pipeline)
+        if !combatActors.isEmpty { try values.encode(combatActors, forKey: .combatActors) }
+        if !combatInputs.isEmpty { try values.encode(combatInputs, forKey: .combatInputs) }
         try values.encode(expectations, forKey: .expectations)
     }
 
