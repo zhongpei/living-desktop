@@ -2224,7 +2224,7 @@ final class PetController {
             return
         }
         if manualInput.left != manualInput.right {
-            model.startWalk(manualInput.right ? 1 : -1, speed: PetModel.hurrySpeed)
+            model.startWalk(manualInput.right ? 1 : -1, speed: PetModel.walkSpeed)
         } else {
             model.stopWalk()
         }
