@@ -48,7 +48,8 @@ swift test
 Sources/MyPetEntry/  可执行程序的薄入口
 Sources/MyPet/       MyPetApp：AppKit 装配、菜单和角色控制
 Sources/MyPetCore/   世界事实、纯数据定义和确定性规则
-Sources/MyPetCombat/ 过渡 v1 的 60Hz 身体/格斗实现；通用身体将迁往 MyPet2D
+Sources/MyPet2D/     通用几何、身体、surface、重力、落地、拖拽与 push 解算
+Sources/MyPetCombat/ 输入、招式、命中、防御、HP、KO 与恢复规则
 Sources/MyPetEngine/ 唯一运行时、语义链和剧情协调
 Sources/MyPetSimulation/ 虚拟桌面、场景和确定性回放（测试/Harness 使用）
 Sources/MyPetContent/ 内容包校验、安装登记与目录解析

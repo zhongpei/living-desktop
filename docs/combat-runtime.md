@@ -1,11 +1,11 @@
 # Transitional Body and Combat Runtime (v1)
 
 > **Transitional implementation note.** This document describes the v1 implementation
-> introduced before the final module split. The authoritative target architecture is
+> introduced during the final module split. The authoritative target architecture is
 > [Unified 2D Combat-Capable Runtime](unified-2d-combat-runtime.md). In particular, generic
-> body physics still lives in `MyPetCombat`, `PetModel` and `CombatWorld` temporarily share
-> position responsibility, the combat simulator is still a separate runner, and rendering
-> has not yet reached the final immutable `RenderSnapshot` interface.
+> body physics now lives in `MyPet2D`, while `PetModel` and `BodyWorld` still temporarily
+> share position responsibility, the combat simulator remains a separate runner, and
+> rendering has not yet reached the final immutable `RenderSnapshot` interface.
 
 Living Desktop v1 introduces a deterministic combat/body path alongside the existing desktop
 body as a migration step. Fighting is a capability of the world, not a second game mode, but
@@ -21,10 +21,15 @@ Goal / Story / Relationships                 20 Hz semantic cadence
               |
               v
 +-----------------------------------------------+
-| MyPetCombat                                   |
+| MyPet2D                                       |
 | fixed 60 Hz                                   |
-| input buffer / command matcher                |
 | movement / gravity / surfaces / push boxes    |
++----------------------+------------------------+
+                       |
+                       v
++-----------------------------------------------+
+| MyPetCombat                                   |
+| input buffer / command matcher                |
 | hit boxes / hurt boxes / guard / hitstop      |
 | hitstun / knockback / KO / recovery           |
 +----------------------+------------------------+
@@ -64,7 +69,8 @@ does not require a global event tap or Input Monitoring permission.
 
 All coordinates use the existing flipped desktop world (origin at the main screen top-left,
 Y positive downward). Screen floors and real window top/bottom edges are projected as
-`CombatSurface` values.
+`Surface` values consumed by `BodyWorld`. The v1 `CombatSurface` name remains only as a
+source-compatibility alias.
 
 Collision is purpose-specific:
 
