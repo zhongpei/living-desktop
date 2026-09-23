@@ -75,7 +75,8 @@ public enum CombatCommandRecognizer {
             var matched = false
             let limit = min(frames.count, cursor + step.maxGapFrames + 1)
             while cursor < limit {
-                if satisfies(step, input: frames[cursor], facing: facing) {
+                let previous = cursor + 1 < frames.count ? frames[cursor + 1] : .neutral
+                if satisfies(step, input: frames[cursor], previous: previous, facing: facing) {
                     matched = true
                     cursor += 1
                     break
@@ -88,8 +89,11 @@ public enum CombatCommandRecognizer {
     }
 
     private static func satisfies(_ step: CombatCommandStep, input: FighterInputFrame,
+                                  previous: FighterInputFrame,
                                   facing: CombatFacing) -> Bool {
-        if let button = step.button, !input.buttons.contains(button) { return false }
+        if let button = step.button {
+            guard input.buttons.contains(button), !previous.buttons.contains(button) else { return false }
+        }
         guard let direction = step.direction else { return true }
         switch direction {
         case .neutral: return !input.left && !input.right && !input.up && !input.down
