@@ -54,7 +54,6 @@ public struct SkeletonRig2D: Equatable, Sendable {
         ])
     }
 }
-
 public struct RetargetedSkeletonPose: Equatable, Sendable {
     public var time: Double
     /// Source-frame hip position, normalized to [0, 1]-style frame coordinates.
@@ -321,4 +320,3 @@ public enum SkeletonMotionRuntimeError: LocalizedError, Equatable {
         }
     }
 }
-
