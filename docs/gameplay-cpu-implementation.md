@@ -43,6 +43,17 @@ Implemented design items:
   inputs, and last decision in checkpoint/replay;
 - manual keyboard mapping remains independent: physical key -> logical control
   -> `FighterInputFrame` -> authored character command.
+- `ClassicGameplayCPU` is the upper activity arbiter. Formal rounds commit to
+  combat; free play scores explore/window/rest/observe, keeps 60-180 frame
+  commitments, records surface visits, and emits semantic platform intent only;
+- family/sequence-aware `ActionHistory`, lifetime move-use counts and a bounded
+  novelty reserve prevent legal but lower-damage moves from starving forever;
+- one shared energy reserve controls projectile, special, super, power-up,
+  defensive burst and window intent; full gauge prioritizes super before power-up;
+- deterministic team requests use mapped `assist`/`tag` controls, while the
+  bench assist move still enters through the normal input buffer and matcher;
+- neutral collateral escalation is checkpointed and incidentals receive the
+  same autonomous input path only after joining.
 
 ## Simulator defects found and fixed
 
@@ -62,10 +73,12 @@ not reveal:
 ## Evidence gates
 
 `MyPetHarness combat-soak` runs the production `GameRuntime`, `CombatRuntime`,
-`BodyWorld`, CPU, projectile, KO and recovery code twice and requires exact
-digest/event equality. It also requires all nine Lin Daiyu combat moves,
-projectile spawn/expiry, hit, KO, downed, recovery-start and recovered events,
-finite state, exact frame count, and simulation p95 below 16.67 ms.
+`BodyWorld`, CPU, team/tag/assist, neutral escalation, shared energy, combo,
+projectile, KO and recovery code twice and requires exact digest/event equality.
+The 90-second smoke requires both characters' base move coverage. Runs of ten
+minutes or more additionally require super, power-up, burst and assist coverage
+for both characters. Every run also requires finite state, exact frame count,
+and simulation p95 below 16.67 ms.
 
 The selected first version is MCTS. RHEA remains an explicit follow-up policy;
 it is not required for the `gameplay-cpu.md` first-version completion gate.

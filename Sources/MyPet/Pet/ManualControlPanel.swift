@@ -113,6 +113,7 @@ private final class ManualControlView: NSView {
             126: .arrowUp, 125: .arrowDown,
             6: .keyZ, 7: .keyX, 8: .keyC,
             0: .keyA, 1: .keyS, 2: .keyD,
+            12: .keyQ, 13: .keyW, 14: .keyE, 15: .keyR,
         ]
         return keys[keyCode]
     }

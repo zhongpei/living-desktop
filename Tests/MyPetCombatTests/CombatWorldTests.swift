@@ -153,7 +153,9 @@ final class CombatWorldTests: XCTestCase {
             _ = world.step(environment: floor)
         }
 
-        XCTAssertEqual(world.body(for: EntityID("b"))?.hp, 970)
+        // Three contacts remain legal at frames 0/2/4; combo and repeated-move
+        // scaling apply 10 + 8 + 6 damage.
+        XCTAssertEqual(world.body(for: EntityID("b"))?.hp, 976)
     }
 
     func testEqualClashLevelsSuppressSameFrameDamageDeterministically() {

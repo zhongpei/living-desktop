@@ -13,7 +13,8 @@ final class ManualControlSessionTests: XCTestCase {
             session.input,
             FighterInputFrame(
                 left: true, right: true, up: true, down: true,
-                buttons: Set(CombatButton.allCases)))
+                buttons: Set(CombatButton.allCases),
+                systemControls: Set(CombatSystemControl.allCases)))
 
         XCTAssertEqual(session.focusLost(), .neutral)
         XCTAssertTrue(session.isActive)

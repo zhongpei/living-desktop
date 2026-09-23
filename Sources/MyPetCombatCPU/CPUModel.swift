@@ -161,6 +161,8 @@ public struct ClassicCombatCPUCheckpoint: Codable, Equatable, Sendable {
     var recentMoves: [String]
     var lastIssuedInput: FighterInputFrame
     var surfaceGraph: DynamicSurfaceGraph?
+    var actionHistory: ActionHistory?
+    var moveUseCounts: [String: Int]?
 }
 
 struct CombatCPUOutputCheckpoint: Codable, Equatable, Sendable {

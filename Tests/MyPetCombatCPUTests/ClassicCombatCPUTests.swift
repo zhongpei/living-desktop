@@ -168,6 +168,58 @@ final class ClassicCombatCPUTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(firstGuardFrame ?? 0, 15)
     }
 
+    func testCPUUsesReservedFullGaugeBurstAgainstImmediateCloseThreat() {
+        let light = CombatMoveDefinition(
+            id: "light", command: .button(.x), startupFrames: 3,
+            activeFrames: 2, recoveryFrames: 6,
+            hit: CombatHitDefinition(damage: 30, hitStopFrames: 0),
+            visualAction: "attack")
+        let superMove = CombatMoveDefinition(
+            id: "super", command: .button(.z), startupFrames: 3,
+            activeFrames: 2, recoveryFrames: 6,
+            hit: CombatHitDefinition(damage: 300, hitStopFrames: 0),
+            visualAction: "super",
+            resourceRules: MoveResourceRules(
+                family: .superMove, startCost: 300))
+        let burst = CombatMoveDefinition(
+            id: "burst", command: .button(.s), startupFrames: 0,
+            activeFrames: 2, recoveryFrames: 6,
+            hit: CombatHitDefinition(damage: 20, hitStopFrames: 0),
+            visualAction: "burst",
+            resourceRules: MoveResourceRules(family: .burst, startCost: 300),
+            systemControl: .defensiveBurst)
+        let profile = CombatProfile(moves: [light, superMove, burst])
+        var me = CombatBodyState(actorID: EntityID("me"), x: 300, yFeet: 700)
+        me.gameplayEnergy = GameplayEnergyState(current: 300)
+        let enemy = CombatBodyState(
+            actorID: EntityID("enemy"), x: 350, yFeet: 700, facing: .left)
+        var cpu = ClassicCombatCPU(actorID: me.actorID, difficulty: .normal, seed: 19)
+
+        let defensive = cpu.advance(CPUCombatObservation(
+            frame: 0, selfBody: me, opponents: [enemy],
+            selfProfile: profile, opponentProfiles: ["enemy": profile],
+            environment: floor))
+        XCTAssertEqual(defensive.moveID, "burst")
+        XCTAssertEqual(defensive.input.systemControls, [.defensiveBurst])
+    }
+
+    func testCPUApproachesWhenAttackBoxCannotYetReachHurtBox() {
+        let profile = testProfile()
+        let me = CombatBodyState(actorID: EntityID("me"), x: 300, yFeet: 700)
+        let enemy = CombatBodyState(
+            actorID: EntityID("enemy"), x: 402, yFeet: 700, facing: .left)
+        var cpu = ClassicCombatCPU(actorID: me.actorID, difficulty: .normal, seed: 23)
+
+        let output = cpu.advance(CPUCombatObservation(
+            frame: 0, selfBody: me, opponents: [enemy],
+            selfProfile: profile, opponentProfiles: ["enemy": profile],
+            environment: floor))
+
+        XCTAssertEqual(output.intent, .approach)
+        XCTAssertNil(output.moveID)
+        XCTAssertTrue(output.input.right)
+    }
+
     private var floor: BodyEnvironment {
         BodyEnvironment(
             bounds: Rect2D(x: 0, y: 0, width: 1000, height: 800),

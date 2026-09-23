@@ -69,6 +69,12 @@ public struct ControlRouter: Codable, Equatable, Sendable {
         }
     }
 
+    public func actorIDs(activeIn sources: Set<ControlSource>) -> [EntityID] {
+        slots.compactMap { id, actorSlots in
+            sources.contains(where: { actorSlots[$0] != nil }) ? EntityID(id) : nil
+        }.sorted { $0.raw < $1.raw }
+    }
+
     public func resolve(for actorID: EntityID) -> RoutedFighterInput? {
         guard let actorSlots = slots[actorID.raw] else { return nil }
         for source in Self.priority {

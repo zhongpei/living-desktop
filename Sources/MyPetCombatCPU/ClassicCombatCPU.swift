@@ -26,7 +26,8 @@ public struct ClassicCombatCPU: Sendable {
             history: [], pendingInputs: [], targetID: nil, slot: nil,
             lastDecisionFrame: .min,
             lastOutput: CombatCPUOutputCheckpoint(), recentMoves: [],
-            lastIssuedInput: .neutral, surfaceGraph: nil)
+            lastIssuedInput: .neutral, surfaceGraph: nil, actionHistory: ActionHistory(),
+            moveUseCounts: [:])
     }
 
     public init(checkpoint: ClassicCombatCPUCheckpoint) {
@@ -44,6 +45,23 @@ public struct ClassicCombatCPU: Sendable {
               observation.selfBody.locomotion != .tossed else {
             state.pendingInputs.removeAll()
             return issue(.neutral, intent: .wait)
+        }
+
+        if (observation.selfBody.phase == .hitStun ||
+                observation.selfBody.phase == .blockStun),
+           let burst = observation.selfProfile.moves.first(where: {
+               $0.systemControl == .defensiveBurst &&
+                   observation.selfBody.gameplayEnergy.current >=
+                       $0.effectiveResourceRules.startCost
+           }) {
+            if state.moveUseCounts == nil { state.moveUseCounts = [:] }
+            state.moveUseCounts?[burst.id, default: 0] += 1
+            state.lastOutput = CombatCPUOutputCheckpoint(
+                intent: .attack, targetID: state.targetID,
+                moveID: burst.id, utilityScore: 1_000, usedSearch: false)
+            return issue(
+                FighterInputFrame(systemControls: [.defensiveBurst]),
+                from: state.lastOutput)
         }
 
         if !state.pendingInputs.isEmpty {
@@ -71,6 +89,22 @@ public struct ClassicCombatCPU: Sendable {
         guard let target else { return issue(.neutral, intent: .wait) }
 
         let distance = abs(target.position.x - observation.selfBody.position.x)
+        if distance <= 115,
+           let burst = observation.selfProfile.moves.first(where: {
+               $0.systemControl == .defensiveBurst &&
+                   (state.moveUseCounts?[$0.id, default: 0] ?? 0) == 0 &&
+                   observation.selfBody.gameplayEnergy.current >=
+                       $0.effectiveResourceRules.startCost
+           }) {
+            if state.moveUseCounts == nil { state.moveUseCounts = [:] }
+            state.moveUseCounts?[burst.id, default: 0] += 1
+            state.lastOutput = CombatCPUOutputCheckpoint(
+                intent: .attack, targetID: target.actorID,
+                moveID: burst.id, utilityScore: 1_000, usedSearch: false)
+            return issue(
+                FighterInputFrame(systemControls: [.defensiveBurst]),
+                from: state.lastOutput)
+        }
         if target.phase == .active, distance <= 115 {
             let back = target.position.x >= observation.selfBody.position.x
                 ? FighterInputFrame(left: true)
@@ -88,6 +122,35 @@ public struct ClassicCombatCPU: Sendable {
             return issue(.neutral, from: state.lastOutput)
         }
         state.lastDecisionFrame = observation.frame
+
+        let reservesFirstBurst = observation.selfProfile.moves.contains {
+            $0.systemControl == .defensiveBurst &&
+                (state.moveUseCounts?[$0.id, default: 0] ?? 0) == 0
+        }
+        if !reservesFirstBurst,
+           observation.selfBody.powerUpFrames == 0,
+           observation.selfBody.gameplayEnergy.current >= 240,
+           observation.selfBody.gameplayEnergy.current <
+               observation.selfBody.gameplayEnergy.maximum,
+           !(state.actionHistory ?? ActionHistory()).entries.contains(where: {
+               $0.family == .powerUp
+           }),
+           let powerUp = observation.selfProfile.moves.first(where: {
+               $0.systemControl == .powerUp &&
+                   observation.selfBody.gameplayEnergy.current >=
+                       $0.effectiveResourceRules.startCost
+           }) {
+            state.lastOutput = CombatCPUOutputCheckpoint(
+                intent: .attack, targetID: target.actorID,
+                moveID: powerUp.id, utilityScore: 1_000, usedSearch: false)
+            var history = state.actionHistory ?? ActionHistory()
+            history.record(id: powerUp.id, family: .powerUp)
+            state.actionHistory = history
+            state.moveUseCounts?[powerUp.id, default: 0] += 1
+            return issue(
+                FighterInputFrame(systemControls: [.powerUp]),
+                from: state.lastOutput)
+        }
 
         let slot = engagementSlot(
             selfBody: observation.selfBody, target: target,
@@ -130,11 +193,22 @@ public struct ClassicCombatCPU: Sendable {
         } else {
             selected = candidates[0]
         }
-        state.pendingInputs = CombatCommandSynthesizer.frames(
-            for: selected.move.command, facing: observation.selfBody.facing)
+        if let control = selected.move.systemControl {
+            state.pendingInputs = [FighterInputFrame(systemControls: [control]), .neutral]
+        } else {
+            state.pendingInputs = CombatCommandSynthesizer.frames(
+                for: selected.move.command, facing: observation.selfBody.facing)
+        }
         state.recentMoves.append(selected.move.id)
+        if state.moveUseCounts == nil { state.moveUseCounts = [:] }
+        state.moveUseCounts?[selected.move.id, default: 0] += 1
         state.recentMoves = Array(state.recentMoves.suffix(
             max(4, observation.selfProfile.moves.count)))
+        var history = state.actionHistory ?? ActionHistory()
+        history.record(
+            id: selected.move.id,
+            family: selected.move.effectiveResourceRules.family)
+        state.actionHistory = history
         state.lastOutput = CombatCPUOutputCheckpoint(
             intent: .attack, targetID: target.actorID, slot: slot,
             moveID: selected.move.id, utilityScore: selected.score,
@@ -270,7 +344,33 @@ public struct ClassicCombatCPU: Sendable {
         let edgeDistance = surface.map {
             min(selfBody.position.x - $0.left, $0.right - selfBody.position.x)
         } ?? 0
-        let scored: [ScoredMove] = profile.moves.map { move in
+        let reservingForSuper = selfBody.gameplayEnergy.current >= 240 &&
+            profile.moves.contains {
+                $0.effectiveResourceRules.family == .superMove
+            }
+        let reservingForBurst = profile.moves.contains {
+            $0.systemControl == .defensiveBurst &&
+                (state.moveUseCounts?[$0.id, default: 0] ?? 0) == 0
+        }
+        let unseenResourceCost = profile.moves.filter {
+            $0.systemControl == nil &&
+                (state.moveUseCounts?[$0.id, default: 0] ?? 0) == 0 &&
+                $0.effectiveResourceRules.startCost > 0 &&
+                $0.effectiveResourceRules.family != .superMove
+        }.map { $0.effectiveResourceRules.startCost }.min()
+        let reservingForUnseen = unseenResourceCost.map {
+            selfBody.gameplayEnergy.current < $0
+        } ?? false
+        let scored: [ScoredMove] = profile.moves.filter {
+            $0.systemControl == nil
+        }.filter {
+            !reservingForSuper || $0.effectiveResourceRules.startCost == 0 ||
+                $0.effectiveResourceRules.family == .superMove
+        }.filter {
+            !reservingForUnseen || $0.effectiveResourceRules.startCost == 0
+        }.filter {
+            !reservingForBurst || $0.effectiveResourceRules.startCost == 0
+        }.map { move in
             let reach = move.projectile == nil
                 ? max(1, move.hit.attackBoxes.map(\.rect.maxX).max() ?? 1)
                 : 320
@@ -290,12 +390,23 @@ public struct ClassicCombatCPU: Sendable {
                 ? Double(remainingFrames) * 2 : 0
             let throwBonus = move.hit.attackHeight == .throwAttack && distance <= 70 ? 55.0 : 0
             let diversityBonus = state.recentMoves.contains(move.id) ? 0.0 : 55.0
+            let lifetimeUses = state.moveUseCounts?[move.id, default: 0] ?? 0
+            let scarcityBonus = lifetimeUses == 0 ? 180.0 : 35.0 / Double(lifetimeUses + 1)
+            let resource = move.effectiveResourceRules
+            let energy = selfBody.gameplayEnergy
+            let reservePressure = energy.current <= 60 ? 2.0 :
+                (energy.current < 150 ? 1.0 : 0.2)
+            let energyPenalty = Double(resource.startCost) * reservePressure
+            let historyPenalty = (state.actionHistory ?? ActionHistory())
+                .repetitionPenalty(id: move.id, family: resource.family)
             let score = Double(expectedDamage) + hitChance * 60 + vulnerabilityBonus +
-                throwBonus + diversityBonus - exposure - terrainRisk -
-                Double(repetition * 55)
+                throwBonus + diversityBonus + scarcityBonus - exposure - terrainRisk -
+                Double(repetition * 55) - energyPenalty - historyPenalty
             return ScoredMove(move: move, score: score)
         }
         let reachable: [ScoredMove] = scored.filter { candidate in
+            guard selfBody.gameplayEnergy.current >=
+                    candidate.move.effectiveResourceRules.startCost else { return false }
             if candidate.move.projectile != nil {
                 let repeated = state.recentMoves.suffix(2).allSatisfy {
                     $0 == candidate.move.id
@@ -303,7 +414,10 @@ public struct ClassicCombatCPU: Sendable {
                 return distance <= 360.0 && !repeated
             }
             let reach = candidate.move.hit.attackBoxes.map { $0.rect.maxX }.max() ?? 0
-            let threshold = Swift.max(55.0, reach + 28.0)
+            // Leave only a small allowance for the opponent's inward HurtBox.
+            // A larger heuristic made both CPUs stop around 100 px apart and
+            // repeatedly swing just outside the real collision rectangles.
+            let threshold = Swift.max(55.0, reach + 18.0)
             return distance <= threshold
         }
         return reachable.sorted {

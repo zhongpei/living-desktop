@@ -2,6 +2,20 @@ import AppKit
 import CoreGraphics
 import MyPetCore
 
+public struct CombatHUDSnapshot: Equatable, Sendable {
+    public let hp: Int
+    public let maxHP: Int
+    public let energy: Int
+    public let maxEnergy: Int
+    public let active: Bool
+
+    public init(hp: Int, maxHP: Int, energy: Int, maxEnergy: Int, active: Bool) {
+        self.hp = max(0, hp); self.maxHP = max(1, maxHP)
+        self.energy = max(0, energy); self.maxEnergy = max(1, maxEnergy)
+        self.active = active
+    }
+}
+
 /// Final, read-only render value. It contains pixels and planned screen-space
 /// placement, never a mutable world/body reference.
 public struct RenderSnapshot: @unchecked Sendable {
@@ -13,11 +27,13 @@ public struct RenderSnapshot: @unchecked Sendable {
     public let propImage: CGImage?
     public let propFrame: CGRect
     public let visible: Bool
+    public let combatHUD: CombatHUDSnapshot?
 
     public init(
         actorID: EntityID, frame: LayoutRect, image: CGImage?, mirrored: Bool,
         opacity: CGFloat = 1, propImage: CGImage? = nil,
-        propFrame: CGRect = .zero, visible: Bool = true
+        propFrame: CGRect = .zero, visible: Bool = true,
+        combatHUD: CombatHUDSnapshot? = nil
     ) {
         self.actorID = actorID
         self.frame = frame
@@ -27,6 +43,7 @@ public struct RenderSnapshot: @unchecked Sendable {
         self.propImage = propImage
         self.propFrame = propFrame
         self.visible = visible
+        self.combatHUD = combatHUD
     }
 }
 
@@ -48,6 +65,7 @@ public protocol ActorRenderSurface: AnyObject {
 
     func display(image: CGImage, mirrored: Bool)
     func displayProp(image: CGImage?, rect: CGRect)
+    func displayCombatHUD(_ snapshot: CombatHUDSnapshot?)
     func setFrame(_ frame: CGRect)
     func show()
     func hide()
@@ -88,6 +106,7 @@ public final class CoreAnimationRenderBackend: ActorRenderBackend {
             surface.display(image: image, mirrored: snapshot.mirrored)
         }
         surface.displayProp(image: snapshot.propImage, rect: snapshot.propFrame)
+        surface.displayCombatHUD(snapshot.combatHUD)
         surface.setFrame(surface.coordinateSpace.appKitRect(
             flippedTop: CGFloat(snapshot.frame.y),
             x: CGFloat(snapshot.frame.x),
@@ -131,6 +150,7 @@ private final class NullActorRenderSurface: ActorRenderSurface {
     var onRightMouseDown: ((CGPoint) -> Void)?
     func display(image: CGImage, mirrored: Bool) {}
     func displayProp(image: CGImage?, rect: CGRect) {}
+    func displayCombatHUD(_ snapshot: CombatHUDSnapshot?) {}
     func setFrame(_ frame: CGRect) {}
     func show() {}
     func hide() {}
@@ -140,6 +160,7 @@ private final class NullActorRenderSurface: ActorRenderSurface {
 final class CoreAnimationActorSurface: ActorRenderSurface {
     private let panel: OverlayPanel
     private let view: PetView
+    private let combatHUD = CombatHUDView()
     let coordinateSpace: any RenderCoordinateSpace
 
     init(initialFrame: CGRect, coordinateSpace: any RenderCoordinateSpace) {
@@ -147,6 +168,10 @@ final class CoreAnimationActorSurface: ActorRenderSurface {
         view = PetView(frame: CGRect(origin: .zero, size: initialFrame.size),
                        coordinateSpace: coordinateSpace)
         panel = OverlayPanel(contentView: view, initialFrame: initialFrame)
+        combatHUD.frame = CGRect(x: 8, y: max(0, initialFrame.height - 22),
+                                 width: max(60, initialFrame.width - 16), height: 18)
+        combatHUD.autoresizingMask = [.width, .minYMargin]
+        view.addSubview(combatHUD)
     }
 
     var alphaValue: CGFloat {
@@ -179,10 +204,44 @@ final class CoreAnimationActorSurface: ActorRenderSurface {
         view.displayProp(image: image, rect: rect)
     }
 
+    func displayCombatHUD(_ snapshot: CombatHUDSnapshot?) {
+        combatHUD.snapshot = snapshot
+        combatHUD.isHidden = snapshot == nil
+        combatHUD.needsDisplay = true
+    }
+
     func setFrame(_ frame: CGRect) {
         panel.setFrame(frame, display: false)
     }
 
     func show() { panel.orderFrontRegardless() }
     func hide() { panel.orderOut(nil) }
+}
+
+@MainActor
+private final class CombatHUDView: NSView {
+    var snapshot: CombatHUDSnapshot?
+    override var isFlipped: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let snapshot else { return }
+        let inset = bounds.insetBy(dx: 1, dy: 1)
+        NSColor.black.withAlphaComponent(0.72).setFill()
+        NSBezierPath(roundedRect: inset, xRadius: 3, yRadius: 3).fill()
+        let width = max(0, inset.width - 6)
+        let hpRatio = CGFloat(snapshot.hp) / CGFloat(snapshot.maxHP)
+        let energyRatio = CGFloat(snapshot.energy) / CGFloat(snapshot.maxEnergy)
+        let hpColor: NSColor = hpRatio > 0.5 ? .systemGreen :
+            (hpRatio > 0.2 ? .systemOrange : .systemRed)
+        hpColor.setFill()
+        NSBezierPath(rect: CGRect(x: inset.minX + 3, y: inset.minY + 3,
+                                  width: width * hpRatio, height: 5)).fill()
+        NSColor.systemCyan.setFill()
+        NSBezierPath(rect: CGRect(x: inset.minX + 3, y: inset.minY + 10,
+                                  width: width * energyRatio, height: 3)).fill()
+        if snapshot.active {
+            NSColor.white.setFill()
+            NSBezierPath(rect: CGRect(x: inset.minX, y: inset.minY, width: 2, height: inset.height)).fill()
+        }
+    }
 }
