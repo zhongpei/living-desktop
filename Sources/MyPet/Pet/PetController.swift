@@ -697,6 +697,28 @@ final class PetController {
         }
     }
 
+    private func combatVisualAction(for body: CombatBodyState?) -> String? {
+        guard let body else { return nil }
+        if let move = combatProfile.move(id: body.currentMoveID) {
+            return library.action(named: move.visualAction)
+        }
+        let intent: ActionIntent?
+        switch body.healthState {
+        case .knockedOut, .downed: intent = .defeat
+        case .gettingUp: intent = .recover
+        case .active:
+            switch body.phase {
+            case .hitStun: intent = .hitReact
+            case .blockStun, .guarding: intent = .defend
+            default: intent = nil
+            }
+        }
+        guard let intent,
+              let name = ActionCatalog.resolve(intent, available: library.actionNames)
+        else { return nil }
+        return library.action(named: name)
+    }
+
     private func updatePresentationPose() {
         let combat = combatCoordinator.body(actorID: runtimeActorID)
         gameplayRuntime.updateBodyPose(BodyPose(
@@ -705,7 +727,7 @@ final class PetController {
             yFeet: Double(model.yFeet),
             facingRight: model.facingRight,
             motion: model.walking ? "walking" : String(describing: model.state),
-            action: actions.performance?.clipKey,
+            action: combatVisualAction(for: combat) ?? actions.performance?.clipKey,
             horizontalSpeed: Double(model.vx),
             hp: combat?.hp,
             maxHP: combat.map { _ in combatProfile.maxHP },
@@ -2230,6 +2252,8 @@ final class PetController {
     private func beginAutonomousCombat(reason: String) {
         guard combatEnabled, !isStopped else { return }
         manualInput = .neutral
+        model.stopWalk()
+        actions.cancelPerformance()
         combatCoordinator.beginAutonomousCombat(actorID: runtimeActorID)
         pushRecentEvent("autonomous combat started: \(reason)")
     }
@@ -2259,43 +2283,23 @@ final class PetController {
     func consumeCombatEvents(_ events: [CombatEvent]) {
         guard !events.isEmpty else { return }
         for event in events {
-            if event.kind == .moveStarted, event.actorID == runtimeActorID,
-               let move = combatProfile.move(id: event.moveID),
-               let clip = library.action(named: move.visualAction) {
-                actions.inject(.perform(clip), userInitiated: manualControlPanel.isVisible)
-            }
             guard event.actorID == runtimeActorID || event.targetID == runtimeActorID else { continue }
             switch event.kind {
-            case .hit where event.targetID == runtimeActorID:
-                if let body = combatCoordinator.body(actorID: runtimeActorID) {
-                    model.applyCombatImpulse(
-                        vxPerFrame: body.velocity.x,
-                        vyPerFrame: body.velocity.y)
-                }
-                if let clip = ActionCatalog.resolve(.hitReact, available: library.actionNames)
-                    .flatMap(library.action(named:)) {
-                    actions.inject(.perform(clip), userInitiated: true)
-                }
-            case .blocked where event.targetID == runtimeActorID:
-                if let clip = ActionCatalog.resolve(.defend, available: library.actionNames)
-                    .flatMap(library.action(named:)) {
-                    actions.inject(.perform(clip), userInitiated: true)
-                }
-            case .knockedOut where event.actorID == runtimeActorID:
-                model.stopWalk()
+            case .hit where event.targetID == runtimeActorID,
+                 .blocked where event.targetID == runtimeActorID:
                 actions.cancelPerformance()
-                if let clip = ActionCatalog.resolve(.defeat, available: library.actionNames)
-                    .flatMap(library.action(named:)) {
-                    actions.inject(.perform(clip), userInitiated: true)
-                }
+                cancelGoalAndScene(reason: "combat contact")
+                pushRecentEvent("received combat contact")
+            case .knockedOut where event.actorID == runtimeActorID:
+                actions.cancelPerformance()
+                cancelGoalAndScene(reason: "combat knockout")
+                pushRecentEvent("knocked out")
             case .downed where event.actorID == runtimeActorID:
-                model.stopWalk()
-            case .recoveryStarted where event.actorID == runtimeActorID,
-                 .recovered where event.actorID == runtimeActorID:
-                if let clip = ActionCatalog.resolve(.recover, available: library.actionNames)
-                    .flatMap(library.action(named:)) {
-                    actions.inject(.perform(clip), userInitiated: true)
-                }
+                pushRecentEvent("downed")
+            case .recoveryStarted where event.actorID == runtimeActorID:
+                pushRecentEvent("getting up")
+            case .recovered where event.actorID == runtimeActorID:
+                pushRecentEvent("combat recovered")
             default:
                 break
             }
