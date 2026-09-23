@@ -142,6 +142,10 @@ public final class CombatWorld {
         return CombatBodyState(body: body, rules: rule)
     }
 
+    public func profile(for actorID: EntityID) -> CombatProfile? {
+        profiles[actorID.raw]
+    }
+
     public func setAuthority(_ authority: CombatControlAuthority, for actorID: EntityID) {
         guard var rule = rules[actorID.raw] else { return }
         rule.authority = authority
@@ -200,7 +204,9 @@ public final class CombatWorld {
             advanceStun(&body)
             orientTowardNearestOpponent(&body, snapshot: frameSnapshot)
             if body.healthState == .active {
-                acceptControl(&body, profile: profile, input: input, buffer: buffer, events: &events)
+                acceptControl(
+                    &body, profile: profile, input: input, buffer: buffer,
+                    environment: environment, events: &events)
                 advanceMove(&body, profile: profile, events: &events)
             }
             if body.healthState == .knockedOut && body.locomotion == .grounded {
@@ -256,14 +262,20 @@ public final class CombatWorld {
 
     private func acceptControl(_ body: inout CombatBodyState, profile: CombatProfile,
                                input: FighterInputFrame, buffer: CombatInputBuffer,
+                               environment: BodyEnvironment,
                                events: inout [CombatEvent]) {
         guard body.authority != .scripted else { return }
         guard body.locomotion != .dragged && body.locomotion != .tossed else { return }
-        if body.actionTimeline != nil { return }
+        guard body.canAcceptAction, body.actionTimeline == nil else { return }
 
-        if let move = profile.moves.first(where: {
-            CommandMatcher.matches($0.command, buffer: buffer, facing: body.facing)
-        }) {
+        let matchingMoves = profile.moves.enumerated().filter {
+            CommandMatcher.matches($0.element.command, buffer: buffer, facing: body.facing)
+        }
+        if let move = matchingMoves.max(by: { lhs, rhs in
+            let left = commandSpecificity(lhs.element.command)
+            let right = commandSpecificity(rhs.element.command)
+            return left == right ? lhs.offset > rhs.offset : left < right
+        })?.element {
             let instanceID = body.rules.actionSequence ?? 0
             body.rules.actionSequence = instanceID + 1
             body.actionTimeline = ActionTimeline(
@@ -277,7 +289,15 @@ public final class CombatWorld {
             return
         }
 
-        if body.locomotion == .grounded && input.up {
+        if body.locomotion == .grounded, input.up, input.down,
+           let surface = environment.surface(id: body.currentSurfaceID),
+           surface.kind != .floor {
+            body.currentSurfaceID = nil
+            body.surfaceFraction = nil
+            body.locomotion = .airborne
+            body.position.y += 2
+            body.velocity.y = BodyWorld.gravityPerFrame
+        } else if body.locomotion == .grounded && input.up {
             body.currentSurfaceID = nil
             body.surfaceFraction = nil
             body.locomotion = .airborne
@@ -291,6 +311,13 @@ public final class CombatWorld {
             body.facing = direction > 0 ? .right : .left
         } else {
             body.velocity.x = 0
+        }
+    }
+
+    private func commandSpecificity(_ command: CombatCommand) -> Int {
+        command.steps.reduce(command.steps.count * 1_000) { score, step in
+            score + (step.direction == nil ? 0 : 100) +
+                step.requiredButtons.count * 10 + step.minimumHoldFrames
         }
     }
 

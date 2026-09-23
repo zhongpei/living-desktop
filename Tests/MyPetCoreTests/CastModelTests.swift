@@ -208,6 +208,9 @@ final class CastModelTests: XCTestCase {
         XCTAssertEqual(
             redChamber.pack.members.first { $0.id == "jia_baoyu" }?.visualPackID,
             "jia_baoyu")
+        XCTAssertEqual(
+            Set(redChamber.pack.members.first { $0.id == "lin_daiyu" }?.capabilities ?? []),
+            Set(["window", "prop", "social", "poetry", "combat"]))
         XCTAssertTrue(catalog.characters.allSatisfy { $0.dialogue != nil })
         XCTAssertEqual(
             waterMargin.pack.initialRelationValues()["wu_song/lu_zhishen/respect"],

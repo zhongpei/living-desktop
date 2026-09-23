@@ -144,6 +144,65 @@ final class CombatSimulationTests: XCTestCase {
         XCTAssertTrue(digests.dropFirst().allSatisfy { $0 == digests[0] })
     }
 
+    func testAutonomousCombatProducesRepeatedButtonPresses() {
+        let move = CombatMoveDefinition(
+            id: "light", command: .button(.x), startupFrames: 0,
+            activeFrames: 1, recoveryFrames: 2,
+            hit: CombatHitDefinition(
+                damage: 10, hitStopFrames: 0, hitStunFrames: 0,
+                knockbackX: 0),
+            visualAction: "attack")
+        let runtime = CombatRuntime()
+        runtime.register(
+            actorID: EntityID("a"), profile: CombatProfile(moves: [move]),
+            x: 400, yFeet: 700)
+        runtime.register(
+            actorID: EntityID("b"), profile: CombatProfile(moves: []),
+            x: 445, yFeet: 700, facing: .left)
+        runtime.activate(.autonomous, for: EntityID("a"))
+        runtime.activate(.autonomous, for: EntityID("b"))
+
+        for _ in 0..<20 {
+            _ = runtime.advance(environment: makeScenario().desktop.combatEnvironment())
+        }
+
+        XCTAssertLessThanOrEqual(runtime.world.body(for: EntityID("b"))?.hp ?? 1000, 980)
+    }
+
+    func testAutonomousAuthoritySurvivesKnockoutAndRecovery() {
+        let finisher = CombatMoveDefinition(
+            id: "finisher", command: .button(.x), startupFrames: 0,
+            activeFrames: 1, recoveryFrames: 1,
+            hit: CombatHitDefinition(
+                damage: 1000, hitStopFrames: 0, hitStunFrames: 0,
+                knockbackX: 0),
+            visualAction: "attack")
+        let runtime = CombatRuntime()
+        runtime.register(
+            actorID: EntityID("a"),
+            profile: CombatProfile(moves: [finisher]),
+            x: 400, yFeet: 700)
+        runtime.register(
+            actorID: EntityID("b"),
+            profile: CombatProfile(
+                moves: [], downedRecoveryFrames: 2, getUpFrames: 2,
+                revivedHPFraction: 0.3, reviveInvulnerabilityFrames: 0),
+            x: 445, yFeet: 700, facing: .left)
+        runtime.activate(.autonomous, for: EntityID("a"))
+        runtime.activate(.autonomous, for: EntityID("b"))
+
+        var events: [CombatEvent] = []
+        for _ in 0..<12 {
+            events.append(contentsOf: runtime.advance(
+                environment: makeScenario().desktop.combatEnvironment()))
+        }
+
+        XCTAssertTrue(runtime.isActive(.autonomous, for: EntityID("b")))
+        XCTAssertTrue(events.contains {
+            $0.kind == .recovered && $0.actorID == EntityID("b")
+        })
+    }
+
     private func combatDigest(renderHz: Int) -> CombatRuntimeDigest {
         let combat = CombatRuntime()
         combat.register(actorID: EntityID("a"), profile: CombatProfile(),

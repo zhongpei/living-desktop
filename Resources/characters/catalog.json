@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "generated_from": "pet-asset-forge/characters/profiles",
-  "source_hash": "dfd4b2b34b8a7b9c10967234a0a1c97a5ce7ef75573dca00ef9c9efde3c063f4",
+  "source_hash": "c2b7d292f43007be14eec9402a4549131b6d122f4bbc7879bd089a5a5169eafd",
   "characters": [
     {
       "id": "asuka",
@@ -955,7 +955,8 @@
           "window": "能够进行窗口活动",
           "prop": "能够使用和传递道具",
           "social": "能够主动进行社交",
-          "poetry": "能够进行诗意表达"
+          "poetry": "能够进行诗意表达",
+          "combat": "能够在显式战斗会话中使用克制的花瓣诗术；这是项目玩法改编，不是原著事实"
         }
       },
       "performance_prompt": {
@@ -1093,6 +1094,7 @@
         }
       },
       "capabilities": [
+        "combat",
         "poetry",
         "prop",
         "social",

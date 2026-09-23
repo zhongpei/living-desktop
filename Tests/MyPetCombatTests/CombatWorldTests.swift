@@ -261,6 +261,65 @@ final class CombatWorldTests: XCTestCase {
         XCTAssertEqual(events.first(where: { $0.kind == .moveStarted })?.moveID, "light")
     }
 
+    func testSpecificMotionCommandWinsOverSingleButtonWithSameFinalButton() {
+        let profile = CombatProfile(moves: [
+            CombatMoveDefinition(
+                id: "normal_z", command: .button(.z), startupFrames: 1,
+                activeFrames: 1, recoveryFrames: 1,
+                hit: CombatHitDefinition(), visualAction: "normal_z"),
+            CombatMoveDefinition(
+                id: "special_z",
+                command: CombatCommand([
+                    CombatCommandStep(direction: .down),
+                    CombatCommandStep(direction: .downForward),
+                    CombatCommandStep(direction: .forward),
+                    CombatCommandStep(button: .z, maxGapFrames: 3),
+                ]),
+                startupFrames: 1, activeFrames: 1, recoveryFrames: 1,
+                hit: CombatHitDefinition(damage: 100), visualAction: "special_z"),
+        ])
+        let world = CombatWorld()
+        world.register(actorID: EntityID("a"), profile: profile, x: 400, yFeet: 700)
+        world.register(actorID: EntityID("b"), x: 450, yFeet: 700, facing: .left)
+        XCTAssertTrue(beginSession(world))
+
+        var started: String?
+        for input in CombatCommandSynthesizer.frames(
+            for: profile.moves[1].command, facing: .right) {
+            world.setInput(input, for: EntityID("a"), authority: .manual)
+            started = world.step(environment: floor).first(where: {
+                $0.kind == .moveStarted
+            })?.moveID ?? started
+        }
+
+        XCTAssertEqual(started, "special_z")
+    }
+
+    func testDownPlusUpDropsThroughWindowSurfaceButNotFloor() throws {
+        let environment = BodyEnvironment(
+            bounds: Rect2D(x: 0, y: 0, width: 1000, height: 800),
+            surfaces: [
+                Surface(id: "floor", kind: .floor, left: 0, right: 1000, y: 700),
+                Surface(id: "window", kind: .windowTop, left: 250, right: 550, y: 400),
+            ])
+        let world = CombatWorld()
+        world.register(actorID: EntityID("a"), x: 400, yFeet: 400)
+        world.register(actorID: EntityID("b"), x: 800, yFeet: 700, facing: .left)
+        XCTAssertTrue(beginSession(world))
+        _ = world.step(environment: environment)
+        XCTAssertEqual(world.body(for: EntityID("a"))?.currentSurfaceID, "window")
+
+        world.setInput(
+            FighterInputFrame(up: true, down: true),
+            for: EntityID("a"), authority: .manual)
+        _ = world.step(environment: environment)
+
+        let body = try XCTUnwrap(world.body(for: EntityID("a")))
+        XCTAssertEqual(body.locomotion, .airborne)
+        XCTAssertNil(body.currentSurfaceID)
+        XCTAssertGreaterThan(body.position.y, 400)
+    }
+
     func testHitUsesActualBoxesAndAppliesHitstun() {
         let world = CombatWorld()
         world.register(actorID: EntityID("a"), x: 400, yFeet: 700)
@@ -422,6 +481,42 @@ final class CombatWorldTests: XCTestCase {
             _ = world.step(environment: floor)
         }
         XCTAssertEqual(world.body(for: EntityID("b"))?.hp, 965)
+    }
+
+    func testHitstunCannotBeBypassedByBufferedControlInput() {
+        let strike = CombatMoveDefinition(
+            id: "strike", command: .button(.x), startupFrames: 0,
+            activeFrames: 1, recoveryFrames: 1,
+            hit: CombatHitDefinition(
+                damage: 1, hitStopFrames: 0, hitStunFrames: 5,
+                knockbackX: 0),
+            visualAction: "attack")
+        let reply = CombatMoveDefinition(
+            id: "reply", command: .button(.y), startupFrames: 0,
+            activeFrames: 1, recoveryFrames: 1,
+            hit: CombatHitDefinition(damage: 1, hitStopFrames: 0),
+            visualAction: "attack")
+        let world = CombatWorld()
+        world.register(
+            actorID: EntityID("a"), profile: CombatProfile(moves: [strike]),
+            x: 400, yFeet: 700)
+        world.register(
+            actorID: EntityID("b"), profile: CombatProfile(moves: [reply]),
+            x: 445, yFeet: 700, facing: .left)
+        XCTAssertTrue(beginSession(world))
+        world.setInput(
+            FighterInputFrame(buttons: [.x]), for: EntityID("a"), authority: .manual)
+        _ = world.step(environment: floor)
+
+        world.setInput(.neutral, for: EntityID("a"), authority: .manual)
+        world.setInput(
+            FighterInputFrame(buttons: [.y]), for: EntityID("b"), authority: .manual)
+        let events = world.step(environment: floor)
+
+        XCTAssertFalse(events.contains {
+            $0.kind == .moveStarted && $0.actorID == EntityID("b")
+        })
+        XCTAssertGreaterThan(world.body(for: EntityID("b"))?.stunFrames ?? 0, 0)
     }
 
     func testSameFrameTradeIsIndependentOfActorOrder() {
