@@ -446,16 +446,13 @@ public final class CombatWorld {
     }
 }
 
+/// Compatibility adapter for the transitional AppKit combat runner. New
+/// runtime code owns `BodyFrameAccumulator` through `GameRuntime` directly.
 public struct CombatFrameClock: Codable, Equatable, Sendable {
-    private var remainder: Double = 0
+    private var accumulator = BodyFrameAccumulator()
     public init() {}
 
     public mutating func advance(elapsedSeconds: Double) -> Int {
-        guard elapsedSeconds.isFinite, elapsedSeconds > 0 else { return 0 }
-        remainder += min(elapsedSeconds, 0.25)
-        let step = 1.0 / Double(CombatWorld.framesPerSecond)
-        let count = Int((remainder + 1e-12) / step)
-        remainder -= Double(count) * step
-        return count
+        accumulator.consume(elapsedSeconds: elapsedSeconds).count
     }
 }

@@ -1,9 +1,122 @@
 import XCTest
 @testable import MyPetCore
+import MyPet2D
 @testable import MyPetEngine
 import MyPetSimulation
 
 final class GameRuntimeTests: XCTestCase {
+    func testRuntimeAccumulatorAdvancesBodyAtSixtyHzAndSemanticEveryThirdFrame() {
+        let runtime = GameRuntime()
+        var frames: [Int64] = []
+
+        let first = runtime.advance(elapsedSeconds: 0.025) { frames.append($0) }
+        XCTAssertEqual(first.bodyFramesAdvanced, 1)
+        XCTAssertTrue(first.semanticReports.isEmpty)
+        XCTAssertEqual(runtime.bodyFrame, 1)
+
+        let second = runtime.advance(elapsedSeconds: 0.025) { frames.append($0) }
+        XCTAssertEqual(second.bodyFramesAdvanced, 2)
+        XCTAssertEqual(second.semanticReports.count, 1)
+        XCTAssertEqual(frames, [0, 1, 2])
+        XCTAssertEqual(runtime.bodyFrame, 3)
+        XCTAssertEqual(runtime.clock.tick, 1)
+    }
+
+    func testBodyDigestIsIndependentOfRenderSamplingRate() {
+        func run(renderHz: Int) -> (BodyWorldSnapshot, Int64, Int64) {
+            let runtime = GameRuntime()
+            let world = BodyWorld()
+            let a = EntityID("a")
+            let b = EntityID("b")
+            world.register(
+                BodyDefinition(entityID: b, pushRadius: 20),
+                state: BodyState(
+                    entityID: b,
+                    position: Vec2(x: 220, y: 100),
+                    velocity: Vec2(x: -0.5, y: 0),
+                    locomotion: .airborne))
+            world.register(
+                BodyDefinition(entityID: a, pushRadius: 20),
+                state: BodyState(
+                    entityID: a,
+                    position: Vec2(x: 120, y: 100),
+                    velocity: Vec2(x: 0.5, y: 0),
+                    locomotion: .airborne))
+            let environment = BodyEnvironment(
+                bounds: Rect2D(x: 0, y: 0, width: 800, height: 600),
+                surfaces: [Surface(id: "floor", kind: .floor, left: 0, right: 800, y: 500)])
+
+            for _ in 0..<(renderHz * 2) {
+                _ = runtime.advance(elapsedSeconds: 1.0 / Double(renderHz)) { _ in
+                    world.advance(environment)
+                }
+            }
+            return (world.snapshot(), runtime.bodyFrame, runtime.clock.tick)
+        }
+
+        let baseline = run(renderHz: 60)
+        for hz in [20, 40, 120] {
+            let candidate = run(renderHz: hz)
+            XCTAssertEqual(candidate.0, baseline.0, "body snapshot differs at \(hz)Hz")
+            XCTAssertEqual(candidate.1, baseline.1)
+            XCTAssertEqual(candidate.2, baseline.2)
+        }
+        XCTAssertEqual(baseline.1, 120)
+        XCTAssertEqual(baseline.2, 40)
+    }
+
+    func testRuntimeCheckpointPreservesSubframeAccumulator() throws {
+        let runtime = GameRuntime()
+        XCTAssertEqual(runtime.advance(elapsedSeconds: 0.01).bodyFramesAdvanced, 0)
+        let restored = GameRuntime(checkpoint: try JSONDecoder().decode(
+            GameRuntimeCheckpoint.self,
+            from: JSONEncoder().encode(runtime.checkpoint())))
+
+        XCTAssertEqual(runtime.advance(elapsedSeconds: 0.01).bodyFramesAdvanced, 1)
+        XCTAssertEqual(restored.advance(elapsedSeconds: 0.01).bodyFramesAdvanced, 1)
+        XCTAssertEqual(restored.bodyFrame, runtime.bodyFrame)
+        XCTAssertEqual(restored.clock, runtime.clock)
+    }
+
+    func testLegacyRuntimeCheckpointDerivesBodyClockFromSemanticTick() throws {
+        let runtime = GameRuntime()
+        _ = runtime.step()
+        _ = runtime.step()
+        var payload = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(runtime.checkpoint())) as? [String: Any])
+        payload.removeValue(forKey: "bodyClock")
+
+        let checkpoint = try JSONDecoder().decode(
+            GameRuntimeCheckpoint.self,
+            from: JSONSerialization.data(withJSONObject: payload))
+        let restored = GameRuntime(checkpoint: checkpoint)
+        XCTAssertEqual(restored.bodyFrame, 6)
+    }
+
+    func testRuntimeInitializedFromKernelAlignsBodyFrameWithSemanticTick() {
+        let kernel = GameKernel()
+        _ = kernel.tick()
+        _ = kernel.tick()
+
+        let runtime = GameRuntime(kernel: kernel)
+
+        XCTAssertEqual(runtime.clock.tick, 2)
+        XCTAssertEqual(runtime.bodyFrame, 6)
+    }
+
+    func testRuntimeDropsNestedAdvanceWithoutMovingBodyClockTwice() {
+        let runtime = GameRuntime()
+        var nestedFrames = -1
+
+        let outer = runtime.advance(elapsedSeconds: 1.0 / 60.0) { _ in
+            nestedFrames = runtime.advance(elapsedSeconds: 1.0 / 60.0).bodyFramesAdvanced
+        }
+
+        XCTAssertEqual(outer.bodyFramesAdvanced, 1)
+        XCTAssertEqual(nestedFrames, 0)
+        XCTAssertEqual(runtime.bodyFrame, 1)
+    }
+
     func testPreparedSceneWithoutRequiredFocusRejectsDeterministicStep() {
         let actor = EntityState(id: EntityID("pet"), kind: .actor)
         let goal = SimulationGoalDecision(goal: .rest)
