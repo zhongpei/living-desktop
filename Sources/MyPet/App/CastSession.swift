@@ -182,6 +182,11 @@ final class CastSession: NSObject {
             combatCoordinator.advance(
                 elapsedSeconds: dt,
                 environment: controller.model.bodyEnvironmentSnapshot(),
+                platformContext: GameplayPlatformContext(
+                    userActive: controller.systemWorld.idleSeconds() < 5,
+                    foregroundWindowIDs: controller.world.foreground.map {
+                        Set(["window:\($0.id):top"])
+                    } ?? Set()),
                 beforeFrame: { [weak self] in
                     guard let self else { return }
                     for id in self.castControllers.keys.sorted() {

@@ -53,7 +53,19 @@ Implemented design items:
 - deterministic team requests use mapped `assist`/`tag` controls, while the
   bench assist move still enters through the normal input buffer and matcher;
 - neutral collateral escalation is checkpointed and incidentals receive the
-  same autonomous input path only after joining.
+  same autonomous input path only after joining; runtime registration carries
+  the content loader's `realCombatReady` verdict, so presentation-only pets are
+  not selected as opponents and withdraw after collateral damage;
+- window candidates pass an explicit minimum-viability gate before spectacle
+  ranking. Foreground windows, recent user activity and the 60-point reserve
+  cannot be overridden by personality weights;
+- `WindowInteractionPolicy` now runs inside `CombatRuntime` before an intent is
+  published to a platform adapter. Allowed pull/overlay actions atomically
+  spend the shared energy and authorization state is checkpointed;
+- `ActionHistory` scores repeated move families plus repeated 2-gram/3-gram
+  sequences and exposes entropy/longest-run diagnostics;
+- equal-level opposing projectiles clash through deterministic BodyWorld
+  collision and expire before either can damage a fighter.
 
 ## Simulator defects found and fixed
 
@@ -69,16 +81,40 @@ not reveal:
    order only for equal specificity.
 4. Navigation could plan a drop edge but the body had no drop-through input.
    `down+up` now drops through non-floor surfaces while normal up still jumps.
+5. Harness `--seed` changed only the initial offset and never entered the CPU
+   random stream. The seed is now part of `CombatRuntime` checkpoint/digest and
+   salts every actor's deterministic CPU seed.
+6. The CPU spent a full gauge on defensive burst merely because an opponent was
+   nearby. Burst is now legal only in hitstun/blockstun; a full-gauge reachable
+   super is the first offensive resource outlet.
+7. Gameplay commitment was interrupted every frame whenever any opponent was
+   visible. It now ends only on expiry, actual attack, or invalidated activity.
+8. The autonomous Harness case required exactly nine total move IDs even though
+   the report included both teams. It now checks the Lin Daiyu move set as a
+   subset and uses a 180-second bounded full-fight scenario.
+9. A defensive-burst press issued during hitstop was recorded by the input
+   buffer but discarded by the frozen world step. When hitstop ended, the held
+   input no longer looked like a new edge, so the CPU could request burst dozens
+   of times without a move ever starting. The matcher now accepts a burst edge
+   buffered within 16 frames (covering the authored 12-frame maximum hitstop
+   plus the resume boundary), and the CPU emits one pulse instead of inflating
+   its action history. The resource policy reserves a later full gauge for the
+   first defensive burst after demonstrating a super.
 
 ## Evidence gates
 
 `MyPetHarness combat-soak` runs the production `GameRuntime`, `CombatRuntime`,
 `BodyWorld`, CPU, team/tag/assist, neutral escalation, shared energy, combo,
 projectile, KO and recovery code twice and requires exact digest/event equality.
-The 90-second smoke requires both characters' base move coverage. Runs of ten
-minutes or more additionally require super, power-up, burst and assist coverage
-for both characters. Every run also requires finite state, exact frame count,
-and simulation p95 below 16.67 ms.
+The 180-second smoke requires both characters' base move coverage. Runs of ten
+minutes or more additionally require super, power-up and assist coverage; the
+one-hour gate additionally requires both defensive bursts because they are now
+correctly conditional on being hit while a full gauge is available. Reports
+include p50/p95/max, damage per move, maximum use/damage share, move entropy,
+longest identical move run and maximum combo length. A run fails when one move
+exceeds 35% of uses or damage, repeats more than four times, produces non-finite
+state, diverges on replay, advances the wrong frame count, or exceeds 16.67 ms
+p95.
 
 The selected first version is MCTS. RHEA remains an explicit follow-up policy;
 it is not required for the `gameplay-cpu.md` first-version completion gate.

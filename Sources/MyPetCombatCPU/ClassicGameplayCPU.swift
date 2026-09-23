@@ -16,6 +16,31 @@ public enum GameplayPlatformIntent: Codable, Equatable, Sendable {
     case observe
 }
 
+/// Read-only desktop metadata used by the gameplay planner. It deliberately
+/// contains no AppKit or accessibility object, so the CPU can be replayed in
+/// the simulator and the platform adapter remains the only effectful layer.
+public struct GameplayWindowState: Codable, Equatable, Sendable {
+    public var id: String
+    public var areaRatio: Double
+    public var isForeground: Bool
+    public var isMoving: Bool
+    public var isPullable: Bool
+    public var allowsDamageOverlay: Bool
+
+    public init(
+        id: String, areaRatio: Double = 0.25,
+        isForeground: Bool = false, isMoving: Bool = false,
+        isPullable: Bool = false, allowsDamageOverlay: Bool = true
+    ) {
+        self.id = id
+        self.areaRatio = min(1, max(0, areaRatio))
+        self.isForeground = isForeground
+        self.isMoving = isMoving
+        self.isPullable = isPullable
+        self.allowsDamageOverlay = allowsDamageOverlay
+    }
+}
+
 public struct CharacterGameplayStyle: Codable, Equatable, Sendable {
     public var combat: Double
     public var explore: Double
@@ -49,16 +74,20 @@ public struct GameplayCPUObservation: Sendable {
     public var wasAttacked: Bool
     public var userActive: Bool
     public var windowIDs: [String]
+    public var windows: [GameplayWindowState]
     public var style: CharacterGameplayStyle
 
     public init(
         combat: CPUCombatObservation, formalRound: Bool = true,
         wasAttacked: Bool = false, userActive: Bool = false,
-        windowIDs: [String] = [], style: CharacterGameplayStyle = .balanced
+        windowIDs: [String] = [], windows: [GameplayWindowState] = [],
+        style: CharacterGameplayStyle = .balanced
     ) {
         self.combat = combat; self.formalRound = formalRound
         self.wasAttacked = wasAttacked; self.userActive = userActive
-        self.windowIDs = windowIDs.sorted(); self.style = style
+        self.windows = windows.sorted { $0.id < $1.id }
+        self.windowIDs = Array(Set(windowIDs + windows.map(\.id))).sorted()
+        self.style = style
     }
 }
 
@@ -114,8 +143,9 @@ public struct ClassicGameplayCPU: Sendable {
     public mutating func advance(_ observation: GameplayCPUObservation) -> GameplayCPUOutput {
         let frame = observation.combat.frame
         updateVisit(observation.combat.selfBody.currentSurfaceID, frame: frame)
-        let threatened = observation.wasAttacked || !observation.combat.opponents.isEmpty
-        let mayReconsider = frame >= state.commitmentUntilFrame || threatened
+        let commitmentInvalid = activityIsInvalid(state.activity, observation: observation)
+        let mayReconsider = frame >= state.commitmentUntilFrame ||
+            observation.wasAttacked || commitmentInvalid
         let utilities = scoreActivities(observation)
         if observation.formalRound {
             state.activity = .fight
@@ -152,14 +182,25 @@ public struct ClassicGameplayCPU: Sendable {
                 activity: .explore, fighterInput: input,
                 combatOutput: nil, platformIntent: nil, utilities: utilities)
         case .interactWindow:
-            let id = observation.windowIDs.min { lhs, rhs in
-                let left = state.visits[lhs]?.visitCount ?? 0
-                let right = state.visits[rhs]?.visitCount ?? 0
-                return left == right ? lhs < rhs : left < right
+            let window = viableWindows(observation).sorted { lhs, rhs in
+                let left = windowInterest(lhs, frame: frame)
+                let right = windowInterest(rhs, frame: frame)
+                return left == right ? lhs.id < rhs.id : left > right
+            }.first
+            let intent = window.map { window -> GameplayPlatformIntent in
+                if observation.style.destruction > 0.65,
+                   window.allowsDamageOverlay {
+                    return .damageWindowOverlay(window.id)
+                }
+                if observation.style.explore > 0.7, window.isPullable {
+                    return .pullWindow(window.id)
+                }
+                return .inspectWindow(window.id)
             }
-            let intent = id.map { observation.style.destruction > 0.65
-                ? GameplayPlatformIntent.damageWindowOverlay($0)
-                : GameplayPlatformIntent.inspectWindow($0) }
+            if let intent {
+                state.history.record(id: "\(intent)", family: .windowInteraction)
+                state.boredom = max(0, state.boredom - 0.12)
+            }
             return GameplayCPUOutput(
                 activity: .interactWindow, fighterInput: .neutral,
                 combatOutput: nil, platformIntent: intent, utilities: utilities)
@@ -177,16 +218,77 @@ public struct ClassicGameplayCPU: Sendable {
         let hasOpponent = observation.combat.opponents.isEmpty ? 0.0 : 1.0
         let energyRatio = Double(observation.combat.selfBody.gameplayEnergy.current) /
             Double(max(1, observation.combat.selfBody.gameplayEnergy.maximum))
+        let windows = viableWindows(observation)
+        let bestWindowInterest = windows.map {
+            windowInterest($0, frame: observation.combat.frame)
+        }.max() ?? -1_000
+        let historyPenalty = state.history.repetitionPenalty(
+            id: "window", family: .windowInteraction)
         return [
             .fight: hasOpponent * (120 + style.combat * 50) + (observation.wasAttacked ? 200 : 0),
             .explore: style.explore * 70 + state.boredom * 80,
-            .interactWindow: observation.windowIDs.isEmpty || observation.userActive
-                ? -1_000 : style.spectacle * 45 + style.destruction * 35 + state.boredom * 40,
+            .interactWindow: windows.isEmpty
+                ? -1_000
+                : bestWindowInterest + style.spectacle * 45 +
+                    style.destruction * 35 + state.boredom * 40 - historyPenalty,
             .interactProp: 10,
             .perform: style.spectacle * 20,
             .rest: (1 - energyRatio) * (30 + style.energyReserve * 60),
             .observe: 15,
         ]
+    }
+
+    private func activityIsInvalid(
+        _ activity: GameplayActivity,
+        observation: GameplayCPUObservation
+    ) -> Bool {
+        switch activity {
+        case .fight:
+            return observation.combat.opponents.isEmpty
+        case .interactWindow:
+            return viableWindows(observation).isEmpty
+        default:
+            return false
+        }
+    }
+
+    /// Minimum viability is a hard safety/resource gate. Spectacle and
+    /// personality only rank candidates that survive this filter.
+    private func viableWindows(
+        _ observation: GameplayCPUObservation
+    ) -> [GameplayWindowState] {
+        guard !observation.userActive else { return [] }
+        let metadata = observation.windows.isEmpty
+            ? observation.windowIDs.map { GameplayWindowState(id: $0) }
+            : observation.windows
+        let energy = observation.combat.selfBody.gameplayEnergy.current
+        return metadata.filter { window in
+            guard !window.isForeground else { return false }
+            let requestedCost: Int
+            if observation.style.destruction > 0.65, window.allowsDamageOverlay {
+                requestedCost = 120
+            } else if observation.style.explore > 0.7, window.isPullable {
+                requestedCost = 180
+            } else {
+                requestedCost = 0
+            }
+            return energy - requestedCost >= 60
+        }
+    }
+
+    private func windowInterest(
+        _ window: GameplayWindowState,
+        frame: Int64
+    ) -> Double {
+        let visit = state.visits[window.id]
+        let novelty = visit == nil ? 35.0 : max(
+            0, min(25, Double(frame - (visit?.lastVisitedFrame ?? frame)) / 120))
+        let movement = window.isMoving ? 20.0 : 0
+        let size = min(20, window.areaRatio * 25)
+        let capability = (window.isPullable ? 8.0 : 0) +
+            (window.allowsDamageOverlay ? 8.0 : 0)
+        let repetition = Double(visit?.visitCount ?? 0) * 12
+        return novelty + movement + size + capability - repetition
     }
 
     private mutating func updateVisit(_ surfaceID: String?, frame: Int64) {

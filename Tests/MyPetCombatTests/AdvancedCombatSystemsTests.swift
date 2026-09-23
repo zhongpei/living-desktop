@@ -91,6 +91,38 @@ final class AdvancedCombatSystemsTests: XCTestCase {
                        .incidentalCombatant(primaryOffenderID: offender))
     }
 
+    func testNonCombatReadyCollateralVictimWithdrawsInsteadOfJoining() {
+        let strike = CombatMoveDefinition(
+            id: "wide", command: .button(.x), startupFrames: 0,
+            activeFrames: 1, recoveryFrames: 2,
+            hit: CombatHitDefinition(
+                damage: 10, hitStopFrames: 0,
+                attackBoxes: [CollisionBox(x1: 0, y1: -100, x2: 100, y2: 0)]),
+            visualAction: "attack")
+        let world = CombatWorld()
+        world.register(
+            actorID: EntityID("attacker"), profile: CombatProfile(moves: [strike]),
+            x: 400, yFeet: 700)
+        world.register(
+            actorID: EntityID("opponent"), profile: CombatProfile(moves: []),
+            x: 445, yFeet: 700, facing: .left)
+        world.register(
+            actorID: EntityID("bystander"), profile: CombatProfile(moves: []),
+            x: 455, yFeet: 700, facing: .left, realCombatReady: false)
+        world.setEscalationPolicy(.desktopBrawl)
+        XCTAssertTrue(world.beginSession(
+            id: "fight", participants: [EntityID("attacker"), EntityID("opponent")]))
+        world.setInput(FighterInputFrame(buttons: [.x]), for: EntityID("attacker"))
+
+        _ = world.step(environment: floor)
+        let events = world.step(environment: floor)
+
+        XCTAssertFalse(events.contains { $0.kind == .neutralJoined })
+        XCTAssertEqual(
+            world.body(for: EntityID("bystander"))?.participation,
+            .withdrawing)
+    }
+
     func testIncidentalCombatantWithdrawsAfterHostilityDecay() {
         var policy = NeutralEscalationPolicy.desktopBrawl
         policy.hostilityDecayFrames = 3
@@ -132,6 +164,25 @@ final class AdvancedCombatSystemsTests: XCTestCase {
         let directPenalty = history.repetitionPenalty(id: "jab-c", family: .fastMelee)
         XCTAssertGreaterThan(familyPenalty, 0)
         XCTAssertGreaterThan(directPenalty, familyPenalty)
+    }
+
+    func testActionHistoryDetectsRepeatedTwoAndThreeGramPatterns() {
+        var history = ActionHistory(capacity: 20)
+        for (id, family) in [
+            ("a1", CombatActionFamily.fastMelee),
+            ("b1", .projectile),
+            ("a2", .fastMelee),
+            ("b2", .projectile),
+            ("a3", .fastMelee),
+        ] {
+            history.record(id: id, family: family)
+        }
+
+        XCTAssertGreaterThan(
+            history.sequencePenalty(nextFamily: .projectile),
+            history.sequencePenalty(nextFamily: .throw))
+        XCTAssertGreaterThan(history.familyEntropyBits, 0)
+        XCTAssertEqual(history.longestFamilyRun, 1)
     }
 
     func testMappedAssistControlEntersBenchAndStartsProfileMoveThroughMatcher() {
@@ -200,5 +251,41 @@ final class AdvancedCombatSystemsTests: XCTestCase {
         XCTAssertEqual(world.body(for: EntityID("b"))?.stunFrames, 0)
         // 150 start + 8 defender gain - 150 burst + 12 burst-hit gain.
         XCTAssertEqual(world.body(for: EntityID("b"))?.gameplayEnergy.current, 20)
+    }
+
+    func testDefensiveBurstPressBufferedDuringHitStopExecutesAfterFreeze() {
+        let hit = CombatMoveDefinition(
+            id: "hit", command: .button(.x), startupFrames: 0, activeFrames: 1,
+            recoveryFrames: 2,
+            hit: CombatHitDefinition(
+                damage: 10, hitStopFrames: 12, hitStunFrames: 20),
+            visualAction: "hit")
+        let burst = CombatMoveDefinition(
+            id: "burst", command: .button(.d), startupFrames: 0, activeFrames: 2,
+            recoveryFrames: 8, hit: CombatHitDefinition(damage: 0, hitStopFrames: 0),
+            visualAction: "burst",
+            resourceRules: MoveResourceRules(family: .burst, startCost: 150),
+            systemControl: .defensiveBurst)
+        let world = CombatWorld()
+        world.register(actorID: EntityID("a"), profile: CombatProfile(moves: [hit]),
+                       x: 400, yFeet: 700)
+        world.register(actorID: EntityID("b"), profile: CombatProfile(moves: [burst]),
+                       x: 445, yFeet: 700, facing: .left)
+        XCTAssertTrue(world.beginSession(
+            id: "buffered-burst", participants: [EntityID("a"), EntityID("b")]))
+        world.setInput(FighterInputFrame(buttons: [.x]), for: EntityID("a"))
+        _ = world.step(environment: floor)
+        world.setInput(.neutral, for: EntityID("a"))
+        world.setInput(
+            FighterInputFrame(systemControls: [.defensiveBurst]),
+            for: EntityID("b"))
+
+        var events: [CombatEvent] = []
+        for _ in 0..<13 {
+            events.append(contentsOf: world.step(environment: floor))
+        }
+
+        XCTAssertTrue(events.contains { $0.kind == .moveStarted && $0.moveID == "burst" })
+        XCTAssertEqual(world.body(for: EntityID("b"))?.stunFrames, 0)
     }
 }

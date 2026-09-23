@@ -22,7 +22,8 @@ final class DesktopCombatCoordinator {
     }
 
     func register(actorID: EntityID, profile: CombatProfile, x: CGFloat, yFeet: CGFloat,
-                  facingRight: Bool, displayHeight: CGFloat) {
+                  facingRight: Bool, displayHeight: CGFloat,
+                  realCombatReady: Bool = true) {
         guard !registeredActors.contains(actorID.raw) else {
             world.setProfile(profile, for: actorID)
             return
@@ -34,7 +35,8 @@ final class DesktopCombatCoordinator {
             x: Double(x),
             yFeet: Double(yFeet),
             facing: facingRight ? .right : .left,
-            visualScale: max(0.05, Double(displayHeight) / 110.0))
+            visualScale: max(0.05, Double(displayHeight) / 110.0),
+            realCombatReady: realCombatReady)
     }
 
     func unregister(actorID: EntityID) {
@@ -74,11 +76,13 @@ final class DesktopCombatCoordinator {
     func advance(
         elapsedSeconds: Double,
         environment: BodyEnvironment,
+        platformContext: GameplayPlatformContext = .idle,
         beforeFrame: (() -> Void)? = nil
     ) -> [CombatEvent] {
         runtime.advance(
             elapsedSeconds: elapsedSeconds,
             combatEnvironment: environment,
+            combatPlatformContext: platformContext,
             bodyStep: { _ in beforeFrame?() }).combatEvents
     }
 

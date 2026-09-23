@@ -13,19 +13,31 @@ public struct CombatRuntimeCheckpoint: Codable, Equatable, Sendable {
     public var combatCPUs: [String: ClassicCombatCPUCheckpoint]?
     public var gameplayCPUs: [String: ClassicGameplayCPUCheckpoint]?
     public var platformIntents: [String: GameplayPlatformIntent]?
+    public var platformAuthorizations: [String: WindowAuthorization]?
+    public var windowInteractionPolicy: WindowInteractionPolicy?
+    public var cpuSeed: UInt64?
+    public var gameplayStyles: [String: CharacterGameplayStyle]?
 
     public init(
         world: CombatWorldCheckpoint,
         controls: ControlRouter,
         combatCPUs: [String: ClassicCombatCPUCheckpoint]? = nil,
         gameplayCPUs: [String: ClassicGameplayCPUCheckpoint]? = nil,
-        platformIntents: [String: GameplayPlatformIntent]? = nil
+        platformIntents: [String: GameplayPlatformIntent]? = nil,
+        platformAuthorizations: [String: WindowAuthorization]? = nil,
+        windowInteractionPolicy: WindowInteractionPolicy? = nil,
+        cpuSeed: UInt64? = nil,
+        gameplayStyles: [String: CharacterGameplayStyle]? = nil
     ) {
         self.world = world
         self.controls = controls
         self.combatCPUs = combatCPUs
         self.gameplayCPUs = gameplayCPUs
         self.platformIntents = platformIntents
+        self.platformAuthorizations = platformAuthorizations
+        self.windowInteractionPolicy = windowInteractionPolicy
+        self.cpuSeed = cpuSeed
+        self.gameplayStyles = gameplayStyles
     }
 }
 
@@ -37,20 +49,47 @@ public struct CombatRuntimeDigest: Codable, Equatable, Sendable {
     public var combatCPUs: [String: ClassicCombatCPUCheckpoint]?
     public var gameplayCPUs: [String: ClassicGameplayCPUCheckpoint]?
     public var platformIntents: [String: GameplayPlatformIntent]?
+    public var platformAuthorizations: [String: WindowAuthorization]?
+    public var windowInteractionPolicy: WindowInteractionPolicy?
+    public var cpuSeed: UInt64?
+    public var gameplayStyles: [String: CharacterGameplayStyle]?
 
     public init(
         world: CombatWorldCheckpoint,
         controls: ControlRouter,
         combatCPUs: [String: ClassicCombatCPUCheckpoint]? = nil,
         gameplayCPUs: [String: ClassicGameplayCPUCheckpoint]? = nil,
-        platformIntents: [String: GameplayPlatformIntent]? = nil
+        platformIntents: [String: GameplayPlatformIntent]? = nil,
+        platformAuthorizations: [String: WindowAuthorization]? = nil,
+        windowInteractionPolicy: WindowInteractionPolicy? = nil,
+        cpuSeed: UInt64? = nil,
+        gameplayStyles: [String: CharacterGameplayStyle]? = nil
     ) {
         self.world = world
         self.controls = controls
         self.combatCPUs = combatCPUs
         self.gameplayCPUs = gameplayCPUs
         self.platformIntents = platformIntents
+        self.platformAuthorizations = platformAuthorizations
+        self.windowInteractionPolicy = windowInteractionPolicy
+        self.cpuSeed = cpuSeed
+        self.gameplayStyles = gameplayStyles
     }
+}
+
+public struct GameplayPlatformContext: Codable, Equatable, Sendable {
+    public var userActive: Bool
+    public var foregroundWindowIDs: Set<String>
+
+    public init(
+        userActive: Bool = false,
+        foregroundWindowIDs: Set<String> = []
+    ) {
+        self.userActive = userActive
+        self.foregroundWindowIDs = foregroundWindowIDs
+    }
+
+    public static let idle = GameplayPlatformContext()
 }
 
 /// The sole combat-frame owner beneath `GameRuntime`. Production, harness and
@@ -60,58 +99,74 @@ public final class CombatRuntime {
     public private(set) var world: CombatWorld
     public var bodyWorld: BodyWorld { world.authoritativeBodyWorld }
     private var controls: ControlRouter
-    private var combatCPUs: [String: ClassicCombatCPU]
     private var gameplayCPUs: [String: ClassicGameplayCPU]
     public private(set) var platformIntents: [String: GameplayPlatformIntent]
+    public private(set) var platformAuthorizations: [String: WindowAuthorization]
     private var cpuDifficulties: [String: CombatCPUDifficulty]
+    private var windowInteractionPolicy: WindowInteractionPolicy
+    private var cpuSeed: UInt64
+    private var gameplayStyles: [String: CharacterGameplayStyle]
 
-    public init() {
+    public init(cpuSeed: UInt64 = 0) {
         self.world = CombatWorld()
         self.controls = ControlRouter()
-        self.combatCPUs = [:]
         self.gameplayCPUs = [:]
         self.platformIntents = [:]
+        self.platformAuthorizations = [:]
         self.cpuDifficulties = [:]
+        self.windowInteractionPolicy = WindowInteractionPolicy()
+        self.cpuSeed = cpuSeed
+        self.gameplayStyles = [:]
     }
 
     public init(checkpoint: CombatRuntimeCheckpoint) {
         self.world = CombatWorld(checkpoint: checkpoint.world)
         self.controls = checkpoint.controls
-        self.combatCPUs = (checkpoint.combatCPUs ?? [:]).mapValues {
-            ClassicCombatCPU(checkpoint: $0)
-        }
         self.gameplayCPUs = (checkpoint.gameplayCPUs ?? [:]).mapValues {
             ClassicGameplayCPU(checkpoint: $0)
         }
         self.platformIntents = checkpoint.platformIntents ?? [:]
+        self.platformAuthorizations = checkpoint.platformAuthorizations ?? [:]
         self.cpuDifficulties = [:]
+        self.windowInteractionPolicy = checkpoint.windowInteractionPolicy ?? WindowInteractionPolicy()
+        self.cpuSeed = checkpoint.cpuSeed ?? 0
+        self.gameplayStyles = checkpoint.gameplayStyles ?? [:]
     }
 
     public var digest: CombatRuntimeDigest {
         CombatRuntimeDigest(
             world: world.checkpoint(), controls: controls,
-            combatCPUs: cpuCheckpoints(), gameplayCPUs: gameplayCPUCheckpoints(),
-            platformIntents: platformIntents)
+            combatCPUs: nil, gameplayCPUs: gameplayCPUCheckpoints(),
+            platformIntents: platformIntents,
+            platformAuthorizations: platformAuthorizations,
+            windowInteractionPolicy: windowInteractionPolicy,
+            cpuSeed: cpuSeed,
+            gameplayStyles: gameplayStyles)
     }
 
     public func checkpoint() -> CombatRuntimeCheckpoint {
         CombatRuntimeCheckpoint(
             world: world.checkpoint(), controls: controls,
-            combatCPUs: cpuCheckpoints(), gameplayCPUs: gameplayCPUCheckpoints(),
-            platformIntents: platformIntents)
+            combatCPUs: nil, gameplayCPUs: gameplayCPUCheckpoints(),
+            platformIntents: platformIntents,
+            platformAuthorizations: platformAuthorizations,
+            windowInteractionPolicy: windowInteractionPolicy,
+            cpuSeed: cpuSeed,
+            gameplayStyles: gameplayStyles)
     }
 
     public func restore(_ checkpoint: CombatRuntimeCheckpoint) {
         world = CombatWorld(checkpoint: checkpoint.world)
         controls = checkpoint.controls
-        combatCPUs = (checkpoint.combatCPUs ?? [:]).mapValues {
-            ClassicCombatCPU(checkpoint: $0)
-        }
         gameplayCPUs = (checkpoint.gameplayCPUs ?? [:]).mapValues {
             ClassicGameplayCPU(checkpoint: $0)
         }
         platformIntents = checkpoint.platformIntents ?? [:]
+        platformAuthorizations = checkpoint.platformAuthorizations ?? [:]
         cpuDifficulties = [:]
+        windowInteractionPolicy = checkpoint.windowInteractionPolicy ?? WindowInteractionPolicy()
+        cpuSeed = checkpoint.cpuSeed ?? 0
+        gameplayStyles = checkpoint.gameplayStyles ?? [:]
     }
 
     public func register(
@@ -120,11 +175,13 @@ public final class CombatRuntime {
         x: Double,
         yFeet: Double,
         facing: CombatFacing = .right,
-        visualScale: Double = 1
+        visualScale: Double = 1,
+        realCombatReady: Bool = true
     ) {
         if world.body(for: actorID) == nil {
             world.register(actorID: actorID, profile: profile, x: x, yFeet: yFeet,
-                           facing: facing, visualScale: visualScale)
+                           facing: facing, visualScale: visualScale,
+                           realCombatReady: realCombatReady)
         } else {
             world.setProfile(profile, for: actorID)
         }
@@ -136,17 +193,12 @@ public final class CombatRuntime {
         for actorID: EntityID
     ) {
         cpuDifficulties[actorID.raw] = difficulty
-        combatCPUs[actorID.raw] = ClassicCombatCPU(
-            actorID: actorID,
-            difficulty: difficulty,
-            seed: stableCPUSeed(actorID))
         gameplayCPUs[actorID.raw] = ClassicGameplayCPU(
             actorID: actorID, difficulty: difficulty, seed: stableCPUSeed(actorID))
     }
 
     public func unregister(_ actorID: EntityID) {
         controls.removeActor(actorID)
-        combatCPUs.removeValue(forKey: actorID.raw)
         gameplayCPUs.removeValue(forKey: actorID.raw)
         platformIntents.removeValue(forKey: actorID.raw)
         cpuDifficulties.removeValue(forKey: actorID.raw)
@@ -211,12 +263,26 @@ public final class CombatRuntime {
         world.setGameplayEnergy(current, for: actorID)
     }
 
+    public func setWindowInteractionPolicy(_ policy: WindowInteractionPolicy) {
+        windowInteractionPolicy = policy
+    }
+
+    public func setGameplayStyle(
+        _ style: CharacterGameplayStyle,
+        for actorID: EntityID
+    ) {
+        gameplayStyles[actorID.raw] = style
+    }
+
     public func endSession(cancelled: Bool = false) {
         world.endSession(cancelled: cancelled)
     }
 
     @discardableResult
-    public func advance(environment: BodyEnvironment) -> [CombatEvent] {
+    public func advance(
+        environment: BodyEnvironment,
+        platformContext: GameplayPlatformContext = .idle
+    ) -> [CombatEvent] {
         let snapshot = world.snapshot()
         for body in snapshot.bodies {
             if case .withdrawing = body.participation,
@@ -260,19 +326,33 @@ public final class CombatRuntime {
                     engagementReservations: gameplayCPUs.compactMap { key, value in
                         key == body.actorID.raw ? nil : value.reservedSlot
                     })
+                let windowStates = environment.surfaces.filter {
+                    $0.kind == .windowTop
+                }.map {
+                    GameplayWindowState(
+                        id: $0.id,
+                        areaRatio: min(1, max(0, ($0.right - $0.left) /
+                            max(1, environment.bounds.width))),
+                        isForeground: platformContext.foregroundWindowIDs.contains($0.id),
+                        // Surface snapshots currently expose position/revision but
+                        // not velocity. The platform adapter may supply motion in
+                        // a richer observation without changing this seam.
+                        isMoving: false,
+                        isPullable: true,
+                        allowsDamageOverlay: true)
+                }
                 let output = cpu.advance(GameplayCPUObservation(
                     combat: combatObservation,
                     formalRound: world.session?.state == .active,
                     wasAttacked: body.stunFrames > 0,
-                    windowIDs: environment.surfaces.filter {
-                        $0.kind == .windowTop
-                    }.map(\.id)))
+                    userActive: platformContext.userActive,
+                    windows: windowStates,
+                    style: gameplayStyles[body.actorID.raw] ?? .balanced))
                 gameplayCPUs[body.actorID.raw] = cpu
-                if let intent = output.platformIntent {
-                    platformIntents[body.actorID.raw] = intent
-                } else {
-                    platformIntents.removeValue(forKey: body.actorID.raw)
-                }
+                publishPlatformIntent(
+                    output.platformIntent,
+                    actorID: body.actorID,
+                    context: platformContext)
                 controls.setInput(
                     output.fighterInput,
                     source: .autonomous,
@@ -304,17 +384,47 @@ public final class CombatRuntime {
         }
     }
 
-    private func cpuCheckpoints() -> [String: ClassicCombatCPUCheckpoint] {
-        combatCPUs.mapValues { $0.checkpoint() }
-    }
-
     private func gameplayCPUCheckpoints() -> [String: ClassicGameplayCPUCheckpoint] {
         gameplayCPUs.mapValues { $0.checkpoint() }
     }
 
     private func stableCPUSeed(_ actorID: EntityID) -> UInt64 {
-        actorID.raw.utf8.reduce(UInt64(0xcbf29ce484222325)) {
+        actorID.raw.utf8.reduce(UInt64(0xcbf29ce484222325) ^ cpuSeed) {
             ($0 ^ UInt64($1)) &* 0x100000001b3
+        }
+    }
+
+    private func publishPlatformIntent(
+        _ intent: GameplayPlatformIntent?,
+        actorID: EntityID,
+        context: GameplayPlatformContext
+    ) {
+        guard let intent else {
+            platformIntents.removeValue(forKey: actorID.raw)
+            platformAuthorizations.removeValue(forKey: actorID.raw)
+            return
+        }
+        let actionAndWindow: (WindowGameplayAction, String)?
+        switch intent {
+        case .pullWindow(let id): actionAndWindow = (.pull, id)
+        case .damageWindowOverlay(let id): actionAndWindow = (.damageOverlay, id)
+        case .inspectWindow, .perchWindow, .rest, .observe:
+            actionAndWindow = nil
+        }
+        guard let (action, windowID) = actionAndWindow else {
+            platformIntents[actorID.raw] = intent
+            platformAuthorizations.removeValue(forKey: actorID.raw)
+            return
+        }
+        let authorization = world.authorizeWindowInteraction(
+            action, for: actorID, policy: &windowInteractionPolicy,
+            userActive: context.userActive,
+            targetIsForeground: context.foregroundWindowIDs.contains(windowID))
+        platformAuthorizations[actorID.raw] = authorization
+        if authorization == .allowed {
+            platformIntents[actorID.raw] = intent
+        } else {
+            platformIntents.removeValue(forKey: actorID.raw)
         }
     }
 
@@ -351,7 +461,8 @@ public final class CombatRuntime {
         let participantSet = Set(participants)
         let candidates = world.snapshot().bodies.filter { candidate in
             !participantSet.contains(candidate.actorID) &&
-                candidate.healthState == .active && candidate.rosterRole != .bench
+                candidate.healthState == .active && candidate.rosterRole != .bench &&
+                world.isCombatReady(candidate.actorID)
         }
         let opposingRoster = candidates.filter { candidate in
             guard case .rosterParticipant(let teamID) = candidate.participation

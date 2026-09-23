@@ -54,8 +54,14 @@ public struct ClassicCombatCPU: Sendable {
                    observation.selfBody.gameplayEnergy.current >=
                        $0.effectiveResourceRules.startCost
            }) {
+            if state.lastOutput.moveID == burst.id {
+                return issue(.neutral, intent: .wait, targetID: state.targetID)
+            }
             if state.moveUseCounts == nil { state.moveUseCounts = [:] }
             state.moveUseCounts?[burst.id, default: 0] += 1
+            var history = state.actionHistory ?? ActionHistory()
+            history.record(id: burst.id, family: .burst)
+            state.actionHistory = history
             state.lastOutput = CombatCPUOutputCheckpoint(
                 intent: .attack, targetID: state.targetID,
                 moveID: burst.id, utilityScore: 1_000, usedSearch: false)
@@ -89,22 +95,6 @@ public struct ClassicCombatCPU: Sendable {
         guard let target else { return issue(.neutral, intent: .wait) }
 
         let distance = abs(target.position.x - observation.selfBody.position.x)
-        if distance <= 115,
-           let burst = observation.selfProfile.moves.first(where: {
-               $0.systemControl == .defensiveBurst &&
-                   (state.moveUseCounts?[$0.id, default: 0] ?? 0) == 0 &&
-                   observation.selfBody.gameplayEnergy.current >=
-                       $0.effectiveResourceRules.startCost
-           }) {
-            if state.moveUseCounts == nil { state.moveUseCounts = [:] }
-            state.moveUseCounts?[burst.id, default: 0] += 1
-            state.lastOutput = CombatCPUOutputCheckpoint(
-                intent: .attack, targetID: target.actorID,
-                moveID: burst.id, utilityScore: 1_000, usedSearch: false)
-            return issue(
-                FighterInputFrame(systemControls: [.defensiveBurst]),
-                from: state.lastOutput)
-        }
         if target.phase == .active, distance <= 115 {
             let back = target.position.x >= observation.selfBody.position.x
                 ? FighterInputFrame(left: true)
@@ -123,12 +113,30 @@ public struct ClassicCombatCPU: Sendable {
         }
         state.lastDecisionFrame = observation.frame
 
-        let reservesFirstBurst = observation.selfProfile.moves.contains {
-            $0.systemControl == .defensiveBurst &&
-                (state.moveUseCounts?[$0.id, default: 0] ?? 0) == 0
+        let shouldReserveFirstBurst = shouldReserveFirstDefensiveBurst(
+            profile: observation.selfProfile,
+            selfBody: observation.selfBody)
+        if !shouldReserveFirstBurst,
+           let superMove = observation.selfProfile.moves.first(where: {
+            $0.effectiveResourceRules.family == .superMove &&
+                (state.moveUseCounts?[$0.id, default: 0] ?? 0) == 0 &&
+                observation.selfBody.gameplayEnergy.current >=
+                    $0.effectiveResourceRules.startCost &&
+                distance <= max(55, $0.hit.attackBoxes.map(\.rect.maxX).max() ?? 0) + 18
+        }) {
+            state.pendingInputs = CombatCommandSynthesizer.frames(
+                for: superMove.command, facing: observation.selfBody.facing)
+            state.moveUseCounts?[superMove.id, default: 0] += 1
+            var history = state.actionHistory ?? ActionHistory()
+            history.record(id: superMove.id, family: .superMove)
+            state.actionHistory = history
+            state.lastOutput = CombatCPUOutputCheckpoint(
+                intent: .attack, targetID: target.actorID,
+                moveID: superMove.id, utilityScore: 1_000, usedSearch: false)
+            return issue(state.pendingInputs.removeFirst(), from: state.lastOutput)
         }
-        if !reservesFirstBurst,
-           observation.selfBody.powerUpFrames == 0,
+
+        if observation.selfBody.powerUpFrames == 0,
            observation.selfBody.gameplayEnergy.current >= 240,
            observation.selfBody.gameplayEnergy.current <
                observation.selfBody.gameplayEnergy.maximum,
@@ -348,10 +356,6 @@ public struct ClassicCombatCPU: Sendable {
             profile.moves.contains {
                 $0.effectiveResourceRules.family == .superMove
             }
-        let reservingForBurst = profile.moves.contains {
-            $0.systemControl == .defensiveBurst &&
-                (state.moveUseCounts?[$0.id, default: 0] ?? 0) == 0
-        }
         let unseenResourceCost = profile.moves.filter {
             $0.systemControl == nil &&
                 (state.moveUseCounts?[$0.id, default: 0] ?? 0) == 0 &&
@@ -361,15 +365,17 @@ public struct ClassicCombatCPU: Sendable {
         let reservingForUnseen = unseenResourceCost.map {
             selfBody.gameplayEnergy.current < $0
         } ?? false
+        let reservingForBurst = shouldReserveFirstDefensiveBurst(
+            profile: profile, selfBody: selfBody)
         let scored: [ScoredMove] = profile.moves.filter {
             $0.systemControl == nil
         }.filter {
             !reservingForSuper || $0.effectiveResourceRules.startCost == 0 ||
                 $0.effectiveResourceRules.family == .superMove
         }.filter {
-            !reservingForUnseen || $0.effectiveResourceRules.startCost == 0
-        }.filter {
             !reservingForBurst || $0.effectiveResourceRules.startCost == 0
+        }.filter {
+            !reservingForUnseen || $0.effectiveResourceRules.startCost == 0
         }.map { move in
             let reach = move.projectile == nil
                 ? max(1, move.hit.attackBoxes.map(\.rect.maxX).max() ?? 1)
@@ -423,6 +429,24 @@ public struct ClassicCombatCPU: Sendable {
         return reachable.sorted {
             $0.score == $1.score ? $0.move.id < $1.move.id : $0.score > $1.score
         }
+    }
+
+    private func shouldReserveFirstDefensiveBurst(
+        profile: CombatProfile,
+        selfBody: CombatBodyState
+    ) -> Bool {
+        let healthIsCritical = selfBody.hp * 100 <= profile.maxHP * 45
+        let hasDemonstratedSuper = profile.moves.contains {
+            $0.effectiveResourceRules.family == .superMove &&
+                (state.moveUseCounts?[$0.id, default: 0] ?? 0) > 0
+        }
+        return (healthIsCritical || hasDemonstratedSuper) &&
+            profile.moves.contains {
+                $0.systemControl == .defensiveBurst &&
+                    (state.moveUseCounts?[$0.id, default: 0] ?? 0) == 0 &&
+                    selfBody.gameplayEnergy.current >=
+                        $0.effectiveResourceRules.startCost
+            }
     }
 
     private mutating func approach(
