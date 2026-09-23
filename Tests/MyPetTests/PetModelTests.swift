@@ -203,6 +203,27 @@ final class PetModelTests: XCTestCase {
         XCTAssertEqual(coordinator.world.session?.state, .completed)
     }
 
+    @MainActor
+    func testDesktopCoordinatorCheckpointIsAUnifiedGameRuntimeCheckpoint() {
+        let coordinator = DesktopCombatCoordinator()
+        coordinator.register(
+            actorID: EntityID("a"), profile: CombatProfile(),
+            x: 500, yFeet: 800, facingRight: true, displayHeight: 110)
+        coordinator.register(
+            actorID: EntityID("b"), profile: CombatProfile(),
+            x: 550, yFeet: 800, facingRight: false, displayHeight: 110)
+        coordinator.beginAutonomousCombat(actorID: EntityID("a"))
+
+        _ = coordinator.advance(
+            elapsedSeconds: 1.0 / 60.0,
+            environment: BodyEnvironment(bounds: Rect2D(
+                x: 0, y: 0, width: 1200, height: 800), surfaces: []))
+
+        let checkpoint = coordinator.checkpoint()
+        XCTAssertEqual(checkpoint.bodyClock.frame, 1)
+        XCTAssertEqual(checkpoint.combat?.world.frame, 1)
+    }
+
     func testWalkOffWindowEdgeFalls() {
         // 宠物从上方落到窗口顶沿（y=300），再往左走出窗沿 → 掉到地板。
         world.live[7] = CGRect(x: 300, y: 300, width: 800, height: 400)

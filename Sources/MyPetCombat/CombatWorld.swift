@@ -26,6 +26,7 @@ public final class CombatWorld {
 
     public private(set) var frame: Int64 = 0
     private let bodyWorld: BodyWorld
+    public var authoritativeBodyWorld: BodyWorld { bodyWorld }
     private var rules: [String: CombatRuleState] = [:]
     private var profiles: [String: CombatProfile] = [:]
     private var inputs: [String: FighterInputFrame] = [:]
