@@ -7,7 +7,6 @@ import MyPetCombat
 final class ManualControlPanel: NSPanel {
     var onInput: ((FighterInputFrame) -> Void)?
     var onExit: (() -> Void)?
-    var onCycleTarget: (() -> Void)?
 
     private let inputView = ManualControlView()
     private let label = NSTextField(labelWithString: "")
@@ -46,7 +45,7 @@ final class ManualControlPanel: NSPanel {
 
     func begin(actorName: String) {
         self.actorName = actorName
-        label.stringValue = "控制：\(actorName)\n方向键移动/跳/蹲 · Z X C / A S D 攻击 · Tab 切目标 · Esc 退出"
+        label.stringValue = "控制：\(actorName)\n方向键移动/跳/蹲 · Z X C / A S D 攻击 · Esc 退出"
         center()
         makeKeyAndOrderFront(nil)
         makeFirstResponder(inputView)
@@ -73,7 +72,6 @@ private final class ManualControlView: NSView {
 
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 53 { onExit?(); return }
-        if event.keyCode == 48 { onCycleTarget?(); return }
         pressed.insert(event.keyCode)
         emit()
     }
