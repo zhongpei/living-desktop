@@ -77,18 +77,18 @@ P1/P2 假设。任何翻译代码都必须先写来源注释和等价测试，�
 ~~~text
 MyPetCore
    ↑
-   ├───────────── MyPetCombat
-   │                    ↑
-   │                    │
-   └───────────── MyPetEngine
-                         ↑
-              MyPetSimulation
-                         ↑
-                    MyPetApp
-                         │
-          ┌──────────────┴──────────────┐
-          ↓                             ↓
-     MyPetPlatform                 MyPetRender
+MyPet2D              // geometry, body, physics, surfaces, generic action timeline
+   ↑
+MyPetCombat          // fighter input, moves, hit/guard/health rules
+   ↑
+MyPetEngine          // owns runtime and composes Core + 2D + Combat
+   ↑
+MyPetSimulation
+   ↑
+MyPetApp
+   │
+   ├────────────→ MyPetPlatform
+   └────────────→ MyPetRender
 ~~~
 
 ### 4.1 MyPetCore
@@ -103,12 +103,13 @@ MyPetCore
 - Runtime clock / event types；
 - 不依赖 AppKit、CoreGraphics 的平台对象身份。
 
-### 4.2 MyPetCombat
+### 4.2 MyPet2D
 
-纯 Swift、无 AppKit、可 headless：
+纯 Swift、无 AppKit、可 headless；这是所有桌面实体共享的 2D 游戏底层，
+不能依赖具体 combat 规则：
 
 ~~~text
-Sources/MyPetCombat/
+Sources/MyPet2D/
   Geometry/
     Vec2.swift
     Rect.swift
@@ -122,16 +123,30 @@ Sources/MyPetCombat/
     Contact.swift
     PhysicsSolver.swift
     Constraint.swift
+  Action/
+    ActionTimeline.swift
+    ActionState.swift
+  Replay/
+    BodyWorldSnapshot.swift
+~~~
+
+普通 walk、jump、window、pointer drag/toss、prop physics 和剧情移动只依赖
+MyPet2D。这样以后增加非格斗玩法时，不必引入 Fighter/HitDef 概念。
+
+### 4.3 MyPetCombat
+
+依赖 MyPetCore + MyPet2D，只增加格斗游戏规则：
+
+~~~text
+Sources/MyPetCombat/
   Input/
     FighterInput.swift
     InputBuffer.swift
     CommandDefinition.swift
     CommandMatcher.swift
     CommandSynthesizer.swift
-  Action/
-    ActionTimeline.swift
+  Move/
     MoveDefinition.swift
-    ActionState.swift
   Combat/
     CombatantState.swift
     CollisionBoxes.swift
@@ -144,13 +159,13 @@ Sources/MyPetCombat/
     CombatPolicy.swift
     UtilityCombatPolicy.swift
   Replay/
-    BodyWorldSnapshot.swift
     InputTrace.swift
 ~~~
 
-名字可以在实现时微调，但职责不得重新混回 PetController。
+名字可以在实现时微调，但通用 physics/body 不得重新塞回 Combat，也不得混回
+PetController。
 
-### 4.3 MyPetEngine
+### 4.4 MyPetEngine
 
 继续拥有：
 
@@ -160,7 +175,7 @@ Sources/MyPetCombat/
 - BodyRuntime adapter：GameKernel 与 BodyWorld 的桥；
 - ControlRouter：autonomous / manual / authored 的控制源仲裁。
 
-### 4.4 MyPetPlatform
+### 4.5 MyPetPlatform
 
 只负责：
 
@@ -170,7 +185,7 @@ Sources/MyPetCombat/
 - Accessibility 的批准平台动作；
 - 不保存 BodyState，不做碰撞，不推进动画。
 
-### 4.5 MyPetRender
+### 4.6 MyPetRender
 
 只负责：
 
@@ -1131,9 +1146,9 @@ CombatSession
 
 实现者应按以下顺序工作，禁止先做 UI 再补规则：
 
-1. 建 MyPetCombat target 与纯数据 Vec2/Rect。
-2. 翻译并测试 AABB place/mirror/overlap。
-3. 翻译 InputState/InputBuffer/CommandMatcher/CommandSynthesizer。
+1. 建 MyPet2D target 与纯数据 Vec2/Rect，再建依赖它的 MyPetCombat target。
+2. 在 MyPet2D 翻译并测试 AABB place/mirror/overlap。
+3. 在 MyPetCombat 翻译 InputState/InputBuffer/CommandMatcher/CommandSynthesizer。
 4. 建 60Hz RuntimeFrameClock 与 deterministic accumulator。
 5. 建 BodyDefinition/BodyState/BodyWorld。
 6. 把 display floor/window surface 转成纯数据 snapshot。
