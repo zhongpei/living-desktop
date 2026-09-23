@@ -686,6 +686,7 @@ final class PetController {
     }
 
     private func updatePresentationPose() {
+        let combat = combatCoordinator.body(actorID: runtimeActorID)
         gameplayRuntime.updateBodyPose(BodyPose(
             actorID: runtimeActorID,
             x: Double(model.x),
@@ -694,6 +695,10 @@ final class PetController {
             motion: model.walking ? "walking" : String(describing: model.state),
             action: actions.performance?.clipKey,
             horizontalSpeed: Double(model.vx),
+            hp: combat?.hp,
+            maxHP: combat.map { _ in combatProfile.maxHP },
+            combatPhase: combat?.phase.rawValue,
+            healthState: combat?.healthState.rawValue,
             displayHeight: Double(settings.displayHeight)))
     }
 
