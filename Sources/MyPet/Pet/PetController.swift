@@ -199,7 +199,10 @@ final class PetController {
         self.usesSharedGameplayKernel = injectedRuntime != nil
         let loadedCombatProfile = CombatProfileLoader.load(from: library.packURL)
         self.combatProfile = loadedCombatProfile ?? CombatProfile(moves: [])
-        self.combatEnabled = loadedCombatProfile != nil || (capabilities?.contains("combat") == true)
+        // A capability grants permission; an authored combat.json grants executable moves.
+        // Never create invisible damaging attacks just because the character catalog says combat.
+        self.combatEnabled = loadedCombatProfile != nil &&
+            (capabilities == nil || capabilities?.contains("combat") == true)
         self.combatCoordinator = injectedCombatCoordinator ?? DesktopCombatCoordinator()
         self.usesSharedCombatWorld = injectedCombatCoordinator != nil
         self.characterDefinition = characterDefinition
