@@ -118,6 +118,7 @@ public final class CombatWorld {
     public func step(environment: CombatEnvironment) -> [CombatEvent] {
         var events: [CombatEvent] = []
         let ids = bodies.keys.sorted()
+        let frameSnapshot = bodies
 
         for id in ids {
             guard var body = bodies[id], let profile = profiles[id] else { continue }
@@ -137,6 +138,7 @@ public final class CombatWorld {
 
             advanceHealth(&body, profile: profile, events: &events)
             advanceStun(&body)
+            orientTowardNearestOpponent(&body, snapshot: frameSnapshot)
             if body.healthState == .active {
                 acceptControl(&body, profile: profile, input: input, buffer: buffer, events: &events)
                 advanceMove(&body, profile: profile)
@@ -145,7 +147,7 @@ public final class CombatWorld {
             bodies[id] = body
         }
 
-        resolvePushboxes()
+        resolvePushboxes(environment: environment)
         resolveHits(events: &events)
         // A KO becomes downed only after its physical knockback has actually landed.
         for id in ids {
@@ -306,7 +308,7 @@ public final class CombatWorld {
             return
         }
         body.position.y = surface.y
-        if let fraction = body.surfaceFraction {
+        if surface.kind != .floor, let fraction = body.surfaceFraction {
             let margin = profile.pushRadius
             let usable = max(1, (surface.right - surface.left) - margin * 2)
             body.position.x = surface.left + margin + min(1, max(0, fraction)) * usable
@@ -374,11 +376,77 @@ public final class CombatWorld {
             }
         }
 
+        // Recover from a fall through a physical gap between monitors. The virtual
+        // desktop bounding rectangle is not itself a floor.
+        if body.velocity.y >= 0,
+           body.position.y >= environment.bounds.maxY,
+           body.locomotion != .grounded,
+           let floor = environment.surfaces
+                .filter({ $0.kind == .floor })
+                .min(by: {
+                    Self.distanceToSpan(body.position.x, $0.left, $0.right) <
+                    Self.distanceToSpan(body.position.x, $1.left, $1.right)
+                }) {
+            let margin = profile.pushRadius * 0.6
+            body.position.x = min(floor.right - margin, max(floor.left + margin, body.position.x))
+            body.position.y = floor.y
+            body.currentSurfaceID = floor.id
+            body.surfaceFraction = nil
+            body.locomotion = .grounded
+            body.velocity.y = 0
+            body.velocity.x = 0
+        }
+
         body.position.x = min(environment.bounds.maxX, max(environment.bounds.minX, body.position.x))
         body.position.y = min(environment.bounds.maxY, max(environment.bounds.minY, body.position.y))
     }
 
-    private func resolvePushboxes() {
+    private func orientTowardNearestOpponent(
+        _ body: inout CombatBodyState,
+        snapshot: [String: CombatBodyState]
+    ) {
+        guard body.authority == .manual || body.authority == .autonomous,
+              body.healthState == .active,
+              body.currentMoveID == nil,
+              body.phase == .neutral,
+              body.locomotion == .grounded else { return }
+        guard let target = snapshot.values
+            .filter({ $0.actorID != body.actorID && $0.healthState == .active })
+            .min(by: {
+                abs($0.position.x - body.position.x) <
+                abs($1.position.x - body.position.x)
+            }) else { return }
+        if abs(target.position.x - body.position.x) > 0.001 {
+            body.facing = target.position.x >= body.position.x ? .right : .left
+        }
+    }
+
+    private func refreshSurfaceFraction(
+        _ body: inout CombatBodyState,
+        profile: CombatProfile,
+        environment: CombatEnvironment
+    ) {
+        guard body.locomotion == .grounded,
+              let surface = environment.surface(id: body.currentSurfaceID),
+              surface.kind != .floor else {
+            if body.currentSurfaceID.flatMap(environment.surface(id:))?.kind == .floor {
+                body.surfaceFraction = nil
+            }
+            return
+        }
+        let margin = profile.pushRadius
+        let usable = max(1, surface.right - surface.left - margin * 2)
+        body.surfaceFraction = min(1, max(0,
+            (body.position.x - surface.left - margin) / usable))
+    }
+
+    private static func distanceToSpan(_ x: Double, _ left: Double, _ right: Double) -> Double {
+        if x < left { return left - x }
+        if x > right { return x - right }
+        return 0
+    }
+
+    private func resolvePushboxes(environment: CombatEnvironment) {
         let ids = bodies.keys.sorted()
         guard ids.count > 1 else { return }
         for i in 0..<(ids.count - 1) {
@@ -395,6 +463,8 @@ public final class CombatWorld {
                 let sign = dx >= 0 ? 1.0 : -1.0
                 a.position.x -= sign * overlap * 0.5
                 b.position.x += sign * overlap * 0.5
+                refreshSurfaceFraction(&a, profile: ap, environment: environment)
+                refreshSurfaceFraction(&b, profile: bp, environment: environment)
                 bodies[ids[i]] = a
                 bodies[ids[j]] = b
             }
@@ -423,6 +493,7 @@ public final class CombatWorld {
                       let defender = snapshot[defenderID],
                       defender.invulnerabilityFrames == 0,
                       defender.healthState == .active,
+                      defender.locomotion != .dragged,
                       let defenderProfile = profiles[defenderID] else { continue }
                 let hurtRects = defenderProfile.hurtBoxes.map {
                     $0.placed(at: defender.position, facing: defender.facing, scale: defender.visualScale)
