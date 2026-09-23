@@ -54,7 +54,11 @@ final class DesktopCombatCoordinator {
 
     func endManual(actorID: EntityID) {
         manualInputs[actorID.raw] = nil
-        world.setInput(.neutral, for: actorID, authority: .scripted)
+        if pointerActors.contains(actorID.raw) {
+            pointerResumeAuthority[actorID.raw] = .scripted
+        } else {
+            world.setInput(.neutral, for: actorID, authority: .scripted)
+        }
     }
 
     func beginAutonomousCombat(actorID: EntityID) {
@@ -64,7 +68,11 @@ final class DesktopCombatCoordinator {
 
     func endAutonomousCombat(actorID: EntityID) {
         autonomousActors.remove(actorID.raw)
-        world.setInput(.neutral, for: actorID, authority: .scripted)
+        if pointerActors.contains(actorID.raw) {
+            pointerResumeAuthority[actorID.raw] = .scripted
+        } else {
+            world.setInput(.neutral, for: actorID, authority: .scripted)
+        }
     }
 
     func beginPointerDrag(actorID: EntityID, x: Double, y: Double) {
