@@ -108,9 +108,11 @@ public struct CombatMoveDefinition: Codable, Equatable, Sendable {
     public var hit: CombatHitDefinition
     /// Petpack action name without the actions/ prefix.
     public var visualAction: String
+    public var projectile: ProjectileDefinition?
 
     public init(id: String, command: CombatCommand, startupFrames: Int, activeFrames: Int,
-                recoveryFrames: Int, hit: CombatHitDefinition, visualAction: String) {
+                recoveryFrames: Int, hit: CombatHitDefinition, visualAction: String,
+                projectile: ProjectileDefinition? = nil) {
         self.id = id
         self.command = command
         self.startupFrames = max(0, startupFrames)
@@ -118,6 +120,7 @@ public struct CombatMoveDefinition: Codable, Equatable, Sendable {
         self.recoveryFrames = max(0, recoveryFrames)
         self.hit = hit
         self.visualAction = visualAction
+        self.projectile = projectile
     }
 
     public var totalFrames: Int { startupFrames + activeFrames + recoveryFrames }
@@ -312,7 +315,8 @@ public struct CombatBodyState: Codable, Equatable, Sendable {
 }
 
 public enum CombatEventKind: String, Codable, Sendable {
-    case moveStarted, hit, blocked, clash, knockedOut, downed, recoveryStarted, recovered
+    case moveStarted, hit, blocked, clash, projectileSpawned, projectileExpired
+    case knockedOut, downed, recoveryStarted, recovered
 }
 
 public struct CombatEvent: Codable, Equatable, Sendable {
@@ -333,9 +337,23 @@ public struct CombatEvent: Codable, Equatable, Sendable {
 public struct CombatWorldSnapshot: Codable, Equatable, Sendable {
     public var frame: Int64
     public var bodies: [CombatBodyState]
-    public init(frame: Int64, bodies: [CombatBodyState]) {
+    public var projectiles: [CombatProjectileSnapshot]
+    public init(frame: Int64, bodies: [CombatBodyState],
+                projectiles: [CombatProjectileSnapshot] = []) {
         self.frame = frame
         self.bodies = bodies.sorted { $0.actorID.raw < $1.actorID.raw }
+        self.projectiles = projectiles.sorted { $0.entityID.raw < $1.entityID.raw }
+    }
+
+    private enum CodingKeys: String, CodingKey { case frame, bodies, projectiles }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            frame: try values.decode(Int64.self, forKey: .frame),
+            bodies: try values.decode([CombatBodyState].self, forKey: .bodies),
+            projectiles: try values.decodeIfPresent(
+                [CombatProjectileSnapshot].self, forKey: .projectiles) ?? [])
     }
 }
 
@@ -348,10 +366,12 @@ public struct CombatWorldCheckpoint: Codable, Equatable, Sendable {
     public var inputs: [String: FighterInputFrame]
     public var buffers: [String: CombatInputBuffer]
     public var session: CombatSession?
+    public var projectiles: [String: CombatProjectileState]?
 
     public init(frame: Int64, bodyWorld: BodyWorldCheckpoint, rules: [String: CombatRuleState],
                 profiles: [String: CombatProfile], inputs: [String: FighterInputFrame],
-                buffers: [String: CombatInputBuffer], session: CombatSession? = nil) {
+                buffers: [String: CombatInputBuffer], session: CombatSession? = nil,
+                projectiles: [String: CombatProjectileState]? = nil) {
         self.frame = frame
         self.bodyWorld = bodyWorld
         self.rules = rules
@@ -359,5 +379,6 @@ public struct CombatWorldCheckpoint: Codable, Equatable, Sendable {
         self.inputs = inputs
         self.buffers = buffers
         self.session = session
+        self.projectiles = projectiles
     }
 }

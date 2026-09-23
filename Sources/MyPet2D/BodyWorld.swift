@@ -65,7 +65,9 @@ public final class BodyWorld {
         var contacts: [Contact] = []
         for id in bodies.keys.sorted() {
             guard var body = bodies[id], let definition = definitions[id] else { continue }
-            syncAttachedSurface(&body, environment: environment, definition: definition)
+            if definition.collisionMask.contains(.environment) {
+                syncAttachedSurface(&body, environment: environment, definition: definition)
+            }
             if definition.simulationEnabled {
                 integrate(&body, definition: definition, environment: environment, contacts: &contacts)
             }
@@ -144,7 +146,8 @@ public final class BodyWorld {
         guard body.locomotion != .dragged && body.locomotion != .sleeping else { return }
         let previousY = body.position.y
 
-        if body.locomotion == .grounded && body.currentSurfaceID == nil {
+        if definition.collisionMask.contains(.environment),
+           body.locomotion == .grounded && body.currentSurfaceID == nil {
             if let support = environment.surfaces.first(where: {
                 $0.contains(x: body.position.x) && abs($0.y - body.position.y) <= 2
             }) {
@@ -156,7 +159,8 @@ public final class BodyWorld {
 
         if body.locomotion == .grounded {
             body.position.x += body.velocity.x
-            if let surface = environment.surface(id: body.currentSurfaceID) {
+            if definition.collisionMask.contains(.environment),
+               let surface = environment.surface(id: body.currentSurfaceID) {
                 let margin = supportMargin(for: definition)
                 if !surface.contains(x: body.position.x, margin: margin) {
                     body.currentSurfaceID = nil
@@ -171,10 +175,11 @@ public final class BodyWorld {
         }
 
         if body.locomotion == .airborne || body.locomotion == .tossed {
-            body.velocity.y += Self.gravityPerFrame
+            body.velocity.y += Self.gravityPerFrame * definition.gravityScale
             body.position.x += body.velocity.x
             body.position.y += body.velocity.y
-            if body.velocity.y >= 0,
+            if definition.collisionMask.contains(.environment),
+               body.velocity.y >= 0,
                let landing = environment.landingSurface(
                     x: body.position.x, previousFeetY: previousY, nextFeetY: body.position.y) {
                 let wasTossed = body.locomotion == .tossed
@@ -193,7 +198,8 @@ public final class BodyWorld {
             }
         }
 
-        if body.velocity.y >= 0,
+        if definition.collisionMask.contains(.environment),
+           body.velocity.y >= 0,
            body.position.y >= environment.bounds.maxY,
            body.locomotion != .grounded,
            let floor = environment.surfaces.filter({ $0.kind == .floor }).min(by: {

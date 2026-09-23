@@ -80,6 +80,15 @@ final class CombatWorldTests: XCTestCase {
 
         XCTAssertNil(restored.session)
         XCTAssertEqual(restored.body(for: EntityID("a"))?.hitLedger, [:])
+
+        var snapshotPayload = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(world.snapshot()))
+                as? [String: Any])
+        snapshotPayload.removeValue(forKey: "projectiles")
+        let oldSnapshot = try JSONDecoder().decode(
+            CombatWorldSnapshot.self,
+            from: JSONSerialization.data(withJSONObject: snapshotPayload))
+        XCTAssertTrue(oldSnapshot.projectiles.isEmpty)
     }
 
     func testCombatSessionRejectsInvalidRosterAndCancelsWhenParticipantLeaves() {
