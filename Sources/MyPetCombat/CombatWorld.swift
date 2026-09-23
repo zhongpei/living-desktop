@@ -4,6 +4,13 @@ import MyPetCore
 /// Deterministic 60 Hz body/combat authority. Rendering, AppKit and models are consumers/producers
 /// of snapshots and inputs; none of them mutate authoritative body state.
 public final class CombatWorld {
+    private struct PendingHit {
+        let attackerID: String
+        let defenderID: String
+        let move: CombatMoveDefinition
+        let guarding: Bool
+    }
+
     public static let framesPerSecond = 60
     public static let gravityPerFrame = 1600.0 / 3600.0
 
@@ -391,75 +398,109 @@ public final class CombatWorld {
     }
 
     private func resolveHits(events: inout [CombatEvent]) {
-        let ids = bodies.keys.sorted()
+        // Detect against one immutable frame snapshot first. Resolution happens only
+        // after every legal contact is known, so A<->B trades are independent of
+        // actor iteration order.
+        let snapshot = bodies
+        let ids = snapshot.keys.sorted()
+        var pending: [PendingHit] = []
+
         for attackerID in ids {
-            guard var attacker = bodies[attackerID],
+            guard let attacker = snapshot[attackerID],
                   attacker.phase == .active,
                   let attackerProfile = profiles[attackerID],
                   let move = attackerProfile.move(id: attacker.currentMoveID) else { continue }
             let attackRects = move.hit.attackBoxes.map {
                 $0.placed(at: attacker.position, facing: attacker.facing, scale: attacker.visualScale)
             }
+
             for defenderID in ids where defenderID != attackerID {
                 guard !attacker.hitTargets.contains(defenderID),
-                      var defender = bodies[defenderID],
+                      let defender = snapshot[defenderID],
                       defender.invulnerabilityFrames == 0,
                       defender.healthState == .active,
                       let defenderProfile = profiles[defenderID] else { continue }
                 let hurtRects = defenderProfile.hurtBoxes.map {
                     $0.placed(at: defender.position, facing: defender.facing, scale: defender.visualScale)
                 }
-                guard attackRects.contains(where: { hit in hurtRects.contains(where: hit.overlaps) }) else {
-                    continue
-                }
+                guard attackRects.contains(where: { hit in
+                    hurtRects.contains(where: hit.overlaps)
+                }) else { continue }
 
                 let input = inputs[defenderID] ?? .neutral
                 let attackerIsRight = attacker.position.x > defender.position.x
                 let guarding = defender.locomotion == .grounded &&
                     (attackerIsRight ? input.left : input.right) &&
                     defender.currentMoveID == nil
-                attacker.hitTargets.insert(defenderID)
-                attacker.hitStopFrames = max(attacker.hitStopFrames, move.hit.hitStopFrames)
-
-                if guarding {
-                    defender.hp = max(0, defender.hp - move.hit.chipDamage)
-                    defender.phase = .blockStun
-                    defender.stunFrames = move.hit.blockStunFrames
-                    defender.hitStopFrames = max(defender.hitStopFrames, move.hit.hitStopFrames)
-                    defender.velocity.x = move.hit.knockbackX * attacker.facing.sign * 0.35
-                    events.append(CombatEvent(frame: frame, kind: .blocked,
-                                              actorID: attacker.actorID, targetID: defender.actorID,
-                                              moveID: move.id, amount: move.hit.chipDamage))
-                } else {
-                    defender.hp = max(0, defender.hp - move.hit.damage)
-                    defender.currentMoveID = nil
-                    defender.moveFrame = 0
-                    defender.hitTargets.removeAll()
-                    defender.phase = .hitStun
-                    defender.stunFrames = move.hit.hitStunFrames
-                    defender.hitStopFrames = max(defender.hitStopFrames, move.hit.hitStopFrames)
-                    defender.velocity.x = move.hit.knockbackX * attacker.facing.sign
-                    defender.velocity.y = move.hit.knockbackY
-                    if move.hit.knockbackY < 0 {
-                        defender.currentSurfaceID = nil
-                        defender.surfaceFraction = nil
-                        defender.locomotion = .airborne
-                    }
-                    events.append(CombatEvent(frame: frame, kind: .hit,
-                                              actorID: attacker.actorID, targetID: defender.actorID,
-                                              moveID: move.id, amount: move.hit.damage))
-                    if defender.hp == 0 {
-                        defender.healthState = .knockedOut
-                        defender.phase = .hitStun
-                        defender.currentSurfaceID = move.hit.knockbackY < 0 ? nil : defender.currentSurfaceID
-                        events.append(CombatEvent(frame: frame, kind: .knockedOut,
-                                                  actorID: defender.actorID,
-                                                  targetID: attacker.actorID, moveID: move.id))
-                    }
-                }
-                bodies[defenderID] = defender
+                pending.append(PendingHit(
+                    attackerID: attackerID,
+                    defenderID: defenderID,
+                    move: move,
+                    guarding: guarding))
             }
-            bodies[attackerID] = attacker
+        }
+
+        // Mark every attacker's contact before mutating defenders. This preserves
+        // per-move hit de-duplication even when multiple actors trade on one frame.
+        for hit in pending {
+            guard var attacker = bodies[hit.attackerID] else { continue }
+            attacker.hitTargets.insert(hit.defenderID)
+            attacker.hitStopFrames = max(attacker.hitStopFrames, hit.move.hit.hitStopFrames)
+            bodies[hit.attackerID] = attacker
+        }
+
+        for hit in pending.sorted(by: {
+            $0.defenderID == $1.defenderID
+                ? $0.attackerID < $1.attackerID
+                : $0.defenderID < $1.defenderID
+        }) {
+            guard let attackerAtDetection = snapshot[hit.attackerID],
+                  var defender = bodies[hit.defenderID] else { continue }
+            let definition = hit.move.hit
+            let defenderWasAlive = defender.hp > 0
+
+            if hit.guarding {
+                defender.hp = max(0, defender.hp - definition.chipDamage)
+                defender.phase = .blockStun
+                defender.stunFrames = max(defender.stunFrames, definition.blockStunFrames)
+                defender.hitStopFrames = max(defender.hitStopFrames, definition.hitStopFrames)
+                defender.velocity.x = definition.knockbackX * attackerAtDetection.facing.sign * 0.35
+                events.append(CombatEvent(
+                    frame: frame, kind: .blocked,
+                    actorID: attackerAtDetection.actorID, targetID: defender.actorID,
+                    moveID: hit.move.id, amount: definition.chipDamage))
+            } else {
+                defender.hp = max(0, defender.hp - definition.damage)
+                defender.currentMoveID = nil
+                defender.moveFrame = 0
+                defender.hitTargets.removeAll()
+                defender.phase = .hitStun
+                defender.stunFrames = max(defender.stunFrames, definition.hitStunFrames)
+                defender.hitStopFrames = max(defender.hitStopFrames, definition.hitStopFrames)
+                defender.velocity.x = definition.knockbackX * attackerAtDetection.facing.sign
+                defender.velocity.y = definition.knockbackY
+                if definition.knockbackY < 0 {
+                    defender.currentSurfaceID = nil
+                    defender.surfaceFraction = nil
+                    defender.locomotion = .airborne
+                }
+                events.append(CombatEvent(
+                    frame: frame, kind: .hit,
+                    actorID: attackerAtDetection.actorID, targetID: defender.actorID,
+                    moveID: hit.move.id, amount: definition.damage))
+            }
+
+            if defenderWasAlive && defender.hp == 0 {
+                defender.healthState = .knockedOut
+                defender.phase = .hitStun
+                if definition.knockbackY < 0 { defender.currentSurfaceID = nil }
+                events.append(CombatEvent(
+                    frame: frame, kind: .knockedOut,
+                    actorID: defender.actorID,
+                    targetID: attackerAtDetection.actorID,
+                    moveID: hit.move.id))
+            }
+            bodies[hit.defenderID] = defender
         }
     }
 }
