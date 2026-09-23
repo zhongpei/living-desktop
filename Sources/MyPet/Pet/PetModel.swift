@@ -278,6 +278,53 @@ final class PetModel {
         clampToVirtual()
     }
 
+    /// Projects authoritative combat/body state back into the legacy PetModel facade.
+    /// Story/window code can keep reading PetModel during migration, but it no longer
+    /// integrates a second body while combat owns control.
+    func applyCombatBodyState(_ body: CombatBodyState) {
+        x = CGFloat(body.position.x)
+        yFeet = CGFloat(body.position.y)
+        vx = CGFloat(body.velocity.x * Double(CombatWorld.framesPerSecond))
+        vy = CGFloat(body.velocity.y * Double(CombatWorld.framesPerSecond))
+        facingRight = body.facing == .right
+        walking = false
+        pendingWalkDir = nil
+
+        switch body.locomotion {
+        case .grounded:
+            if let id = body.currentSurfaceID,
+               id.hasPrefix("window:"), id.hasSuffix(":top"),
+               let raw = id.split(separator: ":").dropFirst().first,
+               let windowID = UInt32(raw) {
+                perch = (CGWindowID(windowID), CGFloat(body.surfaceFraction ?? 0.5))
+                stance = nil
+                state = .perched
+            } else {
+                perch = nil
+                state = .grounded
+                stance = world.surfaces(near: x, footY: yFeet)
+                    .first { abs($0.y - yFeet) <= 2 && x >= $0.left && x <= $0.right }
+            }
+            walking = body.healthState == .active &&
+                body.phase == .neutral &&
+                abs(body.velocity.x) > 0.01
+        case .airborne:
+            perch = nil
+            stance = nil
+            state = .airborne
+        case .dragged:
+            perch = nil
+            stance = nil
+            state = .dragged
+        case .tossed:
+            perch = nil
+            stance = nil
+            state = .tossed
+        case .sleeping:
+            state = .asleep
+        }
+    }
+
     /// Combat hit/throw impulse enters the same body physics used by mouse toss,
     /// jumping and window falls. Values are points per combat frame.
     func applyCombatImpulse(vxPerFrame: Double, vyPerFrame: Double) {
