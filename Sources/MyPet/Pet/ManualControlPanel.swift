@@ -11,9 +11,12 @@ final class ManualControlPanel: NSPanel {
     private let inputView = ManualControlView()
     private let label = NSTextField(labelWithString: "")
     private(set) var actorName = ""
-    private var mappings = ManualControlMappingCatalog()
+    private let mappingStore: ManualControlMappingStore
+    private var mappings: ManualControlMappingCatalog
 
-    init() {
+    init(mappingStore: ManualControlMappingStore = ManualControlMappingStore()) {
+        self.mappingStore = mappingStore
+        self.mappings = mappingStore.load()
         super.init(
             contentRect: NSRect(x: 0, y: 0, width: 330, height: 92),
             styleMask: [.titled, .utilityWindow],
@@ -45,6 +48,12 @@ final class ManualControlPanel: NSPanel {
 
     func setMapping(_ mapping: ManualControlMapping, for characterID: String) {
         mappings.set(mapping, for: characterID)
+        mappingStore.save(mappings)
+    }
+
+    func removeMapping(for characterID: String) {
+        mappings.remove(for: characterID)
+        mappingStore.save(mappings)
     }
 
     func begin(actorName: String, characterID: String) {

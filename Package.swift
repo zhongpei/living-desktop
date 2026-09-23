@@ -15,6 +15,7 @@ let package = Package(
         .library(name: "MyPetCore", targets: ["MyPetCore"]),
         .library(name: "MyPet2D", targets: ["MyPet2D"]),
         .library(name: "MyPetCombat", targets: ["MyPetCombat"]),
+        .library(name: "MyPetCombatCPU", targets: ["MyPetCombatCPU"]),
         .library(name: "MyPetEngine", targets: ["MyPetEngine"]),
         .library(name: "MyPetSimulation", targets: ["MyPetSimulation"]),
         .library(name: "MyPetAI", targets: ["MyPetAI"]),
@@ -50,8 +51,13 @@ let package = Package(
             path: "Sources/MyPetCombat"
         ),
         .target(
-            name: "MyPetEngine",
+            name: "MyPetCombatCPU",
             dependencies: ["MyPetCore", "MyPet2D", "MyPetCombat"],
+            path: "Sources/MyPetCombatCPU"
+        ),
+        .target(
+            name: "MyPetEngine",
+            dependencies: ["MyPetCore", "MyPet2D", "MyPetCombat", "MyPetCombatCPU"],
             path: "Sources/MyPetEngine"
         ),
         .target(
@@ -125,6 +131,11 @@ let package = Package(
             name: "MyPetCombatTests",
             dependencies: ["MyPetCombat", "MyPetCore", "MyPet2D"],
             path: "Tests/MyPetCombatTests"
+        ),
+        .testTarget(
+            name: "MyPetCombatCPUTests",
+            dependencies: ["MyPetCombatCPU", "MyPetCombat", "MyPet2D", "MyPetCore"],
+            path: "Tests/MyPetCombatCPUTests"
         ),
         .testTarget(
             name: "MyPetTests",

@@ -1,6 +1,7 @@
 import Foundation
 import MyPet2D
 import MyPetCombat
+import MyPetCombatCPU
 import MyPetCore
 
 /// Serializable state for the complete 60 Hz combat path. Input arbitration
@@ -9,10 +10,16 @@ import MyPetCore
 public struct CombatRuntimeCheckpoint: Codable, Equatable, Sendable {
     public var world: CombatWorldCheckpoint
     public var controls: ControlRouter
+    public var combatCPUs: [String: ClassicCombatCPUCheckpoint]?
 
-    public init(world: CombatWorldCheckpoint, controls: ControlRouter) {
+    public init(
+        world: CombatWorldCheckpoint,
+        controls: ControlRouter,
+        combatCPUs: [String: ClassicCombatCPUCheckpoint]? = nil
+    ) {
         self.world = world
         self.controls = controls
+        self.combatCPUs = combatCPUs
     }
 }
 
@@ -21,10 +28,16 @@ public struct CombatRuntimeCheckpoint: Codable, Equatable, Sendable {
 public struct CombatRuntimeDigest: Codable, Equatable, Sendable {
     public var world: CombatWorldCheckpoint
     public var controls: ControlRouter
+    public var combatCPUs: [String: ClassicCombatCPUCheckpoint]?
 
-    public init(world: CombatWorldCheckpoint, controls: ControlRouter) {
+    public init(
+        world: CombatWorldCheckpoint,
+        controls: ControlRouter,
+        combatCPUs: [String: ClassicCombatCPUCheckpoint]? = nil
+    ) {
         self.world = world
         self.controls = controls
+        self.combatCPUs = combatCPUs
     }
 }
 
@@ -35,29 +48,44 @@ public final class CombatRuntime {
     public private(set) var world: CombatWorld
     public var bodyWorld: BodyWorld { world.authoritativeBodyWorld }
     private var controls: ControlRouter
-    private let autonomousPolicy = UtilityCombatPolicy()
+    private var combatCPUs: [String: ClassicCombatCPU]
+    private var cpuDifficulties: [String: CombatCPUDifficulty]
 
     public init() {
         self.world = CombatWorld()
         self.controls = ControlRouter()
+        self.combatCPUs = [:]
+        self.cpuDifficulties = [:]
     }
 
     public init(checkpoint: CombatRuntimeCheckpoint) {
         self.world = CombatWorld(checkpoint: checkpoint.world)
         self.controls = checkpoint.controls
+        self.combatCPUs = (checkpoint.combatCPUs ?? [:]).mapValues {
+            ClassicCombatCPU(checkpoint: $0)
+        }
+        self.cpuDifficulties = [:]
     }
 
     public var digest: CombatRuntimeDigest {
-        CombatRuntimeDigest(world: world.checkpoint(), controls: controls)
+        CombatRuntimeDigest(
+            world: world.checkpoint(), controls: controls,
+            combatCPUs: cpuCheckpoints())
     }
 
     public func checkpoint() -> CombatRuntimeCheckpoint {
-        CombatRuntimeCheckpoint(world: world.checkpoint(), controls: controls)
+        CombatRuntimeCheckpoint(
+            world: world.checkpoint(), controls: controls,
+            combatCPUs: cpuCheckpoints())
     }
 
     public func restore(_ checkpoint: CombatRuntimeCheckpoint) {
         world = CombatWorld(checkpoint: checkpoint.world)
         controls = checkpoint.controls
+        combatCPUs = (checkpoint.combatCPUs ?? [:]).mapValues {
+            ClassicCombatCPU(checkpoint: $0)
+        }
+        cpuDifficulties = [:]
     }
 
     public func register(
@@ -77,8 +105,21 @@ public final class CombatRuntime {
         refreshSession()
     }
 
+    public func setAutonomousDifficulty(
+        _ difficulty: CombatCPUDifficulty,
+        for actorID: EntityID
+    ) {
+        cpuDifficulties[actorID.raw] = difficulty
+        combatCPUs[actorID.raw] = ClassicCombatCPU(
+            actorID: actorID,
+            difficulty: difficulty,
+            seed: stableCPUSeed(actorID))
+    }
+
     public func unregister(_ actorID: EntityID) {
         controls.removeActor(actorID)
+        combatCPUs.removeValue(forKey: actorID.raw)
+        cpuDifficulties.removeValue(forKey: actorID.raw)
         world.unregister(actorID: actorID)
         refreshSession()
     }
@@ -126,23 +167,51 @@ public final class CombatRuntime {
     @discardableResult
     public func advance(environment: BodyEnvironment) -> [CombatEvent] {
         let snapshot = world.snapshot()
+        let checkpoint = world.checkpoint()
+        let profiles = Dictionary(uniqueKeysWithValues: snapshot.bodies.map {
+            ($0.actorID.raw, world.profile(for: $0.actorID) ?? CombatProfile())
+        })
         for body in snapshot.bodies {
-            if controls.isActive(.autonomous, for: body.actorID) {
+            if controls.resolve(for: body.actorID)?.authority == .autonomous {
                 let opponents = snapshot.bodies.filter {
                     $0.actorID != body.actorID && $0.healthState == .active
                 }
+                var cpu = combatCPUs[body.actorID.raw] ?? ClassicCombatCPU(
+                    actorID: body.actorID,
+                    difficulty: cpuDifficulties[body.actorID.raw] ?? .normal,
+                    seed: stableCPUSeed(body.actorID))
+                let output = cpu.advance(CPUCombatObservation(
+                    frame: world.frame,
+                    selfBody: body,
+                    opponents: opponents,
+                    selfProfile: profiles[body.actorID.raw] ?? CombatProfile(),
+                    opponentProfiles: profiles,
+                    environment: environment,
+                    worldCheckpoint: checkpoint,
+                    engagementReservations: combatCPUs.compactMap { key, value in
+                        key == body.actorID.raw ? nil : value.reservedSlot
+                    }))
+                combatCPUs[body.actorID.raw] = cpu
                 controls.setInput(
-                    autonomousPolicy.decide(CombatObservation(
-                        selfBody: body, opponents: opponents)),
+                    output.input,
                     source: .autonomous,
                     for: body.actorID)
             }
             applyResolvedInput(for: body.actorID)
         }
         let events = world.step(environment: environment)
-        endAutonomousControlOnKnockout(events)
         restorePointerAuthorityAfterLanding()
         return events
+    }
+
+    private func cpuCheckpoints() -> [String: ClassicCombatCPUCheckpoint] {
+        combatCPUs.mapValues { $0.checkpoint() }
+    }
+
+    private func stableCPUSeed(_ actorID: EntityID) -> UInt64 {
+        actorID.raw.utf8.reduce(UInt64(0xcbf29ce484222325)) {
+            ($0 ^ UInt64($1)) &* 0x100000001b3
+        }
     }
 
     private func refreshSession() {
@@ -161,17 +230,6 @@ public final class CombatRuntime {
         } else {
             world.setInput(.neutral, for: actorID, authority: .scripted)
         }
-    }
-
-    private func endAutonomousControlOnKnockout(_ events: [CombatEvent]) {
-        for event in events where event.kind == .knockedOut {
-            for actorID in [event.actorID, event.targetID].compactMap({ $0 })
-            where controls.isActive(.autonomous, for: actorID) {
-                controls.deactivate(.autonomous, for: actorID)
-                applyResolvedInput(for: actorID)
-            }
-        }
-        refreshSession()
     }
 
     private func restorePointerAuthorityAfterLanding() {
