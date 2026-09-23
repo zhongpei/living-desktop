@@ -54,6 +54,33 @@ public final class CombatWorld {
 
     public func body(for actorID: EntityID) -> CombatBodyState? { bodies[actorID.raw] }
 
+    /// Synchronizes a legacy/semantic body pose into the unified combat world without
+    /// resetting HP, stun, recovery or command history. This is the migration seam used by
+    /// non-combat story locomotion until every semantic verb is natively body-driven.
+    public func synchronizePose(
+        actorID: EntityID,
+        x: Double,
+        yFeet: Double,
+        facing: CombatFacing,
+        locomotion: BodyLocomotionState,
+        visualScale: Double = 1
+    ) {
+        guard var body = bodies[actorID.raw] else { return }
+        body.position = CombatPoint(x: x, y: yFeet)
+        body.facing = facing
+        if body.healthState == .active && body.phase != .hitStun && body.phase != .blockStun {
+            body.locomotion = locomotion
+        }
+        body.visualScale = max(0.05, visualScale)
+        bodies[actorID.raw] = body
+    }
+
+    public func setAuthority(_ authority: CombatControlAuthority, for actorID: EntityID) {
+        guard var body = bodies[actorID.raw] else { return }
+        body.authority = authority
+        bodies[actorID.raw] = body
+    }
+
     public func snapshot() -> CombatWorldSnapshot {
         CombatWorldSnapshot(frame: frame, bodies: Array(bodies.values))
     }
