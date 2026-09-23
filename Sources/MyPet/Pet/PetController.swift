@@ -699,6 +699,7 @@ final class PetController {
             maxHP: combat.map { _ in combatProfile.maxHP },
             combatPhase: combat?.phase.rawValue,
             healthState: combat?.healthState.rawValue,
+            authoritativePlacement: combat?.authority != .scripted,
             displayHeight: Double(settings.displayHeight)))
     }
 
