@@ -82,7 +82,11 @@ public final class CombatWorld {
         locomotion: BodyLocomotionState,
         visualScale: Double = 1
     ) {
-        guard var body = bodies[actorID.raw] else { return }
+        guard var body = bodies[actorID.raw],
+              body.authority == .scripted,
+              body.healthState == .active,
+              body.phase != .hitStun,
+              body.phase != .blockStun else { return }
         body.position = CombatPoint(x: x, y: yFeet)
         body.facing = facing
         if body.healthState == .active && body.phase != .hitStun && body.phase != .blockStun {
