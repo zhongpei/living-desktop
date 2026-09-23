@@ -413,6 +413,14 @@ public struct CastContentCatalog: Equatable, Sendable {
                 throw CastContentError.unknownGroup(packID: source.id, groupID: source.groupID)
             }
             let allowedMembers = Set(group.memberIDs + group.entityIDs)
+            for member in source.members where member.kind == .character {
+                guard let visualPackID = member.visualPackID,
+                      !visualPackID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    throw CastContentError.invalidPack(
+                        packID: source.id,
+                        reason: "character \(member.id) requires visualPackID")
+                }
+            }
             for member in source.members where
                 !allowedMembers.contains(member.profileID ?? member.id) &&
                 !allowedMembers.contains(member.id) {
