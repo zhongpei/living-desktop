@@ -203,7 +203,7 @@ public final class ActorPresentation {
             x: pose.x - width / 2,
             y: pose.yFeet - height * baselineRatio,
             width: width, height: height)
-        if pose.motion == "dragged" || detachedFromCastLayout {
+        if pose.authoritativePlacement || pose.motion == "dragged" || detachedFromCastLayout {
             show(frame: raw)
             return
         }
