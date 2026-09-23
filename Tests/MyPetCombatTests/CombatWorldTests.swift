@@ -114,7 +114,6 @@ final class CombatWorldTests: XCTestCase {
         world.register(actorID: EntityID("b"), profile: profile, x: 450, yFeet: 700, facing: .left)
         world.setInput(FighterInputFrame(buttons: [.x]), for: EntityID("a"))
         _ = world.step(environment: floor)
-        _ = world.step(environment: floor)
         XCTAssertEqual(world.body(for: EntityID("b"))?.healthState, .downed)
 
         world.beginDrag(actorID: EntityID("b"), x: 500, y: 300)
