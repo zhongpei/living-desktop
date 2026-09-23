@@ -93,7 +93,8 @@ public final class CombatWorld {
               body.authority == .scripted,
               body.healthState == .active,
               body.phase != .hitStun,
-              body.phase != .blockStun else { return }
+              body.phase != .blockStun,
+              body.currentMoveID == nil else { return }
         body.position = CombatPoint(x: x, y: yFeet)
         body.facing = facing
         if body.healthState == .active && body.phase != .hitStun && body.phase != .blockStun {
@@ -271,15 +272,18 @@ public final class CombatWorld {
         case .active, .knockedOut:
             break
         case .downed:
-            body.velocity.x = 0
-            body.velocity.y = 0
-            if body.recoveryFramesRemaining > 0 { body.recoveryFramesRemaining -= 1 }
-            if body.recoveryFramesRemaining == 0 {
-                body.healthState = .gettingUp
-                body.recoveryFramesRemaining = profile.getUpFrames
-                events.append(CombatEvent(frame: frame, kind: .recoveryStarted, actorID: body.actorID))
+            if body.locomotion == .grounded {
+                body.velocity.x = 0
+                body.velocity.y = 0
+                if body.recoveryFramesRemaining > 0 { body.recoveryFramesRemaining -= 1 }
+                if body.recoveryFramesRemaining == 0 {
+                    body.healthState = .gettingUp
+                    body.recoveryFramesRemaining = profile.getUpFrames
+                    events.append(CombatEvent(frame: frame, kind: .recoveryStarted, actorID: body.actorID))
+                }
             }
         case .gettingUp:
+            guard body.locomotion == .grounded else { return }
             if body.recoveryFramesRemaining > 0 { body.recoveryFramesRemaining -= 1 }
             if body.recoveryFramesRemaining == 0 {
                 body.healthState = .active
