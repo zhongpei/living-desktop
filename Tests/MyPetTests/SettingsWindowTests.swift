@@ -43,7 +43,7 @@ final class SettingsWindowTests: XCTestCase {
                        ["窗口与权限", "内容输入"])
         let role = try XCTUnwrap(tabs.tabViewItems.first { $0.label == "角色" }?.view)
         XCTAssertEqual(firstTab(in: role)?.tabViewItems.map(\.label),
-                       ["入场策略", "候选角色"])
+                       ["入场策略", "候选角色", "语言行为"])
 
         let save = try XCTUnwrap(views.compactMap { $0 as? NSButton }
             .first { $0.title == "保存" })
@@ -63,6 +63,11 @@ final class SettingsWindowTests: XCTestCase {
 
         let brain = try XCTUnwrap(tabs.tabViewItems.first { $0.label == "大脑" }?.view)
         let brainTabs = try XCTUnwrap(firstTab(in: brain))
+        XCTAssertEqual(brainTabs.tabViewItems.map(\.label), ["行动脑", "本地 Qwen", "高阶教师脑"])
+        let local = try XCTUnwrap(brainTabs.tabViewItems.first { $0.label == "本地 Qwen" }?.view)
+        let localButtons = descendants(of: local).compactMap { $0 as? NSButton }
+        XCTAssertEqual(localButtons.first { $0.title == "生成角色台词（已验证）" }?.state, .on)
+        XCTAssertEqual(localButtons.first { $0.title == "参与目标决策（实验）" }?.state, .off)
         let size = window.frame.size
         for item in brainTabs.tabViewItems {
             brainTabs.selectTabViewItem(item)
@@ -123,6 +128,49 @@ final class SettingsWindowTests: XCTestCase {
         XCTAssertEqual(firstMember.state, .on)
     }
 
+    func testCharacterLanguageBehaviorCanBeSavedPerCharacter() throws {
+        _ = NSApplication.shared
+        let member = CastMember(id: "lin_daiyu", kind: .character, displayName: "林黛玉",
+                                visualPackID: "lin_daiyu", role: "test")
+        let pack = CastPack(id: "dream", groupID: "dream", displayName: "红楼梦",
+                            summary: "", members: [member])
+        let controller = SettingsWindowController(settings: Settings(), castPacks: [pack])
+        let window = try XCTUnwrap(controller.window)
+        defer { window.close() }
+        let root = try XCTUnwrap(window.contentView)
+        let pages = try XCTUnwrap(firstTab(in: root))
+        let role = try XCTUnwrap(pages.tabViewItems.first { $0.label == "角色" })
+        pages.selectTabViewItem(role)
+        let roleTabs = try XCTUnwrap(firstTab(in: try XCTUnwrap(role.view)))
+        let language = try XCTUnwrap(roleTabs.tabViewItems.first { $0.label == "语言行为" })
+        roleTabs.selectTabViewItem(language)
+        let views = descendants(of: root)
+        let follow = try XCTUnwrap(views.compactMap { $0 as? NSButton }
+            .first { $0.title == "说话几率跟随角色人格" })
+        let ambient = try XCTUnwrap(views.compactMap { $0 as? NSButton }
+            .first { $0.title == "允许自言自语" })
+        let chance = try XCTUnwrap(views.compactMap { $0 as? NSSlider }
+            .first { $0.minValue == 0 && $0.maxValue == 100 })
+        let interval = try XCTUnwrap(views.compactMap { $0 as? NSTextField }
+            .first { $0.placeholderString == "留空 = 人格默认" })
+        follow.state = .off
+        follow.performClick(nil)
+        follow.state = .off
+        chance.doubleValue = 22
+        chance.sendAction(chance.action, to: chance.target)
+        interval.stringValue = "19"
+        ambient.state = .off
+
+        var applied: Settings?
+        controller.onApply = { applied = $0 }
+        let save = try XCTUnwrap(views.compactMap { $0 as? NSButton }.first { $0.title == "保存" })
+        save.performClick(nil)
+        let saved = try XCTUnwrap(applied?.characterSpeechSettings["lin_daiyu"])
+        XCTAssertEqual(try XCTUnwrap(saved.chance), 0.22, accuracy: 0.001)
+        XCTAssertEqual(saved.minimumInterval, 19)
+        XCTAssertFalse(saved.ambientEnabled)
+    }
+
     func testStoryLibraryShowsAuthoredEpisode() throws {
         _ = NSApplication.shared
         let member = CastMember(id: "hero", kind: .character, displayName: "主角",
@@ -175,5 +223,104 @@ final class SettingsWindowTests: XCTestCase {
             let last = try XCTUnwrap(stack.arrangedSubviews.last)
             XCTAssertLessThanOrEqual(last.frame.maxY, document.bounds.height)
         }
+    }
+
+    func testPromptManagerSupportsManualCharacterScenarioSamplingAndAttemptReview() async throws {
+        _ = NSApplication.shared
+        var settings = Settings()
+        settings.localSpeechPromptUsesCustom = true
+        let character = CharacterDefinition(
+            id: "asuka",
+            displayNames: LocalizedLabel(zhHans: "明日香", en: "Asuka"),
+            background: LocalizedLabel(zhHans: "测试", en: "Test"),
+            personality: CharacterPersonality(), aptitudes: CharacterAptitudes(),
+            performancePrompt: LocalizedLabel(zhHans: "测试", en: "Test"))
+        let controller = PromptManagerWindowController(
+            settings: settings, characters: [character], currentCharacterID: "asuka")
+        let window = try XCTUnwrap(controller.window)
+        defer { window.close() }
+        let root = try XCTUnwrap(window.contentView)
+        var views = descendants(of: root)
+        let popups = views.compactMap { $0 as? NSPopUpButton }
+        let preset = try XCTUnwrap(popups.first {
+            $0.identifier?.rawValue == "prompt.preset"
+        })
+        let tabs = try XCTUnwrap(views.compactMap { $0 as? NSTabView }.first)
+        tabs.selectTabViewItem(at: 1)
+        views = descendants(of: root)
+        let scenes = try XCTUnwrap(views.compactMap { $0 as? NSPopUpButton }.first {
+            $0.identifier?.rawValue == "prompt.scene"
+        })
+        let characters = try XCTUnwrap(views.compactMap { $0 as? NSPopUpButton }.first {
+            $0.identifier?.rawValue == "prompt.character"
+        })
+        XCTAssertEqual(preset.itemTitles, ["内置验证版（只读）", "用户自定义"])
+        XCTAssertEqual(scenes.itemTitles, ["打招呼", "活动评论", "调侃", "抗议", "闲聊"])
+        XCTAssertEqual(characters.itemTitles, ["明日香"])
+
+        tabs.selectTabViewItem(at: 0)
+        views = descendants(of: root)
+        let role = try XCTUnwrap(views.compactMap { $0 as? NSTextView }.first {
+            $0.identifier?.rawValue == "prompt.role"
+        })
+        role.string = "自定义桌宠编剧"
+        var saved: (Bool, LocalSpeechPromptOverrides)?
+        controller.onSave = { saved = ($0, $1) }
+        try XCTUnwrap(views.compactMap { $0 as? NSButton }.first {
+            $0.title == "保存并应用"
+        }).performClick(nil)
+        XCTAssertEqual(saved?.0, true)
+        XCTAssertEqual(saved?.1.role, "自定义桌宠编剧")
+
+        tabs.selectTabViewItem(at: 1)
+        views = descendants(of: root)
+        let analysis = try XCTUnwrap(views.compactMap { $0 as? NSTextView }.first {
+            $0.identifier?.rawValue == "prompt.analysis"
+        })
+        let context = try XCTUnwrap(views.compactMap { $0 as? NSTextView }.first {
+            $0.identifier?.rawValue == "prompt.test-context"
+        })
+        let temperature = try XCTUnwrap(views.compactMap { $0 as? NSTextField }.first {
+            $0.identifier?.rawValue == "prompt.temperature"
+        })
+        let fewShot = try XCTUnwrap(views.compactMap { $0 as? NSButton }.first {
+            $0.identifier?.rawValue == "prompt.few-shot"
+        })
+        context.string = "代码运行成功，用户继续工作。"
+        temperature.stringValue = "0.20"
+        fewShot.performClick(nil)
+        try XCTUnwrap(views.compactMap { $0 as? NSButton }.first {
+            $0.title == "分析 Prompt"
+        }).performClick(nil)
+        XCTAssertTrue(analysis.string.contains("[PREFIX MESSAGES]"))
+        XCTAssertTrue(analysis.string.contains("scene=greet"))
+        XCTAssertTrue(analysis.string.contains("character=asuka"))
+        XCTAssertTrue(analysis.string.contains("temperature=0.20"))
+        XCTAssertTrue(analysis.string.contains("few_shot=true"))
+        XCTAssertTrue(analysis.string.contains("代码运行成功"))
+
+        let called = expectation(description: "manual prompt test")
+        controller.onTest = { testedCharacter, _, _, testedContext, includeFewShot, sampling in
+            XCTAssertEqual(testedCharacter.id, "asuka")
+            XCTAssertEqual(testedContext, "代码运行成功，用户继续工作。")
+            XCTAssertTrue(includeFewShot)
+            XCTAssertEqual(sampling.temperature, 0.2, accuracy: 0.001)
+            called.fulfill()
+            return LocalBrain.PromptTestResult(
+                prefixMessages: [["role": "system", "content": "SYSTEM"]],
+                system: "SYSTEM", user: "USER", output: "哼，总算成功了。",
+                attemptOutputs: ["滚开！", "哼，总算成功了。"],
+                rejectionReasons: [["blocked:滚开"], []], includeFewShot: includeFewShot,
+                sampling: sampling,
+                latency: 0.4, error: nil)
+        }
+        try XCTUnwrap(views.compactMap { $0 as? NSButton }.first {
+            $0.title == "调用本地 Qwen"
+        }).performClick(nil)
+        await fulfillment(of: [called], timeout: 1)
+        await Task.yield()
+        XCTAssertTrue(analysis.string.contains("attempt=1 accepted=false"))
+        XCTAssertTrue(analysis.string.contains("blocked:滚开"))
+        XCTAssertTrue(analysis.string.contains("attempt=2 accepted=true"))
     }
 }

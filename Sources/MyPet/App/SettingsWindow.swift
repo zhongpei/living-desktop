@@ -60,6 +60,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var actionBrainBox: NSButton!
     private var actionBrainStatusLabel: NSTextField!
     private var localDecisionBrainBox: NSButton!
+    private var localSpeechBrainBox: NSButton!
     private var localBrainStatusLabel: NSTextField!
     private var localDownloadButton: NSButton!
     private var localTestButton: NSButton!
@@ -98,6 +99,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var diagLabel: NSTextField!
 
     private let castPacks: [CastPack]
+    private let characters: [CharacterDefinition]
     private var castModePopup: NSPopUpButton!
     private var castMemberBoxes: [(id: String, box: NSButton)] = []
     private var castGroupBoxes: [(group: NSButton, members: [NSButton])] = []
@@ -113,11 +115,23 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var storyForegroundInterruptBox: NSButton!
     private var storyContentInterruptBox: NSButton!
     private var storyRelationsBox: NSButton!
+    private var speechCharacterPopup: NSPopUpButton!
+    private var speechPersonalityDefaultBox: NSButton!
+    private var speechChanceSlider: NSSlider!
+    private var speechChanceLabel: NSTextField!
+    private var speechMinimumIntervalField: NSTextField!
+    private var speechAmbientBox: NSButton!
+    private var speechCharacterBox: NSButton!
+    private var speechWindowBox: NSButton!
+    private var speechEnvironmentBox: NSButton!
+    private var speechPropBox: NSButton!
+    private var selectedSpeechCharacterID: String?
 
-    init(settings: Settings, castPacks: [CastPack] = []) {
+    init(settings: Settings, castPacks: [CastPack] = [], characters: [CharacterDefinition] = []) {
         self.draft = settings
         self.lastSaved = settings
         self.castPacks = castPacks
+        self.characters = characters
         self.gameplayCatalog = ContentResourceLocator.gameplayCatalog()
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 700, height: 640),
@@ -442,7 +456,116 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let tabs = NSTabView()
         tabs.addTabViewItem(tab("入场策略", strategy))
         tabs.addTabViewItem(tab("候选角色", scrollFormStack(candidates)))
+        tabs.addTabViewItem(tab("语言行为", buildSpeechBehaviorTab()))
         return tabs
+    }
+
+    private func buildSpeechBehaviorTab() -> NSView {
+        speechCharacterPopup = NSPopUpButton()
+        speechCharacterPopup.target = self
+        speechCharacterPopup.action = #selector(speechCharacterChanged(_:))
+        var definitions: [String: CharacterDefinition] = [:]
+        for character in characters { definitions[character.id] = character }
+        var names: [String: String] = definitions.mapValues(\.displayNames.zhHans)
+        for pack in castPacks {
+            for member in pack.members where member.kind == .character {
+                names[member.id] = names[member.id] ?? member.displayName
+            }
+        }
+        if names.isEmpty, !draft.currentPet.isEmpty { names[draft.currentPet] = draft.currentPet }
+        for pair in names.sorted(by: { $0.value < $1.value }) {
+            speechCharacterPopup.addItem(withTitle: pair.value)
+            speechCharacterPopup.lastItem?.representedObject = pair.key
+        }
+        speechCharacterPopup.widthAnchor.constraint(equalToConstant: 220).isActive = true
+
+        speechPersonalityDefaultBox = checkbox(
+            "说话几率跟随角色人格", true, #selector(speechDefaultChanged(_:)))
+        speechChanceSlider = NSSlider(value: 35, minValue: 0, maxValue: 100,
+                                      target: self, action: #selector(speechChanceChanged(_:)))
+        speechChanceSlider.widthAnchor.constraint(equalToConstant: 230).isActive = true
+        speechChanceLabel = NSTextField(labelWithString: "35%")
+        speechChanceLabel.widthAnchor.constraint(equalToConstant: 48).isActive = true
+        let chanceRow = NSStackView(views: [NSTextField(labelWithString: "主动说话几率"),
+                                            speechChanceSlider, speechChanceLabel])
+        chanceRow.orientation = .horizontal
+        chanceRow.spacing = 10
+        speechMinimumIntervalField = numberField("", placeholder: "留空 = 人格默认")
+        speechAmbientBox = checkbox("允许自言自语", true, #selector(toggleDraft(_:)))
+        speechCharacterBox = checkbox("允许角色相遇 / 剧情对话", true, #selector(toggleDraft(_:)))
+        speechWindowBox = checkbox("允许对窗口和前台应用吐槽", true, #selector(toggleDraft(_:)))
+        speechEnvironmentBox = checkbox("允许对可见内容和环境吐槽", true, #selector(toggleDraft(_:)))
+        speechPropBox = checkbox("允许对拿起、放下或召唤的道具评论", true, #selector(toggleDraft(_:)))
+
+        selectedSpeechCharacterID = speechCharacterPopup.selectedItem?.representedObject as? String
+        loadSpeechCharacterDraft()
+        return scrollFormStack([
+            note("这些设置只控制角色是否抓住一次说话机会；Qwen 仍只生成一条台词，不能执行动作或修改世界。用户直接聊天和连续戳等强交互始终优先回应。"),
+            row("角色", speechCharacterPopup),
+            speechPersonalityDefaultBox,
+            chanceRow,
+            row("最短间隔（秒）", speechMinimumIntervalField, labelWidth: 130),
+            separator(),
+            speechAmbientBox, speechCharacterBox, speechWindowBox,
+            speechEnvironmentBox, speechPropBox,
+            note("未覆盖时，社交、好奇、玩性高的角色更常开口；独立或矜持的角色更少开口。0% 可让该角色只在直接交互时回应。"),
+        ])
+    }
+
+    @objc private func speechCharacterChanged(_ sender: NSPopUpButton) {
+        captureSpeechCharacterDraft()
+        selectedSpeechCharacterID = sender.selectedItem?.representedObject as? String
+        loadSpeechCharacterDraft()
+    }
+
+    @objc private func speechDefaultChanged(_ sender: NSButton) {
+        speechChanceSlider.isEnabled = sender.state != .on
+        speechChanceLabel.textColor = sender.state == .on ? .secondaryLabelColor : .labelColor
+    }
+
+    @objc private func speechChanceChanged(_ sender: NSSlider) {
+        speechChanceLabel.stringValue = "\(Int(sender.doubleValue.rounded()))%"
+    }
+
+    private func loadSpeechCharacterDraft() {
+        guard let id = selectedSpeechCharacterID else { return }
+        let value = draft.characterSpeechSettings[id] ?? CharacterSpeechSettings()
+        speechPersonalityDefaultBox.state = value.chance == nil ? .on : .off
+        let rolePersonality = characters.first { $0.id == id }
+            .map(Personality.forDefinition) ?? Personality.forCharacter(id)
+        let personalityChance = SpeechBehaviorProfile.resolve(
+            personality: rolePersonality, override: nil).baseChance
+        speechChanceSlider.doubleValue = (value.chance ?? personalityChance) * 100
+        speechChanceLabel.stringValue = "\(Int(speechChanceSlider.doubleValue.rounded()))%"
+        speechChanceSlider.isEnabled = value.chance != nil
+        speechChanceLabel.textColor = value.chance == nil ? .secondaryLabelColor : .labelColor
+        speechMinimumIntervalField.stringValue = value.minimumInterval.map { String(Int($0.rounded())) } ?? ""
+        speechAmbientBox.state = value.ambientEnabled ? .on : .off
+        speechCharacterBox.state = value.characterEnabled ? .on : .off
+        speechWindowBox.state = value.windowEnabled ? .on : .off
+        speechEnvironmentBox.state = value.environmentEnabled ? .on : .off
+        speechPropBox.state = value.propEnabled ? .on : .off
+    }
+
+    private func captureSpeechCharacterDraft() {
+        guard let id = selectedSpeechCharacterID, speechCharacterPopup != nil else { return }
+        let chance = speechPersonalityDefaultBox.state == .on
+            ? nil : speechChanceSlider.doubleValue / 100
+        let intervalText = speechMinimumIntervalField.stringValue
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let interval = intervalText.isEmpty ? nil : max(0, Double(intervalText) ?? 0)
+        let value = CharacterSpeechSettings(
+            chance: chance, minimumInterval: interval,
+            ambientEnabled: speechAmbientBox.state == .on,
+            characterEnabled: speechCharacterBox.state == .on,
+            windowEnabled: speechWindowBox.state == .on,
+            environmentEnabled: speechEnvironmentBox.state == .on,
+            propEnabled: speechPropBox.state == .on)
+        if value == CharacterSpeechSettings() {
+            draft.characterSpeechSettings.removeValue(forKey: id)
+        } else {
+            draft.characterSpeechSettings[id] = value
+        }
     }
 
     private func buildStoryTab() -> NSView {
@@ -501,7 +624,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private func buildBrainTabs() -> NSView {
         logBox = checkbox("完整脑路日志（仅保存在本机）", draft.brainTraceEnabled, #selector(toggleDraft(_:)))
-        speechBox = checkbox(gameplayLabel("speech", fallback: "让宠物说话"),
+        speechBox = checkbox(gameplayLabel("speech", fallback: "角色台词"),
                              draft.speechEnabled, #selector(toggleDraft(_:)))
         voicePlaybackBox = checkbox("播放动作语音（角色专属动作的录制台词）",
                                     draft.voicePlaybackEnabled, #selector(toggleDraft(_:)))
@@ -509,7 +632,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         goalMaxIntervalField = numberField(String(format: "%.3g", draft.goalBrainMaxInterval))
 
         let shared = NSStackView(views: [
-            note("三个大脑可独立开关；同时运行时本地决策脑驱动行为，高阶教师脑只产训练标签。"),
+            note("人物台词与实验目标决策独立开关；目标脑同时运行时，本地 Qwen 驱动行为，高阶教师脑只产训练标签。"),
             logBox, speechBox, voicePlaybackBox,
             row("目标最短间隔", goalMinIntervalField),
             row("目标最长间隔", goalMaxIntervalField),
@@ -522,7 +645,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let brainTabs = NSTabView()
         brainTabs.translatesAutoresizingMaskIntoConstraints = false
         brainTabs.addTabViewItem(tab("行动脑", buildActionBrainTab()))
-        brainTabs.addTabViewItem(tab("本地决策脑", buildLocalBrainTab()))
+        brainTabs.addTabViewItem(tab("本地 Qwen", buildLocalBrainTab()))
         brainTabs.addTabViewItem(tab("高阶教师脑", buildTeacherBrainTab()))
 
         let container = NSView()
@@ -595,7 +718,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func buildLocalBrainTab() -> NSView {
-        localDecisionBrainBox = checkbox("本地决策脑：端侧 MLX Qwen3.5 0.8B（与教师脑可同时运行）",
+        localSpeechBrainBox = checkbox("生成角色台词（已验证）",
+                                       draft.localBrainSpeechEnabled, #selector(toggleDraft(_:)))
+        localDecisionBrainBox = checkbox("参与目标决策（实验）",
                                           draft.localBrainEnabled, #selector(toggleDraft(_:)))
         localBrainStatusLabel = note("")
         localDownloadButton = NSButton(title: "从 URL 下载并验证", target: self, action: #selector(downloadLocalBrain))
@@ -618,11 +743,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         actionRow.spacing = 10
 
         return scrollFormStack([
+            localSpeechBrainBox,
             localDecisionBrainBox,
             actionRow,
             localBrainStatusLabel,
             separator(),
-            note("聊天：本地脑生成短气泡 JSON；失败时自动回退 Quips。"),
+            note("台词：本地脑生成自然中文单行台词；失败时自动回退到角色台词。实际温度：工作-0.10、抗议+0、打招呼/闲聊+0.05、调侃+0.10。"),
             row("聊天温度", localChatTemperatureField),
             row("聊天 Top-p", localChatTopPField),
             row("聊天 Top-k", localChatTopKField),
@@ -776,6 +902,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func collectDraft() {
+        captureSpeechCharacterDraft()
         draft.launchAtLogin = launchAtLoginBox.state == .on
         draft.displayHeight = CGFloat(heightSlider.doubleValue)
         draft.propScale = propScaleSlider.doubleValue / 100
@@ -801,6 +928,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         draft.voicePlaybackEnabled = voicePlaybackBox.state == .on
         draft.actionBrainEnabled = actionBrainBox.state == .on
         draft.localBrainEnabled = localDecisionBrainBox.state == .on
+        draft.localBrainSpeechEnabled = localSpeechBrainBox.state == .on
         draft.localBrainGoalTemperature = boundedDouble(localGoalTemperatureField, fallback: 0.0,
                                                         lower: 0, upper: 2)
         draft.localBrainGoalTopP = boundedDouble(localGoalTopPField, fallback: 1.0,
@@ -810,9 +938,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         draft.localBrainGoalSeed = parsedOptionalInt(localGoalSeedField)
         draft.localBrainChatTemperature = boundedDouble(localChatTemperatureField, fallback: 0.3,
                                                         lower: 0, upper: 2)
-        draft.localBrainChatTopP = boundedDouble(localChatTopPField, fallback: 0.8,
+        draft.localBrainChatTopP = boundedDouble(localChatTopPField, fallback: 1.0,
                                                  lower: 0, upper: 1)
-        draft.localBrainChatTopK = max(0, parsedInt(localChatTopKField, fallback: 20))
+        draft.localBrainChatTopK = max(0, parsedInt(localChatTopKField, fallback: 0))
         draft.localBrainChatMaxTokens = max(1, parsedInt(localChatMaxTokensField, fallback: 48))
         draft.localBrainChatSeed = parsedOptionalInt(localChatSeedField)
         draft.goalBrainMinInterval = parsedDouble(goalMinIntervalField, fallback: 45.0)

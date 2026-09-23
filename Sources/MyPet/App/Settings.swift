@@ -73,7 +73,7 @@ struct StorySettings: Codable, Equatable {
 
 /// 用户设置，JSON 存 `~/Library/Application Support/MyPet/settings.json`。
 ///
-/// game-v2：三档大脑配置——行动脑、本地决策脑、高阶教师脑——以及
+/// game-v2：行动脑、本地 Qwen 人物台词/实验目标决策、高阶教师脑，以及
 /// 语音、道具/场景玩法和 OCR 感知开关。
 /// 解码向后兼容：历史版本的设置键只读迁移，重新编码时只写当前命名。
 struct Settings: Codable {
@@ -119,8 +119,13 @@ struct Settings: Codable {
     /// 服务端透传的思考等级；空 = server default。
     var teacherBrainReasoningEffort = ""
 
-    /// 本地决策脑（端侧 MLX Qwen3.5 0.8B）总闸；可与高阶教师脑并行。
+    /// 本地 Qwen 的实验 Goal 决策总闸；可与高阶教师脑并行。
     var localBrainEnabled = false
+    /// 已验证的人物台词通道；与未晋级的 Goal 决策独立。
+    var localBrainSpeechEnabled = true
+    /// 默认使用随应用发布的验证版 Prompt；用户覆盖只记录差异。
+    var localSpeechPromptUsesCustom = false
+    var localSpeechPromptOverrides = LocalSpeechPromptOverrides()
     /// 本地决策脑目标 JSON 采样：低温、固定 seed，优先保证可解析和可复现。
     var localBrainGoalTemperature = 0.0
     var localBrainGoalTopP = 1.0
@@ -161,8 +166,10 @@ struct Settings: Codable {
     var goalBrainMinInterval = 45.0
     var goalBrainMaxInterval = 90.0
 
-    /// 说话总闸：本地决策脑或高阶教师脑可生成短聊天；失败时回退 Quips。
+    /// 说话总闸：本地 Qwen 或高阶教师脑可生成短聊天；失败时回退角色台词。
     var speechEnabled = true
+    /// 每个角色的语言行为覆盖。未出现的角色继续由 Personality 推导默认几率和冷却。
+    var characterSpeechSettings: [String: CharacterSpeechSettings] = [:]
     /// Recorded lines attached to authored action clips; independent of generated text speech.
     var voicePlaybackEnabled = true
     /// 三档大脑统一脑路日志（brain_trace.jsonl）。只保存在本机。
@@ -270,14 +277,15 @@ struct Settings: Codable {
         case slowBrainBaseURL, slowBrainModel, slowBrainAPIKey // legacy wire keys
         case teacherBrainTemperature, teacherBrainTopP, teacherBrainTopK
         case teacherBrainMaxTokens, teacherBrainSeed, teacherBrainReasoningEffort
-        case localBrainEnabled
+        case localBrainEnabled, localBrainSpeechEnabled
+        case localSpeechPromptUsesCustom, localSpeechPromptOverrides
         case localBrainGoalTemperature, localBrainGoalTopP, localBrainGoalTopK
         case localBrainGoalMaxTokens, localBrainGoalSeed
         case localBrainChatTemperature, localBrainChatTopP, localBrainChatTopK
         case localBrainChatMaxTokens, localBrainChatSeed
         case localBrainTemperature, localBrainTopP, localBrainTopK, localBrainMaxTokens, localBrainSeed // legacy wire keys
         case goalBrainMinInterval, goalBrainMaxInterval
-        case speechEnabled, voicePlaybackEnabled, brainTraceEnabled
+        case speechEnabled, characterSpeechSettings, voicePlaybackEnabled, brainTraceEnabled
         case slowBrainLogEnabled, teacherLogEnabled // legacy wire keys
         case scenesEnabled, propsEnabled
         case sensesEnabled, ocrEnabled, inputPlugins, pointerInputEnabled, pointerInputHz
@@ -329,6 +337,9 @@ struct Settings: Codable {
         try c.encodeIfPresent(teacherBrainSeed, forKey: .teacherBrainSeed)
         try c.encode(teacherBrainReasoningEffort, forKey: .teacherBrainReasoningEffort)
         try c.encode(localBrainEnabled, forKey: .localBrainEnabled)
+        try c.encode(localBrainSpeechEnabled, forKey: .localBrainSpeechEnabled)
+        try c.encode(localSpeechPromptUsesCustom, forKey: .localSpeechPromptUsesCustom)
+        try c.encode(localSpeechPromptOverrides, forKey: .localSpeechPromptOverrides)
         try c.encode(localBrainGoalTemperature, forKey: .localBrainGoalTemperature)
         try c.encode(localBrainGoalTopP, forKey: .localBrainGoalTopP)
         try c.encode(localBrainGoalTopK, forKey: .localBrainGoalTopK)
@@ -342,6 +353,7 @@ struct Settings: Codable {
         try c.encode(goalBrainMinInterval, forKey: .goalBrainMinInterval)
         try c.encode(goalBrainMaxInterval, forKey: .goalBrainMaxInterval)
         try c.encode(speechEnabled, forKey: .speechEnabled)
+        try c.encode(characterSpeechSettings, forKey: .characterSpeechSettings)
         try c.encode(voicePlaybackEnabled, forKey: .voicePlaybackEnabled)
         try c.encode(brainTraceEnabled, forKey: .brainTraceEnabled)
         try c.encode(scenesEnabled, forKey: .scenesEnabled)
@@ -389,6 +401,11 @@ struct Settings: Codable {
         teacherBrainSeed = try c.decodeIfPresent(Int.self, forKey: .teacherBrainSeed)
         teacherBrainReasoningEffort = try c.decodeIfPresent(String.self, forKey: .teacherBrainReasoningEffort) ?? ""
         localBrainEnabled = try c.decodeIfPresent(Bool.self, forKey: .localBrainEnabled) ?? false
+        localBrainSpeechEnabled = try c.decodeIfPresent(Bool.self, forKey: .localBrainSpeechEnabled) ?? true
+        localSpeechPromptUsesCustom = try c.decodeIfPresent(
+            Bool.self, forKey: .localSpeechPromptUsesCustom) ?? false
+        localSpeechPromptOverrides = try c.decodeIfPresent(
+            LocalSpeechPromptOverrides.self, forKey: .localSpeechPromptOverrides) ?? .init()
         localBrainGoalTemperature = try c.decodeIfPresent(Double.self, forKey: .localBrainGoalTemperature)
             ?? c.decodeIfPresent(Double.self, forKey: .localBrainTemperature)
             ?? goalSampling.temperature
@@ -417,6 +434,8 @@ struct Settings: Codable {
         goalBrainMinInterval = try c.decodeIfPresent(Double.self, forKey: .goalBrainMinInterval) ?? 45.0
         goalBrainMaxInterval = try c.decodeIfPresent(Double.self, forKey: .goalBrainMaxInterval) ?? 90.0
         speechEnabled = try c.decodeIfPresent(Bool.self, forKey: .speechEnabled) ?? true
+        characterSpeechSettings = try c.decodeIfPresent(
+            [String: CharacterSpeechSettings].self, forKey: .characterSpeechSettings) ?? [:]
         voicePlaybackEnabled = try c.decodeIfPresent(Bool.self, forKey: .voicePlaybackEnabled) ?? true
         brainTraceEnabled = try c.decodeIfPresent(Bool.self, forKey: .brainTraceEnabled)
             ?? c.decodeIfPresent(Bool.self, forKey: .slowBrainLogEnabled)

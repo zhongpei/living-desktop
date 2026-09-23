@@ -25,6 +25,8 @@ final class Tray: NSObject {
     var onSingleRoleExit: (() -> Void)?
     /// 打开设置窗。
     var onOpenSettings: (() -> Void)?
+    /// 打开本地 Qwen Prompt 分析与管理。
+    var onOpenPromptManager: (() -> Void)?
     var onOpenContentManager: (() -> Void)?
     /// 打开业务化脑路日志窗。
     var onOpenLogs: (() -> Void)?
@@ -173,8 +175,9 @@ final class Tray: NSObject {
         case launchAtLogin = "登录时启动"
         case actionBrain = "行动脑（Needle 3）"
         case teacherBrain = "高阶教师脑（llama.cpp Qwen VL）"
-        case localDecisionBrain = "本地决策脑（端侧 MLX 0.8B）"
-        case speech = "让宠物说话"
+        case localPersonaSpeech = "人物台词（本地 Qwen 0.8B）"
+        case localDecisionBrain = "目标决策（本地 Qwen，实验）"
+        case speech = "角色台词"
         case voicePlayback = "播放动作语音"
         case scenes = "场景玩法（目标-场景执行环）"
         case props = "道具"
@@ -189,6 +192,7 @@ final class Tray: NSObject {
         static let login = NSUserInterfaceItemIdentifier("login")
         static let actionBrain = NSUserInterfaceItemIdentifier("actionBrain")
         static let teacherBrain = NSUserInterfaceItemIdentifier("teacherBrain")
+        static let localPersonaSpeech = NSUserInterfaceItemIdentifier("localPersonaSpeech")
         static let localDecisionBrain = NSUserInterfaceItemIdentifier("localDecisionBrain")
         static let speech = NSUserInterfaceItemIdentifier("speech")
         static let voicePlayback = NSUserInterfaceItemIdentifier("voicePlayback")
@@ -462,10 +466,18 @@ final class Tray: NSObject {
         let submenu = NSMenu(title: "大脑")
         submenu.addItem(checkmarkItem(Toggle.actionBrain, id: MenuID.actionBrain,
                                       on: settings.actionBrainEnabled && brainAvailable))
+        submenu.addItem(checkmarkItem(Toggle.localPersonaSpeech, id: MenuID.localPersonaSpeech,
+                                      on: settings.localBrainSpeechEnabled))
         submenu.addItem(checkmarkItem(Toggle.localDecisionBrain, id: MenuID.localDecisionBrain,
                                       on: settings.localBrainEnabled))
         submenu.addItem(checkmarkItem(Toggle.teacherBrain, id: MenuID.teacherBrain,
                                       on: settings.teacherBrainEnabled))
+        submenu.addItem(.separator())
+        let prompts = NSMenuItem(title: "Prompt 分析与管理…",
+                                 action: #selector(openPromptManager), keyEquivalent: "")
+        prompts.target = self
+        prompts.identifier = NSUserInterfaceItemIdentifier("brain.prompt-manager")
+        submenu.addItem(prompts)
         return submenu
     }
 
@@ -578,6 +590,7 @@ final class Tray: NSObject {
 
     @objc private func openLogs() { onOpenLogs?() }
     @objc private func openSettings() { onOpenSettings?() }
+    @objc private func openPromptManager() { onOpenPromptManager?() }
     @objc private func openContentManager() { onOpenContentManager?() }
 
     private func checkmarkItem(
@@ -608,6 +621,7 @@ final class Tray: NSObject {
         case MenuID.login: toggle = .launchAtLogin
         case MenuID.actionBrain: toggle = .actionBrain
         case MenuID.teacherBrain: toggle = .teacherBrain
+        case MenuID.localPersonaSpeech: toggle = .localPersonaSpeech
         case MenuID.localDecisionBrain: toggle = .localDecisionBrain
         case MenuID.speech: toggle = .speech
         case MenuID.voicePlayback: toggle = .voicePlayback
@@ -691,6 +705,7 @@ extension Tray: NSMenuDelegate {
                     item.title = Self.brainTitle(enabled: settings.actionBrainEnabled, available: brainAvailable)
                     item.state = settings.actionBrainEnabled && brainAvailable ? .on : .off
                 case MenuID.teacherBrain: item.state = settings.teacherBrainEnabled ? .on : .off
+                case MenuID.localPersonaSpeech: item.state = settings.localBrainSpeechEnabled ? .on : .off
                 case MenuID.localDecisionBrain: item.state = settings.localBrainEnabled ? .on : .off
                 case MenuID.speech: item.state = settings.speechEnabled ? .on : .off
                 case MenuID.voicePlayback: item.state = settings.voicePlaybackEnabled ? .on : .off

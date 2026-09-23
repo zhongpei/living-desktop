@@ -233,6 +233,12 @@ public struct DialogueProfile: Codable, Equatable, Sendable {
         if selfReference.zhHans.isEmpty || selfReference.en.isEmpty {
             errors.append("character \(characterID) selfReference must be bilingual")
         }
+        if preferredPhrases.zhHans.isEmpty || preferredPhrases.en.isEmpty {
+            errors.append("character \(characterID) preferredPhrases must be bilingual and nonempty")
+        }
+        if forbiddenStyles.zhHans.isEmpty || forbiddenStyles.en.isEmpty {
+            errors.append("character \(characterID) forbiddenStyles must be bilingual and nonempty")
+        }
         let ids = fewShots.map(\.speechActID)
         if Set(ids) != required || Set(ids).count != ids.count {
             errors.append("character \(characterID) requires exactly one few-shot per SpeechIntent")

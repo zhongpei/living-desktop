@@ -651,6 +651,11 @@ final class GameTests: XCTestCase {
         s.teacherBrainSeed = 42
         s.teacherBrainReasoningEffort = "low"
         s.localBrainEnabled = true
+        s.localBrainSpeechEnabled = false
+        s.localSpeechPromptUsesCustom = true
+        s.localSpeechPromptOverrides = LocalSpeechPromptOverrides(
+            factRule: "只使用确认事实",
+            sceneDirections: [LocalSpeechSceneID.tease.rawValue: "轻松调侃"])
         s.localBrainGoalTemperature = 0.0
         s.localBrainGoalMaxTokens = 96
         s.localBrainChatTemperature = 0.85
@@ -686,6 +691,10 @@ final class GameTests: XCTestCase {
             interruptOnForeground: false,
             interruptOnContent: true,
             relationshipEffectsEnabled: false)
+        s.characterSpeechSettings["lin_daiyu"] = CharacterSpeechSettings(
+            chance: 0.18, minimumInterval: 24,
+            ambientEnabled: false, characterEnabled: true,
+            windowEnabled: true, environmentEnabled: false, propEnabled: true)
         let data = try JSONEncoder().encode(s)
         let decoded = try JSONDecoder().decode(Settings.self, from: data)
         XCTAssertTrue(decoded.teacherBrainEnabled)
@@ -697,6 +706,10 @@ final class GameTests: XCTestCase {
         XCTAssertEqual(decoded.teacherBrainSeed, 42)
         XCTAssertEqual(decoded.teacherBrainReasoningEffort, "low")
         XCTAssertTrue(decoded.localBrainEnabled)
+        XCTAssertFalse(decoded.localBrainSpeechEnabled)
+        XCTAssertTrue(decoded.localSpeechPromptUsesCustom)
+        XCTAssertEqual(decoded.localSpeechPromptOverrides.factRule, "只使用确认事实")
+        XCTAssertEqual(decoded.localSpeechPromptOverrides.sceneDirections["tease"], "轻松调侃")
         XCTAssertEqual(decoded.localBrainGoalMaxTokens, 96)
         XCTAssertEqual(decoded.localBrainChatTemperature, 0.85, accuracy: 0.001)
         XCTAssertEqual(decoded.localBrainChatTopP, 0.92, accuracy: 0.001)
@@ -725,8 +738,24 @@ final class GameTests: XCTestCase {
         XCTAssertFalse(decoded.storySettings.interruptOnForeground)
         XCTAssertTrue(decoded.storySettings.interruptOnContent)
         XCTAssertFalse(decoded.storySettings.relationshipEffectsEnabled)
+        XCTAssertEqual(decoded.characterSpeechSettings["lin_daiyu"]?.chance, 0.18)
+        XCTAssertEqual(decoded.characterSpeechSettings["lin_daiyu"]?.minimumInterval, 24)
+        XCTAssertFalse(decoded.characterSpeechSettings["lin_daiyu"]?.ambientEnabled ?? true)
+        XCTAssertFalse(decoded.characterSpeechSettings["lin_daiyu"]?.environmentEnabled ?? true)
         XCTAssertFalse(String(data: data, encoding: .utf8)!.contains("teacherEnabled"),
                        "落盘不再写旧键")
+    }
+
+    func testSettingsEnableLocalPersonaSpeechWithoutEnablingGoalByDefault() throws {
+        let fresh = Settings()
+        XCTAssertTrue(fresh.localBrainSpeechEnabled)
+        XCTAssertFalse(fresh.localBrainEnabled)
+
+        let migrated = try JSONDecoder().decode(Settings.self, from: Data("{}".utf8))
+        XCTAssertTrue(migrated.localBrainSpeechEnabled)
+        XCTAssertFalse(migrated.localBrainEnabled)
+        XCTAssertFalse(migrated.localSpeechPromptUsesCustom)
+        XCTAssertTrue(migrated.localSpeechPromptOverrides.isEmpty)
     }
 
     func testSettingsDecodePartialInputCatalogKeepsAllBuiltInPluginEntries() throws {

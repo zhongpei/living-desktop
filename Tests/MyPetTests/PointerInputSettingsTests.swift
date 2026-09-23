@@ -56,6 +56,17 @@ final class PointerInputSettingsTests: XCTestCase {
             .submenu?.items.map(\.state), [.off, .off, .on])
     }
 
+    func testTrayBrainMenuOpensPromptManager() throws {
+        _ = NSApplication.shared
+        let tray = Tray(settings: Settings())
+        let brain = try XCTUnwrap(tray.attachedMenu?.items.first { $0.title == "大脑" }?.submenu)
+        let item = try XCTUnwrap(brain.items.first { $0.title == "Prompt 分析与管理…" })
+        var opened = false
+        tray.onOpenPromptManager = { opened = true }
+        NSApp.sendAction(try XCTUnwrap(item.action), to: item.target, from: item)
+        XCTAssertTrue(opened)
+    }
+
     func testSettingsWindowSavesPointerControls() throws {
         _ = NSApplication.shared
         let controller = SettingsWindowController(settings: Settings())

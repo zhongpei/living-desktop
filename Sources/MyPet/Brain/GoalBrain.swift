@@ -36,9 +36,23 @@ protocol GoalBrain: AnyObject {
     /// 当前不可用，调用方走内置 Quips。回调主队列，reply=nil = 失败。
     @discardableResult
     func requestSpeech(intent: SpeechIntent, world: BrainContextSnapshot, brain: BrainState,
-                       personality: Personality, characterID: String,
+                       personality: Personality, characterID: String, characterName: String,
                        dialogue: DialogueProfile?, traceID: String?,
+                       confirmedContext: String?,
                        completion: @escaping (SpeechReply?) -> Void) -> Bool
+}
+
+extension GoalBrain {
+    @discardableResult
+    func requestSpeech(intent: SpeechIntent, world: BrainContextSnapshot, brain: BrainState,
+                       personality: Personality, characterID: String, characterName: String,
+                       dialogue: DialogueProfile?, traceID: String?,
+                       completion: @escaping (SpeechReply?) -> Void) -> Bool {
+        requestSpeech(intent: intent, world: world, brain: brain,
+                      personality: personality, characterID: characterID,
+                      characterName: characterName, dialogue: dialogue,
+                      traceID: traceID, confirmedContext: nil, completion: completion)
+    }
 }
 
 // BrainDecisionLog —— 三档大脑事件，统一写入 brain_trace.jsonl。
@@ -321,14 +335,17 @@ final class TeacherBrain: GoalBrain {
         brain: BrainState,
         personality: Personality,
         characterID: String,
+        characterName: String,
         dialogue: DialogueProfile?,
         traceID: String?,
+        confirmedContext: String?,
         completion: @escaping (SpeechReply?) -> Void
     ) -> Bool {
         guard !speechPending, let config = effectiveConfig else { return false }
         speechPending = true
         let request = Self.buildSpeechRequest(model: config.model, intent: intent,
-                                              world: world, brain: brain, personality: personality)
+                                              world: world, brain: brain, personality: personality,
+                                              confirmedContext: confirmedContext)
         let session = self.session
         queue.async { [weak self] in
             let t0 = Date()
@@ -443,13 +460,14 @@ final class TeacherBrain: GoalBrain {
     }
 
     static func buildSpeechRequest(model: String, intent: SpeechIntent, world: BrainContextSnapshot,
-                                   brain: BrainState, personality: Personality) -> [String: Any] {
+                                   brain: BrainState, personality: Personality,
+                                   confirmedContext: String? = nil) -> [String: Any] {
         let system = """
         You write one short spoken line for a desktop pet. Intent: \(intent.rawValue). \
         For tease, keep it playful and non-abusive. Speak in the pet's voice, stay under 30 characters, output ONLY JSON: \
         {"text":"...","emotion":"neutral|happy|teasing|annoyed|sleepy"}.
         """
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "context": [
                 "active_app": world.activeApp,
                 "app_activity": world.appActivity,
@@ -458,6 +476,9 @@ final class TeacherBrain: GoalBrain {
             ],
             "personality": personality.promptSection,
         ]
+        if let confirmedContext, !confirmedContext.isEmpty {
+            body["confirmed_context"] = String(confirmedContext.prefix(500))
+        }
         let userData = (try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys]))
             .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
         var request: [String: Any] = [
@@ -563,6 +584,7 @@ final class GoalBrainCoordinator {
     private let local: any GoalBrain
     private let teacher: any GoalBrain
     private var localEnabled = false
+    private var localSpeechEnabled = false
     private var teacherEnabled = false
     private var interval: ClosedRange<Double> = 45...90
     private var nextPlanAt: Double = 0
@@ -577,9 +599,11 @@ final class GoalBrainCoordinator {
         self.teacher = teacher
     }
 
-    func configure(localEnabled: Bool, teacherEnabled: Bool,
+    func configure(localEnabled: Bool, localSpeechEnabled: Bool = false,
+                   teacherEnabled: Bool,
                    interval: ClosedRange<Double>) {
         self.localEnabled = localEnabled
+        self.localSpeechEnabled = localSpeechEnabled
         self.teacherEnabled = teacherEnabled
         self.interval = interval.lowerBound...max(interval.lowerBound, interval.upperBound)
         runtimeSource = GoalBrainSelection.runtime(
@@ -654,14 +678,22 @@ final class GoalBrainCoordinator {
 
     @discardableResult
     func requestSpeech(intent: SpeechIntent, world: BrainContextSnapshot, brain: BrainState,
-                       personality: Personality, characterID: String,
+                       personality: Personality, characterID: String, characterName: String,
                        dialogue: DialogueProfile?, traceID: String?,
+                       confirmedContext: String? = nil,
                        completion: @escaping (SpeechReply?) -> Void) -> Bool {
-        guard let source = runtimeSource else { return false }
-        let adapter: any GoalBrain = source == .local ? local : teacher
-        return adapter.requestSpeech(intent: intent, world: world, brain: brain,
+        if localSpeechEnabled, local.isAvailable {
+            return local.requestSpeech(intent: intent, world: world, brain: brain,
+                                       personality: personality, characterID: characterID,
+                                       characterName: characterName, dialogue: dialogue,
+                                       traceID: traceID, confirmedContext: confirmedContext,
+                                       completion: completion)
+        }
+        guard teacherEnabled, teacher.isAvailable else { return false }
+        return teacher.requestSpeech(intent: intent, world: world, brain: brain,
                                      personality: personality, characterID: characterID,
-                                     dialogue: dialogue, traceID: traceID,
+                                     characterName: characterName, dialogue: dialogue,
+                                     traceID: traceID, confirmedContext: confirmedContext,
                                      completion: completion)
     }
 }

@@ -19,6 +19,7 @@ final class CastSession: NSObject {
     private let sharedNeedle: NeedleBrain
     private let sharedLocalBrain: LocalBrain
     private let sharedTeacherBrain: TeacherBrain
+    private let speechDirector: SpeechDirector
     private var castRuntime: CastRuntime?
     private var castControllers: [String: PetController] = [:]
     private let castSceneGraph = SceneGraph(rootID: "cast-scene")
@@ -33,6 +34,7 @@ final class CastSession: NSObject {
     private var castDepartureDeadlines: [String: Int64] = [:]
     private var pointerReflex = PointerReflex()
     private var reportedMissingCastVisuals = Set<String>()
+    private var nearbySpeechPairs = Set<String>()
     private var controller: PetController?
     var onSync: (([String]) -> Void)?
 
@@ -49,7 +51,8 @@ final class CastSession: NSObject {
         perceptionHub: PerceptionHub,
         sharedNeedle: NeedleBrain,
         sharedLocalBrain: LocalBrain,
-        sharedTeacherBrain: TeacherBrain
+        sharedTeacherBrain: TeacherBrain,
+        speechDirector: SpeechDirector = SpeechDirector()
     ) {
         self.settingsProvider = settingsProvider
         self.visualsByActor = visualsByActor
@@ -61,6 +64,7 @@ final class CastSession: NSObject {
         self.sharedNeedle = sharedNeedle
         self.sharedLocalBrain = sharedLocalBrain
         self.sharedTeacherBrain = sharedTeacherBrain
+        self.speechDirector = speechDirector
     }
 
     func updateSettings(_ settings: Settings) {
@@ -280,6 +284,7 @@ final class CastSession: NSObject {
                     sceneGraph: castSceneGraph,
                     characterDefinition: runtime.characterDefinition(for: id),
                     capabilities: member.capabilities,
+                    speechDirector: speechDirector,
                     needle: sharedNeedle,
                     localBrain: sharedLocalBrain,
                     teacherBrain: sharedTeacherBrain)
@@ -303,6 +308,7 @@ final class CastSession: NSObject {
             guard let frame = entity.frame, entity.renderable else { return nil }
             return (entity.id.raw, frame)
         })
+        detectCharacterEncounters(frames: targetFrames, runtime: runtime)
 
         // StoryDirector 的节拍在 Core 中先完成全员行为确认；StoryAction
         // 只定位对应的 BodyCommand，身体参数一律以已授权命令为准。
@@ -313,6 +319,9 @@ final class CastSession: NSObject {
                   let command = runtime.runtime.takeBodyCommand(behaviorID: behaviorID) else { continue }
             let targetX = command.target.flatMap { targetFrames[$0.entityID.raw] }
                 .map { CGFloat($0.x + $0.width / 2) }
+            let targetID = command.target?.entityID.raw
+            let targetName = targetID.flatMap { runtime.characterDefinition(for: $0) }
+                .map(\.displayNames.zhHans)
             guard let pet = castControllers[command.actorID.raw] else {
                 // A logic participant without a visual pack still completes
                 // deterministically; presentation absence is reported by the
@@ -323,7 +332,12 @@ final class CastSession: NSObject {
                     outcome: .completed))
                 continue
             }
-            pet.performStoryIntent(command.intent, targetX: targetX) { [weak self, weak runtime] success in
+            pet.performStoryIntent(
+                command.intent,
+                targetX: targetX,
+                targetID: targetID,
+                targetName: targetName
+            ) { [weak self, weak runtime] success in
                 guard let self, let runtime, self.castRuntime === runtime else { return }
                 runtime.runtime.submitBodyResult(BodyResult(
                     behaviorID: command.behaviorID,
@@ -353,6 +367,41 @@ final class CastSession: NSObject {
             .map(EntityID.init)
         controller = activeIDs.sorted().compactMap { castControllers[$0] }.first
         onSync?(runtime.activeMemberIDs)
+    }
+
+    private func detectCharacterEncounters(
+        frames: [String: LayoutRect],
+        runtime: CastRuntime
+    ) {
+        let ids = frames.keys.filter { castControllers[$0] != nil }.sorted()
+        var currentlyNear = Set<String>()
+        for leftIndex in ids.indices {
+            for rightIndex in ids.indices where rightIndex > leftIndex {
+                let leftID = ids[leftIndex]
+                let rightID = ids[rightIndex]
+                guard let leftFrame = frames[leftID], let rightFrame = frames[rightID] else { continue }
+                let leftCenter = leftFrame.x + leftFrame.width / 2
+                let rightCenter = rightFrame.x + rightFrame.width / 2
+                let meetingDistance = (leftFrame.width + rightFrame.width) / 2 + 24
+                guard abs(leftCenter - rightCenter) <= meetingDistance else { continue }
+                let pair = "\(leftID)|\(rightID)"
+                currentlyNear.insert(pair)
+                guard !nearbySpeechPairs.contains(pair),
+                      let left = castControllers[leftID], let right = castControllers[rightID] else { continue }
+                let leftName = runtime.characterDefinition(for: leftID)?.displayNames.zhHans ?? leftID
+                let rightName = runtime.characterDefinition(for: rightID)?.displayNames.zhHans ?? rightID
+                let accepted = left.offerEncounterSpeech(with: rightID, otherName: rightName) { [weak right] line in
+                    guard let line else { return }
+                    DispatchQueue.main.async { [weak right] in
+                        right?.offerEncounterSpeech(with: leftID, otherName: leftName, heardLine: line)
+                    }
+                }
+                if !accepted {
+                    _ = right.offerEncounterSpeech(with: leftID, otherName: leftName)
+                }
+            }
+        }
+        nearbySpeechPairs = currentlyNear
     }
 
     /// 把 Core 的 CastVisualProjection 接入真实工作区。道具是独立浮层，
