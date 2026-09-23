@@ -65,7 +65,7 @@ struct GoalDecision: Equatable {
     var style: String?
     /// 可选：下达目标的同时说一句话（气泡）。
     var speech: String?
-    /// 目标 JSON 只出意图枚举；聊天 JSON 由 requestSpeech 单独生成。
+    /// 目标 JSON 只出意图枚举；单行台词由 requestSpeech 单独生成。
     var speechIntent: SpeechIntent?
     /// 可选：让决策脑记一条高层记忆（用户习惯/关系/事件，≤40 字）。
     var memory: String?

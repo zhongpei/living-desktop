@@ -1112,7 +1112,7 @@ final class PetController {
             traceID: traceID)
         adopt(goal: goal)
         if let intent = decision.speechIntent {
-            // 目标 JSON 只出意图枚举；聊天 JSON 由 requestSpeech 单独生成。
+            // 目标 JSON 只出意图枚举；单行台词由 requestSpeech 单独生成。
             speakBuiltin(intent)
         } else if let line = decision.clippedSpeech {
             showSpeech(line)

@@ -60,9 +60,9 @@ actor LocalBrain: GoalBrain {
     struct Configuration: Sendable, Equatable {
         /// 目标 JSON：低温结构化输出。
         var goalSampling = BrainProfile.Sampling()
-        /// 短聊天 JSON：0.8B 实测使用低温、短输出。
+        /// 短聊天单行台词：0.8B 实测使用低温、短输出。
         var chatSampling = BrainProfile.Sampling(
-            temperature: 0.3, topP: 0.8, topK: 20, maxTokens: 48, seed: nil)
+            temperature: 0.3, topP: 1.0, topK: 0, maxTokens: 48, seed: nil)
     }
 
     // ---- 调度门闩（nonisolated 可达，锁守卫）----
@@ -107,7 +107,7 @@ actor LocalBrain: GoalBrain {
         return true
     }
 
-    /// 本地决策脑生成短聊天 JSON；模型未就绪、生成失败或格式非法时，调用方走 Quips。
+    /// 本地决策脑生成短聊天单行台词；模型未就绪、生成失败或格式非法时，调用方走 Quips。
     @discardableResult
     nonisolated func requestSpeech(intent: SpeechIntent, world: BrainContextSnapshot, brain: BrainState,
                                    personality: Personality, characterID: String,
@@ -142,7 +142,7 @@ actor LocalBrain: GoalBrain {
         return true
     }
 
-    /// 设置窗使用的真实本地聊天测试。它复用生产聊天 JSON 管线、独立聊天前缀
+    /// 设置窗使用的真实本地聊天测试。它复用生产单行台词管线、独立聊天前缀
     /// 和聊天采样；不伪造网络响应，也不走 Quips。
     func testChat(personality: Personality) async -> ChatTestResult {
         let t0 = Date()
@@ -176,7 +176,7 @@ actor LocalBrain: GoalBrain {
             text: reply?.text,
             emotion: reply?.emotion,
             latency: Date().timeIntervalSince(t0),
-            error: reply == nil ? "本地模型未返回合法聊天 JSON" : nil)
+            error: reply == nil ? "本地模型未返回合法单行台词" : nil)
     }
 
     // MARK: 决策
@@ -282,11 +282,9 @@ actor LocalBrain: GoalBrain {
                 output = try await generateText(
                     petID: input.characterID, personality: input.personality, profile: profile,
                     promptKind: promptKind, dialogue: input.dialogue, speechIntent: input.intent,
-                    dynamicText: dynamic, sampling: configuration.chatSampling).text
-                reply = SpeechReply.parse(output)
-                if let text = reply?.text, !Self.validSpeech(text) {
-                    reply = nil
-                }
+                    dynamicText: dynamic,
+                    sampling: SpeechSamplingPolicy.resolve(input.intent, from: configuration.chatSampling)).text
+                reply = Self.parseLocalSpeech(output, intent: input.intent)
                 if reply != nil { break }
             }
             BrainDecisionLog.logSpeech(intent: input.intent, reply: reply,
@@ -347,10 +345,25 @@ actor LocalBrain: GoalBrain {
     }
 
     private static func validSpeech(_ text: String) -> Bool {
-        guard !text.contains("\n"), text.count <= 50 else { return false }
+        guard !text.isEmpty, !text.contains("\n"), text.count <= 50 else { return false }
         for leaked in ["KNOWN_FACTS", "SPEECH_ACT", "CONSTRAINT", "系统", "示例"]
             where text.contains(leaked) { return false }
         return true
+    }
+
+    static func parseLocalSpeech(_ output: String, intent: SpeechIntent) -> SpeechReply? {
+        let text = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard validSpeech(text) else { return nil }
+        return SpeechReply(text: text, emotion: emotion(for: intent))
+    }
+
+    private static func emotion(for intent: SpeechIntent) -> String {
+        switch intent {
+        case .greet: "happy"
+        case .commentActivity, .chatter: "neutral"
+        case .tease: "teasing"
+        case .complain: "annoyed"
+        }
     }
 
     // MARK: 诊断
