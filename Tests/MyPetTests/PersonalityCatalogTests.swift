@@ -19,6 +19,10 @@ final class PersonalityCatalogTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(pan.semanticProfile).signatureBehaviors["charm"]?.label, "魅力试探")
         XCTAssertEqual(wukong.semanticProfile?.personality["risk_style"], "无畏型")
         XCTAssertEqual(daiyu.semanticProfile?.personality["sensitivity_style"], "易感型")
+        XCTAssertTrue(daiyu.capabilities.contains("combat"))
+        XCTAssertTrue(
+            try XCTUnwrap(daiyu.semanticProfile).playCapabilities["combat"]?
+                .contains("项目玩法改编") == true)
         let runtimeWukong = Personality.forDefinition(wukong)
         XCTAssertTrue(runtimeWukong.promptSection.contains("无畏探索型"))
         XCTAssertTrue(runtimeWukong.signatureActions.contains("prop_push"))
