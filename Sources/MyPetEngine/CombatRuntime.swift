@@ -80,13 +80,16 @@ public struct CombatRuntimeDigest: Codable, Equatable, Sendable {
 public struct GameplayPlatformContext: Codable, Equatable, Sendable {
     public var userActive: Bool
     public var foregroundWindowIDs: Set<String>
+    public var windows: [GameplayWindowState]
 
     public init(
         userActive: Bool = false,
-        foregroundWindowIDs: Set<String> = []
+        foregroundWindowIDs: Set<String> = [],
+        windows: [GameplayWindowState] = []
     ) {
         self.userActive = userActive
         self.foregroundWindowIDs = foregroundWindowIDs
+        self.windows = windows.sorted { $0.id < $1.id }
     }
 
     public static let idle = GameplayPlatformContext()
@@ -102,6 +105,7 @@ public final class CombatRuntime {
     private var gameplayCPUs: [String: ClassicGameplayCPU]
     public private(set) var platformIntents: [String: GameplayPlatformIntent]
     public private(set) var platformAuthorizations: [String: WindowAuthorization]
+    public private(set) var gameplayDecisions: [String: GameplayDecision]
     private var cpuDifficulties: [String: CombatCPUDifficulty]
     private var windowInteractionPolicy: WindowInteractionPolicy
     private var cpuSeed: UInt64
@@ -113,6 +117,7 @@ public final class CombatRuntime {
         self.gameplayCPUs = [:]
         self.platformIntents = [:]
         self.platformAuthorizations = [:]
+        self.gameplayDecisions = [:]
         self.cpuDifficulties = [:]
         self.windowInteractionPolicy = WindowInteractionPolicy()
         self.cpuSeed = cpuSeed
@@ -127,6 +132,7 @@ public final class CombatRuntime {
         }
         self.platformIntents = checkpoint.platformIntents ?? [:]
         self.platformAuthorizations = checkpoint.platformAuthorizations ?? [:]
+        self.gameplayDecisions = [:]
         self.cpuDifficulties = [:]
         self.windowInteractionPolicy = checkpoint.windowInteractionPolicy ?? WindowInteractionPolicy()
         self.cpuSeed = checkpoint.cpuSeed ?? 0
@@ -163,6 +169,7 @@ public final class CombatRuntime {
         }
         platformIntents = checkpoint.platformIntents ?? [:]
         platformAuthorizations = checkpoint.platformAuthorizations ?? [:]
+        gameplayDecisions = [:]
         cpuDifficulties = [:]
         windowInteractionPolicy = checkpoint.windowInteractionPolicy ?? WindowInteractionPolicy()
         cpuSeed = checkpoint.cpuSeed ?? 0
@@ -201,7 +208,10 @@ public final class CombatRuntime {
         controls.removeActor(actorID)
         gameplayCPUs.removeValue(forKey: actorID.raw)
         platformIntents.removeValue(forKey: actorID.raw)
+        platformAuthorizations.removeValue(forKey: actorID.raw)
+        gameplayDecisions.removeValue(forKey: actorID.raw)
         cpuDifficulties.removeValue(forKey: actorID.raw)
+        gameplayStyles.removeValue(forKey: actorID.raw)
         world.unregister(actorID: actorID)
         refreshSession()
     }
@@ -237,6 +247,23 @@ public final class CombatRuntime {
         controls.releaseAllManualInput(for: actorID)
     }
 
+    public func beginDrag(actorID: EntityID, x: Double, y: Double) {
+        world.beginDrag(actorID: actorID, x: x, y: y)
+    }
+
+    public func drag(
+        actorID: EntityID, x: Double, y: Double,
+        elapsedSeconds: Double
+    ) {
+        world.drag(
+            actorID: actorID, x: x, y: y,
+            elapsedSeconds: elapsedSeconds)
+    }
+
+    public func endDrag(actorID: EntityID, wasClick: Bool) {
+        world.endDrag(actorID: actorID, wasClick: wasClick)
+    }
+
     @discardableResult
     public func beginSession(id: String) -> Bool {
         world.beginSession(id: id, participants: world.snapshot().bodies.map(\.actorID))
@@ -245,6 +272,14 @@ public final class CombatRuntime {
     @discardableResult
     public func beginSession(id: String, participants: [EntityID]) -> Bool {
         world.beginSession(id: id, participants: participants)
+    }
+
+    @discardableResult
+    public func beginFormalSession(
+        id: String, participants: [EntityID],
+        rules: CombatRoundRules = .formal
+    ) -> Bool {
+        world.beginSession(id: id, participants: participants, roundRules: rules)
     }
 
     public func configureTeam(
@@ -325,18 +360,21 @@ public final class CombatRuntime {
                     worldCheckpoint: checkpoint,
                     engagementReservations: gameplayCPUs.compactMap { key, value in
                         key == body.actorID.raw ? nil : value.reservedSlot
-                    })
+                    },
+                    tactics: combatTactics(
+                        gameplayStyles[body.actorID.raw] ?? .balanced))
+                let suppliedWindows = Dictionary(
+                    platformContext.windows.map { ($0.id, $0) },
+                    uniquingKeysWith: { first, _ in first })
                 let windowStates = environment.surfaces.filter {
                     $0.kind == .windowTop
                 }.map {
-                    GameplayWindowState(
+                    if let supplied = suppliedWindows[$0.id] { return supplied }
+                    return GameplayWindowState(
                         id: $0.id,
                         areaRatio: min(1, max(0, ($0.right - $0.left) /
                             max(1, environment.bounds.width))),
                         isForeground: platformContext.foregroundWindowIDs.contains($0.id),
-                        // Surface snapshots currently expose position/revision but
-                        // not velocity. The platform adapter may supply motion in
-                        // a richer observation without changing this seam.
                         isMoving: false,
                         isPullable: true,
                         allowsDamageOverlay: true)
@@ -347,8 +385,10 @@ public final class CombatRuntime {
                     wasAttacked: body.stunFrames > 0,
                     userActive: platformContext.userActive,
                     windows: windowStates,
-                    style: gameplayStyles[body.actorID.raw] ?? .balanced))
+                    style: gameplayStyles[body.actorID.raw] ?? .balanced,
+                    windowPolicy: windowInteractionPolicy))
                 gameplayCPUs[body.actorID.raw] = cpu
+                gameplayDecisions[body.actorID.raw] = output.decision
                 publishPlatformIntent(
                     output.platformIntent,
                     actorID: body.actorID,
@@ -388,6 +428,15 @@ public final class CombatRuntime {
         gameplayCPUs.mapValues { $0.checkpoint() }
     }
 
+    private func combatTactics(_ style: CharacterGameplayStyle) -> CombatTactics {
+        CombatTactics(
+            aggression: 0.5 + style.combat + style.risk * 0.4,
+            defense: 1.5 - style.risk,
+            projectile: 0.7 + style.energyReserve * 0.6,
+            throwBias: 0.7 + style.risk * 0.6,
+            antiAir: 0.8 + style.combat * 0.4)
+    }
+
     private func stableCPUSeed(_ actorID: EntityID) -> UInt64 {
         actorID.raw.utf8.reduce(UInt64(0xcbf29ce484222325) ^ cpuSeed) {
             ($0 ^ UInt64($1)) &* 0x100000001b3
@@ -408,7 +457,7 @@ public final class CombatRuntime {
         switch intent {
         case .pullWindow(let id): actionAndWindow = (.pull, id)
         case .damageWindowOverlay(let id): actionAndWindow = (.damageOverlay, id)
-        case .inspectWindow, .perchWindow, .rest, .observe:
+        case .inspectWindow, .perchWindow, .rest, .observe, .interactProp, .perform:
             actionAndWindow = nil
         }
         guard let (action, windowID) = actionAndWindow else {

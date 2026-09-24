@@ -74,6 +74,8 @@ public final class ActorPresentation {
     private var castFrame: LayoutRect?
     private var detachedFromCastLayout = false
     private var transition: (plan: CastTransitionPlan, startedAt: Double)?
+    private var delayedCombatHP: Int?
+    private var combatOffscreenDirection: CombatHUDSnapshot.OffscreenDirection?
     public private(set) var projectedFrame: LayoutRect?
     public var voicePlaybackEnabled = true {
         didSet { if !voicePlaybackEnabled { stopVoice() } }
@@ -161,13 +163,39 @@ public final class ActorPresentation {
         let (image, _) = animator.tick(dt: dt)
         if let frame = projectedFrame {
             let combatHUD = pose.flatMap { pose -> CombatHUDSnapshot? in
+                guard pose.combatRole != nil else {
+                    delayedCombatHP = nil
+                    return nil
+                }
                 guard let hp = pose.hp, let maxHP = pose.maxHP,
-                      let energy = pose.energy, let maxEnergy = pose.maxEnergy
+                      let energy = pose.energy, let maxEnergy = pose.maxEnergy,
+                      pose.combatRole != "bench"
                 else { return nil }
+                if let delayedCombatHP {
+                    let decay = Int(ceil(Double(maxHP) / 6 * max(0, dt)))
+                    self.delayedCombatHP = max(hp, delayedCombatHP - decay)
+                } else {
+                    delayedCombatHP = hp
+                }
+                let teammates = snapshot.entities.compactMap { entity -> CombatTeammateHUDSnapshot? in
+                    guard let teammate = entity.pose,
+                          entity.id != actorID,
+                          teammate.combatTeamID == pose.combatTeamID,
+                          teammate.combatRole == "bench",
+                          let teammateHP = teammate.hp,
+                          let teammateMaxHP = teammate.maxHP else { return nil }
+                    return CombatTeammateHUDSnapshot(
+                        identity: entity.id.raw, hp: teammateHP, maxHP: teammateMaxHP,
+                        knockedOut: teammateHP == 0)
+                }.sorted { $0.identity < $1.identity }
                 return CombatHUDSnapshot(
-                    hp: hp, maxHP: maxHP,
+                    identity: actorID.raw,
+                    teamID: pose.combatTeamID,
+                    hp: hp, delayedHP: delayedCombatHP, maxHP: maxHP,
                     energy: energy, maxEnergy: maxEnergy,
-                    active: pose.combatRole == "active")
+                    active: pose.combatRole == "active",
+                    offscreenDirection: combatOffscreenDirection,
+                    knockedOut: hp == 0, teammates: teammates)
             }
             let renderSnapshot = RenderSnapshot(
                 actorID: actorID, frame: frame, image: image,
@@ -235,6 +263,17 @@ public final class ActorPresentation {
             x: Double(work.minX), y: Double(work.minY),
             width: Double(work.width), height: Double(work.height))
         let groupID = "screen:\(Int(work.minX)):\(Int(work.minY)):\(Int(work.width))x\(Int(work.height))"
+        if pose.x < bounds.minX {
+            combatOffscreenDirection = .left
+        } else if pose.x > bounds.maxX {
+            combatOffscreenDirection = .right
+        } else if pose.yFeet < bounds.minY {
+            combatOffscreenDirection = .up
+        } else if pose.yFeet > bounds.maxY {
+            combatOffscreenDirection = .down
+        } else {
+            combatOffscreenDirection = nil
+        }
         var frame = worldPlanner.frame(for: WorldRenderPlacementRequest(
             actorID: actorID,
             pose: pose,

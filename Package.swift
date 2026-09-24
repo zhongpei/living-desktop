@@ -109,6 +109,7 @@ let package = Package(
                 "MyPetCore",
                 "MyPet2D",
                 "MyPetCombat",
+                "MyPetCombatCPU",
                 "MyPetEngine",
                 "MyPetAI",
                 "MyPetPlatform",

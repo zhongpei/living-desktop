@@ -10,6 +10,10 @@ public struct ProjectileDefinition: Codable, Equatable, Sendable {
     public var spawnOffset: Vec2
     public var velocity: Vec2
     public var lifetimeFrames: Int
+    /// Maximum world-space distance from the spawn point. `nil` preserves
+    /// schema-v1 lifetime-only content; schema-v2 combat content should author
+    /// this explicitly so one desktop projectile cannot cross every display.
+    public var maxTravelDistance: Double?
     public var collisionMask: CollisionMask
     public var hit: CombatHitDefinition
     public var visualResourceID: String
@@ -21,6 +25,7 @@ public struct ProjectileDefinition: Codable, Equatable, Sendable {
         spawnOffset: Vec2 = Vec2(),
         velocity: Vec2,
         lifetimeFrames: Int,
+        maxTravelDistance: Double? = nil,
         collisionMask: CollisionMask = [.hit, .hurt],
         hit: CombatHitDefinition,
         visualResourceID: String,
@@ -31,10 +36,15 @@ public struct ProjectileDefinition: Codable, Equatable, Sendable {
         self.spawnOffset = spawnOffset
         self.velocity = velocity
         self.lifetimeFrames = max(1, lifetimeFrames)
+        self.maxTravelDistance = maxTravelDistance.map { max(0, $0) }
         self.collisionMask = collisionMask
         self.hit = hit
         self.visualResourceID = visualResourceID
         self.destroyOnHit = destroyOnHit
+    }
+
+    public var effectiveTravelDistance: Double {
+        maxTravelDistance ?? hypot(velocity.x, velocity.y) * Double(lifetimeFrames)
     }
 }
 
@@ -46,6 +56,7 @@ public struct CombatProjectileState: Codable, Equatable, Sendable {
     public var definition: ProjectileDefinition
     public var spawnedAtFrame: Int64
     public var previousPosition: Vec2
+    public var travelledDistance: Double
     public var hitLedger: [String: Int64]
 
     public init(
@@ -64,7 +75,26 @@ public struct CombatProjectileState: Codable, Equatable, Sendable {
         self.definition = definition
         self.spawnedAtFrame = spawnedAtFrame
         self.previousPosition = previousPosition
+        self.travelledDistance = 0
         self.hitLedger = [:]
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case entityID, ownerID, moveID, moveInstanceID, definition
+        case spawnedAtFrame, previousPosition, travelledDistance, hitLedger
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        entityID = try values.decode(EntityID.self, forKey: .entityID)
+        ownerID = try values.decode(EntityID.self, forKey: .ownerID)
+        moveID = try values.decode(String.self, forKey: .moveID)
+        moveInstanceID = try values.decode(Int64.self, forKey: .moveInstanceID)
+        definition = try values.decode(ProjectileDefinition.self, forKey: .definition)
+        spawnedAtFrame = try values.decode(Int64.self, forKey: .spawnedAtFrame)
+        previousPosition = try values.decode(Vec2.self, forKey: .previousPosition)
+        travelledDistance = try values.decodeIfPresent(Double.self, forKey: .travelledDistance) ?? 0
+        hitLedger = try values.decodeIfPresent([String: Int64].self, forKey: .hitLedger) ?? [:]
     }
 }
 

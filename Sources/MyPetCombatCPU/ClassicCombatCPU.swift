@@ -95,7 +95,8 @@ public struct ClassicCombatCPU: Sendable {
         guard let target else { return issue(.neutral, intent: .wait) }
 
         let distance = abs(target.position.x - observation.selfBody.position.x)
-        if target.phase == .active, distance <= 115 {
+        if target.phase == .active,
+           distance <= 70 + 45 * observation.tactics.defense {
             let back = target.position.x >= observation.selfBody.position.x
                 ? FighterInputFrame(left: true)
                 : FighterInputFrame(right: true)
@@ -177,7 +178,8 @@ public struct ClassicCombatCPU: Sendable {
             profile: observation.selfProfile,
             selfBody: observation.selfBody,
             target: target,
-            environment: observation.environment)
+            environment: observation.environment,
+            tactics: observation.tactics)
         if candidates.isEmpty {
             return approach(
                 selfBody: observation.selfBody, target: target, slot: slot)
@@ -345,7 +347,8 @@ public struct ClassicCombatCPU: Sendable {
         profile: CombatProfile,
         selfBody: CombatBodyState,
         target: CombatBodyState,
-        environment: BodyEnvironment
+        environment: BodyEnvironment,
+        tactics: CombatTactics
     ) -> [ScoredMove] {
         let distance = abs(target.position.x - selfBody.position.x)
         let surface = environment.surface(id: selfBody.currentSurfaceID)
@@ -377,9 +380,9 @@ public struct ClassicCombatCPU: Sendable {
         }.filter {
             !reservingForUnseen || $0.effectiveResourceRules.startCost == 0
         }.map { move in
-            let reach = move.projectile == nil
-                ? max(1, move.hit.attackBoxes.map(\.rect.maxX).max() ?? 1)
-                : 320
+            let projectileReach = move.authoredProjectiles.map(\.effectiveTravelDistance).max()
+            let reach = projectileReach ??
+                max(1, move.hit.attackBoxes.map(\.rect.maxX).max() ?? 1)
             let hitChance = max(0, min(1, 1 - abs(distance - reach * 0.75) / max(60, reach)))
             let repetition = state.recentMoves.filter { $0 == move.id }.count
             let repeatHits = move.hit.rehitFrames.map {
@@ -394,7 +397,14 @@ public struct ClassicCombatCPU: Sendable {
             } ?? 0
             let vulnerabilityBonus = target.phase == .recovery
                 ? Double(remainingFrames) * 2 : 0
-            let throwBonus = move.hit.attackHeight == .throwAttack && distance <= 70 ? 55.0 : 0
+            let throwBonus = move.hit.attackHeight == .throwAttack && distance <= 70
+                ? 55.0 * tactics.throwBias : 0
+            // Reliability is already represented by hitChance and long reach;
+            // only an explicit zoner bias may add another projectile premium.
+            let projectileBonus = move.authoredProjectiles.isEmpty
+                ? 0 : 45 * (tactics.projectile - 1)
+            let antiAirBonus = target.locomotion == .airborne && move.hit.knockbackY < 0
+                ? 55 * tactics.antiAir : 0
             let diversityBonus = state.recentMoves.contains(move.id) ? 0.0 : 55.0
             let lifetimeUses = state.moveUseCounts?[move.id, default: 0] ?? 0
             let scarcityBonus = lifetimeUses == 0 ? 180.0 : 35.0 / Double(lifetimeUses + 1)
@@ -405,8 +415,10 @@ public struct ClassicCombatCPU: Sendable {
             let energyPenalty = Double(resource.startCost) * reservePressure
             let historyPenalty = (state.actionHistory ?? ActionHistory())
                 .repetitionPenalty(id: move.id, family: resource.family)
-            let score = Double(expectedDamage) + hitChance * 60 + vulnerabilityBonus +
-                throwBonus + diversityBonus + scarcityBonus - exposure - terrainRisk -
+            let score = Double(expectedDamage) * tactics.aggression +
+                hitChance * 60 + vulnerabilityBonus + throwBonus + projectileBonus +
+                antiAirBonus + diversityBonus + scarcityBonus -
+                exposure * max(0.25, 2 - tactics.defense) - terrainRisk -
                 Double(repetition * 55) - energyPenalty - historyPenalty
             return ScoredMove(move: move, score: score)
         }
@@ -417,7 +429,15 @@ public struct ClassicCombatCPU: Sendable {
                 let repeated = state.recentMoves.suffix(2).allSatisfy {
                     $0 == candidate.move.id
                 } && state.recentMoves.count >= 2
-                return distance <= 360.0 && !repeated
+                // Balanced fighters close distance after zoning instead of
+                // treating the only long-range option as the only legal plan.
+                // Dedicated zoners retain sustained projectile pressure.
+                let rotating = tactics.projectile <= 1.25 &&
+                    (state.actionHistory ?? ActionHistory()).entries.suffix(3)
+                        .contains { $0.family == .projectile }
+                let authoredReach = candidate.move.authoredProjectiles
+                    .map(\.effectiveTravelDistance).max() ?? 0
+                return distance <= authoredReach && !repeated && !rotating
             }
             let reach = candidate.move.hit.attackBoxes.map { $0.rect.maxX }.max() ?? 0
             // Leave only a small allowance for the opponent's inward HurtBox.

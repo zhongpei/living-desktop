@@ -61,6 +61,7 @@ public struct BodyPose: Codable, Equatable, Sendable {
     public var energy: Int?
     public var maxEnergy: Int?
     public var combatRole: String?
+    public var combatTeamID: String?
     public var combatParticipation: String?
     public var combatPhase: String?
     public var healthState: String?
@@ -83,6 +84,7 @@ public struct BodyPose: Codable, Equatable, Sendable {
         energy: Int? = nil,
         maxEnergy: Int? = nil,
         combatRole: String? = nil,
+        combatTeamID: String? = nil,
         combatParticipation: String? = nil,
         combatPhase: String? = nil,
         healthState: String? = nil,
@@ -101,6 +103,7 @@ public struct BodyPose: Codable, Equatable, Sendable {
         self.energy = energy
         self.maxEnergy = maxEnergy
         self.combatRole = combatRole
+        self.combatTeamID = combatTeamID
         self.combatParticipation = combatParticipation
         self.combatPhase = combatPhase
         self.healthState = healthState
@@ -110,7 +113,7 @@ public struct BodyPose: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case actorID, x, yFeet, facingRight, motion, action, horizontalSpeed
-        case hp, maxHP, energy, maxEnergy, combatRole, combatParticipation
+        case hp, maxHP, energy, maxEnergy, combatRole, combatTeamID, combatParticipation
         case combatPhase, healthState, authoritativePlacement, displayHeight
     }
 
@@ -129,6 +132,7 @@ public struct BodyPose: Codable, Equatable, Sendable {
             energy: try values.decodeIfPresent(Int.self, forKey: .energy),
             maxEnergy: try values.decodeIfPresent(Int.self, forKey: .maxEnergy),
             combatRole: try values.decodeIfPresent(String.self, forKey: .combatRole),
+            combatTeamID: try values.decodeIfPresent(String.self, forKey: .combatTeamID),
             combatParticipation: try values.decodeIfPresent(String.self, forKey: .combatParticipation),
             combatPhase: try values.decodeIfPresent(String.self, forKey: .combatPhase),
             healthState: try values.decodeIfPresent(String.self, forKey: .healthState),

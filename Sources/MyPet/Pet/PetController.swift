@@ -2,6 +2,7 @@ import AppKit
 import CoreGraphics
 import CoreText
 import MyPetCombat
+import MyPetCombatCPU
 import MyPetContent
 import MyPetCore
 import MyPetEngine
@@ -136,6 +137,8 @@ final class PetController {
     private var perceptionEventCursor: Int64 = 0
     private var lastWindowTitleFingerprint: String?
     private let puller = WindowPuller()
+    private let combatPlatformEffects = CombatPlatformEffects()
+    private var lastCombatWindowBounds: [CGWindowID: CGRect] = [:]
     /// 世界事件环（进 BrainContextSnapshot.recentEvents）。
     private var recentEvents: [(t: Double, text: String)] = []
     private var lastWorldFingerprint = ""
@@ -710,12 +713,9 @@ final class PetController {
             consumeCombatEvents(combatCoordinator.advance(
                 elapsedSeconds: dt,
                 environment: model.bodyEnvironmentSnapshot(),
-                platformContext: GameplayPlatformContext(
-                    userActive: systemWorld.idleSeconds() < 5,
-                    foregroundWindowIDs: world.foreground.map {
-                        Set(["window:\($0.id):top"])
-                    } ?? Set()),
+                platformContext: combatPlatformContext(),
                 beforeFrame: { [weak self] in self?.prepareBodySimulationFrame() }))
+            consumeCombatPlatformEffect()
         }
         syncBodyProjection()
         actions.tick(now: clock)
@@ -731,6 +731,33 @@ final class PetController {
         } else {
             presentation.displayProp(image: nil, rect: .zero)
         }
+    }
+
+    func combatPlatformContext() -> GameplayPlatformContext {
+        let windows = world.windows.map { window -> GameplayWindowState in
+            let moving = lastCombatWindowBounds[window.id].map { $0 != window.bounds } ?? false
+            lastCombatWindowBounds[window.id] = window.bounds
+            return GameplayWindowState(
+                id: "window:\(window.id):top",
+                areaRatio: Double(window.bounds.width / max(1, Screens.virtualBox().width)),
+                isForeground: world.foreground?.id == window.id,
+                isMoving: moving,
+                isPullable: true,
+                allowsDamageOverlay: true)
+        }
+        let liveIDs = Set(world.windows.map(\.id))
+        lastCombatWindowBounds = lastCombatWindowBounds.filter { liveIDs.contains($0.key) }
+        return GameplayPlatformContext(
+            userActive: systemWorld.idleSeconds() < 5,
+            foregroundWindowIDs: world.foreground.map {
+                Set(["window:\($0.id):top"])
+            } ?? Set(),
+            windows: windows)
+    }
+
+    func consumeCombatPlatformEffect() {
+        guard let intent = combatCoordinator.platformIntent(actorID: runtimeActorID) else { return }
+        combatPlatformEffects.execute(intent, in: world)
     }
 
     private func combatVisualAction(for body: CombatBodyState?) -> String? {
@@ -771,6 +798,10 @@ final class PetController {
             energy: combatHUD?.gameplayEnergy.current,
             maxEnergy: combatHUD?.gameplayEnergy.maximum,
             combatRole: combatHUD?.rosterRole.rawValue,
+            combatTeamID: combatHUD.flatMap { body in
+                if case .rosterParticipant(let teamID) = body.participation { return teamID }
+                return nil
+            },
             combatParticipation: combatHUD.map { String(describing: $0.participation) },
             combatPhase: combat?.phase.rawValue,
             healthState: combat?.healthState.rawValue,

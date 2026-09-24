@@ -182,11 +182,7 @@ final class CastSession: NSObject {
             combatCoordinator.advance(
                 elapsedSeconds: dt,
                 environment: controller.model.bodyEnvironmentSnapshot(),
-                platformContext: GameplayPlatformContext(
-                    userActive: controller.systemWorld.idleSeconds() < 5,
-                    foregroundWindowIDs: controller.world.foreground.map {
-                        Set(["window:\($0.id):top"])
-                    } ?? Set()),
+                platformContext: controller.combatPlatformContext(),
                 beforeFrame: { [weak self] in
                     guard let self else { return }
                     for id in self.castControllers.keys.sorted() {
@@ -196,6 +192,7 @@ final class CastSession: NSObject {
         } ?? []
         for pet in castControllers.values { pet.syncBodyProjection() }
         for pet in castControllers.values { pet.consumeCombatEvents(combatEvents) }
+        for pet in castControllers.values { pet.consumeCombatPlatformEffect() }
         for (id, pet) in castControllers {
             pet.tickFrame(presentationEffects: effects.filter { $0.actorID.raw == id })
         }

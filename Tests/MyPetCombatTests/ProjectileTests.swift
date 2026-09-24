@@ -32,7 +32,8 @@ final class ProjectileTests: XCTestCase {
             ProjectileDefinition(
                 id: "bowl_\(index)", spawnFrame: frame,
                 spawnOffset: Vec2(x: 20, y: -50),
-                velocity: Vec2(x: 10, y: 0), lifetimeFrames: 20,
+                velocity: Vec2(x: 10, y: 0), lifetimeFrames: 30,
+                maxTravelDistance: 240,
                 hit: CombatHitDefinition(damage: 5, hitStopFrames: 0),
                 visualResourceID: "effects/wu_song/wu_bowl_projectile_loop")
         }
@@ -171,6 +172,27 @@ final class ProjectileTests: XCTestCase {
         let boundsEvents = boundsWorld.step(environment: floor)
         XCTAssertTrue(boundsWorld.snapshot().projectiles.isEmpty)
         XCTAssertEqual(boundsEvents.filter { $0.kind == .projectileExpired }.count, 1)
+    }
+
+    func testProjectileStopsAtExplicitTravelDistance() {
+        let world = makeWorld(projectile: ProjectileDefinition(
+            id: "range-limited", spawnFrame: 0, spawnOffset: Vec2(x: 20, y: -50),
+            velocity: Vec2(x: 10, y: 0), lifetimeFrames: 30,
+            maxTravelDistance: 25,
+            hit: CombatHitDefinition(
+                damage: 20, hitStopFrames: 0,
+                attackBoxes: [CollisionBox(x1: -2, y1: -2, x2: 2, y2: 2)]),
+            visualResourceID: "effects/range-limited"), targetX: 300)
+        world.setInput(FighterInputFrame(buttons: [.d]), for: EntityID("caster"))
+
+        _ = world.step(environment: floor)
+        world.setInput(.neutral, for: EntityID("caster"))
+        _ = world.step(environment: floor)
+        let events = world.step(environment: floor)
+
+        XCTAssertTrue(world.snapshot().projectiles.isEmpty)
+        XCTAssertEqual(world.body(for: EntityID("target"))?.hp, 1000)
+        XCTAssertEqual(events.filter { $0.kind == .projectileExpired }.count, 1)
     }
 
     func testProjectileCheckpointReplayProducesIdenticalSnapshotsAndEvents() {
