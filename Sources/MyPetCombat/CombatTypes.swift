@@ -453,6 +453,7 @@ public struct CombatWorldCheckpoint: Codable, Equatable, Sendable {
     public var teams: [String: TeamCombatState]?
     public var escalation: CombatEscalationState?
     public var combatReadiness: [String: Bool]?
+    public var featurePolicy: CombatFeaturePolicy?
 
     public init(frame: Int64, bodyWorld: BodyWorldCheckpoint, rules: [String: CombatRuleState],
                 profiles: [String: CombatProfile], inputs: [String: FighterInputFrame],
@@ -460,7 +461,8 @@ public struct CombatWorldCheckpoint: Codable, Equatable, Sendable {
                 projectiles: [String: CombatProjectileState]? = nil,
                 teams: [String: TeamCombatState]? = nil,
                 escalation: CombatEscalationState? = nil,
-                combatReadiness: [String: Bool]? = nil) {
+                combatReadiness: [String: Bool]? = nil,
+                featurePolicy: CombatFeaturePolicy? = nil) {
         self.frame = frame
         self.bodyWorld = bodyWorld
         self.rules = rules
@@ -472,5 +474,6 @@ public struct CombatWorldCheckpoint: Codable, Equatable, Sendable {
         self.teams = teams
         self.escalation = escalation
         self.combatReadiness = combatReadiness
+        self.featurePolicy = featurePolicy
     }
 }

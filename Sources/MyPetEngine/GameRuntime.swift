@@ -321,6 +321,22 @@ public final class GameRuntime {
         withState { director.abortCurrent(in: kernel) }
     }
 
+    /// Reconciles story eligibility with a higher-priority activity owner such
+    /// as CombatSession. Unrelated actors continue their authored episodes.
+    public func setStoryUnavailableActorIDs(
+        _ actorIDs: Set<EntityID>,
+        director: StoryDirector
+    ) {
+        withState { director.setUnavailableActorIDs(actorIDs, in: kernel) }
+    }
+
+    public func updateStoryConfiguration(
+        _ configuration: StoryDirectorConfiguration,
+        director: StoryDirector
+    ) {
+        withState { director.updateConfiguration(configuration, in: kernel) }
+    }
+
     func configureStoryInterruptionPolicy(_ policy: StoryInterruptionPolicy) {
         withState { kernel.storyInterruptionPolicy = policy }
     }

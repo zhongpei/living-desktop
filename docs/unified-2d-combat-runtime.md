@@ -1054,6 +1054,11 @@ CombatSession
 
 多个无关角色可以继续聊天/看窗口，而另外两个角色在战斗。
 
+生产 Cast 中 Story、Combat 与 60Hz BodyWorld 由同一个 GameRuntime 推进。活动所有权按角色而
+不是按应用全局切换：参战者、误伤后警觉/加入的 NPC 暂停并失效 Goal/Scene/Needle；未参战角色
+继续生活剧情。session 终止、目标离场或显式结束后，Runtime 先释放 autonomous/authored 战斗
+控制，再允许上层生活调度恢复，不能让旧 CombatPlanner 和新 Needle 在同一角色上并行输出。
+
 `participants` 默认只包含显式参战者，但不是只能在 session 创建时写入的固定数组。ruleset 可以
 声明 collateral policy：未参战中立角色不进入 CPU 合法目标集合，但真实 hit/projectile 若误伤其
 HurtBox，CombatEscalationSystem 可在当前 collision batch 完成后的下一逻辑帧，以稳定 session

@@ -204,6 +204,54 @@ final class CombatSimulationTests: XCTestCase {
         })
     }
 
+    func testFormalRoundEndReleasesAuthoredCombatActivity() {
+        let finisher = CombatMoveDefinition(
+            id: "finisher", command: .button(.x), startupFrames: 0,
+            activeFrames: 1, recoveryFrames: 1,
+            hit: CombatHitDefinition(
+                damage: 1000, hitStopFrames: 0, hitStunFrames: 0,
+                knockbackX: 0),
+            visualAction: "attack")
+        let runtime = CombatRuntime()
+        runtime.register(
+            actorID: EntityID("a"), profile: CombatProfile(moves: [finisher]),
+            x: 400, yFeet: 700)
+        runtime.register(
+            actorID: EntityID("b"), profile: CombatProfile(moves: []),
+            x: 445, yFeet: 700, facing: .left)
+        runtime.activate(.authored, for: EntityID("a"))
+        runtime.activate(.authored, for: EntityID("b"))
+        XCTAssertTrue(runtime.beginFormalSession(
+            id: "formal", participants: [EntityID("a"), EntityID("b")]))
+        XCTAssertTrue(runtime.ownsCombatActivity(for: EntityID("a")))
+        runtime.setInput(
+            FighterInputFrame(buttons: [.x]), source: .authored,
+            for: EntityID("a"))
+
+        var events: [CombatEvent] = []
+        for _ in 0..<4 {
+            events += runtime.advance(environment: makeScenario().desktop.combatEnvironment())
+        }
+
+        XCTAssertTrue(events.contains { $0.kind == .roundEnded })
+        XCTAssertFalse(runtime.isActive(.authored, for: EntityID("a")))
+        XCTAssertFalse(runtime.isActive(.authored, for: EntityID("b")))
+        XCTAssertFalse(runtime.ownsCombatActivity(for: EntityID("a")))
+    }
+
+    func testRemovingCombatTargetReleasesRemainingAutonomousActor() {
+        let runtime = CombatRuntime()
+        runtime.register(actorID: EntityID("a"), profile: CombatProfile(), x: 400, yFeet: 700)
+        runtime.register(actorID: EntityID("b"), profile: CombatProfile(), x: 445, yFeet: 700)
+        runtime.activate(.autonomous, for: EntityID("a"))
+        XCTAssertTrue(runtime.ownsCombatActivity(for: EntityID("a")))
+
+        runtime.unregister(EntityID("b"))
+
+        XCTAssertFalse(runtime.isActive(.autonomous, for: EntityID("a")))
+        XCTAssertFalse(runtime.ownsCombatActivity(for: EntityID("a")))
+    }
+
     func testOneControlledTeamStartsSessionWithAnOpposingTeam() {
         let runtime = CombatRuntime()
         for (id, x) in [("red-a", 300.0), ("red-b", 250.0),

@@ -11,13 +11,12 @@ final class ManualControlPanel: NSPanel {
     private let inputView = ManualControlView()
     private let label = NSTextField(labelWithString: "")
     private(set) var actorName = ""
-    private let mappingStore: ManualControlMappingStore
     private var mappings: ManualControlMappingCatalog
+    private var pendingMappings: ManualControlMappingCatalog?
+    private var activeCharacterID: String?
 
-    init(mappingStore: ManualControlMappingStore = ManualControlMappingStore(),
-         mappings: ManualControlMappingCatalog? = nil) {
-        self.mappingStore = mappingStore
-        self.mappings = mappings ?? mappingStore.load()
+    init(mappings: ManualControlMappingCatalog = ManualControlMappingCatalog()) {
+        self.mappings = mappings
         super.init(
             contentRect: NSRect(x: 0, y: 0, width: 330, height: 92),
             styleMask: [.titled, .utilityWindow],
@@ -40,6 +39,7 @@ final class ManualControlPanel: NSPanel {
 
         inputView.onInput = { [weak self] in self?.onInput?($0) }
         inputView.onExit = { [weak self] in self?.finish() }
+        inputView.onAllKeysReleased = { [weak self] in self?.commitPendingMappingsIfPossible() }
         NotificationCenter.default.addObserver(
             forName: NSWindow.didResignKeyNotification, object: self, queue: .main
         ) { [weak self] _ in
@@ -48,22 +48,17 @@ final class ManualControlPanel: NSPanel {
     }
 
     func applyMappings(_ mappings: ManualControlMappingCatalog) {
-        guard !isVisible else { return }
-        self.mappings = mappings
-    }
-
-    func setMapping(_ mapping: ManualControlMapping, for characterID: String) {
-        mappings.set(mapping, for: characterID)
-        mappingStore.save(mappings)
-    }
-
-    func removeMapping(for characterID: String) {
-        mappings.remove(for: characterID)
-        mappingStore.save(mappings)
+        guard isVisible else {
+            self.mappings = mappings
+            return
+        }
+        pendingMappings = mappings
+        commitPendingMappingsIfPossible()
     }
 
     func begin(actorName: String, characterID: String) {
         self.actorName = actorName
+        activeCharacterID = characterID
         let mapping = mappings.mapping(for: characterID)
         label.stringValue = "控制：\(actorName)\n键位方案：\(mapping.id) · Esc 退出"
         inputView.beginSession(mapping: mapping)
@@ -75,7 +70,21 @@ final class ManualControlPanel: NSPanel {
     func finish() {
         inputView.endSession()
         orderOut(nil)
+        if let pendingMappings {
+            mappings = pendingMappings
+            self.pendingMappings = nil
+        }
+        activeCharacterID = nil
         onExit?()
+    }
+
+    private func commitPendingMappingsIfPossible() {
+        guard let pendingMappings, let activeCharacterID,
+              inputView.applyMappingIfIdle(
+                pendingMappings.mapping(for: activeCharacterID)) else { return }
+        mappings = pendingMappings
+        self.pendingMappings = nil
+        label.stringValue = "控制：\(actorName)\n键位方案：\(mappings.mapping(for: activeCharacterID).id) · Esc 退出"
     }
 
     override var canBecomeKey: Bool { true }
@@ -86,6 +95,7 @@ final class ManualControlPanel: NSPanel {
 private final class ManualControlView: NSView {
     var onInput: ((FighterInputFrame) -> Void)?
     var onExit: (() -> Void)?
+    var onAllKeysReleased: (() -> Void)?
     private var session = ManualControlSession()
 
     override var acceptsFirstResponder: Bool { true }
@@ -99,6 +109,7 @@ private final class ManualControlView: NSView {
     override func keyUp(with event: NSEvent) {
         guard let key = Self.key(for: event.keyCode) else { return }
         onInput?(session.release(key))
+        if session.pressedKeys.isEmpty { onAllKeysReleased?() }
     }
 
     func beginSession(mapping: ManualControlMapping) {
@@ -107,10 +118,15 @@ private final class ManualControlView: NSView {
 
     func focusLost() {
         onInput?(session.focusLost())
+        onAllKeysReleased?()
     }
 
     func endSession() {
         onInput?(session.end())
+    }
+
+    func applyMappingIfIdle(_ mapping: ManualControlMapping) -> Bool {
+        session.applyMappingIfIdle(mapping)
     }
 
     private static func key(for keyCode: UInt16) -> KeyboardControlKey? {

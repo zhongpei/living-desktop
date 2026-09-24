@@ -123,6 +123,7 @@ final class PetController {
     private let manualControlPanel: ManualControlPanel
     private var manualInput = FighterInputFrame.neutral
     private var previousManualInput = FighterInputFrame.neutral
+    private var semanticSuspendedByCombat = false
     /// 行动脑只提交语义请求。只有 Kernel 接受且计划世代仍有效时，
     /// 下一个 runtime pulse 才会让 AppKit 身体执行。
     private var pendingRuntimeActions: [String: PendingRuntimeAction] = [:]
@@ -706,8 +707,18 @@ final class PetController {
         }
 
         updateSleepState()
+        let combatOwnsActivity = combatCoordinator.ownsCombatActivity(actorID: runtimeActorID)
+        if combatOwnsActivity && !semanticSuspendedByCombat {
+            semanticSuspendedByCombat = true
+            actions.cancelPerformance()
+            cancelGoalAndScene(reason: "combat activity acquired")
+        } else if !combatOwnsActivity && semanticSuspendedByCombat {
+            semanticSuspendedByCombat = false
+            goalCooldown = 0
+            pushRecentEvent("combat activity released")
+        }
         for _ in 0..<runtimeSteps {
-            if settings.scenesRuntimeEnabled {
+            if settings.scenesRuntimeEnabled && !combatOwnsActivity {
                 driveSemanticMind()
                 preparedSemanticProvider.setPropsEnabled(settings.propsRuntimeEnabled)
                 _ = gameplayRuntime.step(
@@ -723,7 +734,7 @@ final class PetController {
                 _ = gameplayRuntime.step { [weak self] _ in
                     self?.submitPendingMenuAction()
                     self?.drainCommittedRuntimeActions()
-                    self?.driveMind()
+                    if !combatOwnsActivity { self?.driveMind() }
                 }
             }
         }
@@ -1968,6 +1979,11 @@ final class PetController {
     func updateSettings(_ s: Settings) {
         combatCoordinator.configure(s.gameFeatures)
         manualControlPanel.applyMappings(s.gameFeatures.controls)
+        if settings.gameFeatures.enabled && !s.gameFeatures.enabled {
+            combatCoordinator.endAutonomousCombat(actorID: runtimeActorID)
+            if manualControlPanel.isVisible { manualControlPanel.finish() }
+            cancelGoalAndScene(reason: "game features disabled")
+        }
         if !usesSharedGameplayKernel, settings.propsRuntimeEnabled && !s.propsRuntimeEnabled {
             if currentGoal != nil || semanticActiveSceneID != nil {
                 cancelGoalAndScene(reason: "prop setting changed")
@@ -2442,6 +2458,7 @@ final class PetController {
         manualInput = .neutral
         model.stopWalk()
         actions.cancelPerformance()
+        cancelGoalAndScene(reason: "autonomous combat")
         combatCoordinator.beginAutonomousCombat(actorID: runtimeActorID)
         pushRecentEvent("autonomous combat started: \(reason)")
     }

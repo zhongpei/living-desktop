@@ -35,6 +35,7 @@ public final class CombatWorld {
     private var teams: [String: TeamCombatState] = [:]
     private var escalation = CombatEscalationState(policy: .flatArena)
     private var combatReadiness: [String: Bool] = [:]
+    private var featurePolicy = CombatFeaturePolicy()
     public private(set) var session: CombatSession?
 
     public init(bodyWorld: BodyWorld = BodyWorld()) {
@@ -54,6 +55,7 @@ public final class CombatWorld {
         self.escalation = checkpoint.escalation ?? CombatEscalationState(policy: .flatArena)
         self.combatReadiness = checkpoint.combatReadiness ??
             Dictionary(uniqueKeysWithValues: checkpoint.rules.keys.map { ($0, true) })
+        self.featurePolicy = checkpoint.featurePolicy ?? CombatFeaturePolicy()
     }
 
     public func checkpoint() -> CombatWorldCheckpoint {
@@ -68,7 +70,8 @@ public final class CombatWorld {
             projectiles: projectiles,
             teams: teams,
             escalation: escalation,
-            combatReadiness: combatReadiness)
+            combatReadiness: combatReadiness,
+            featurePolicy: featurePolicy)
     }
 
     @discardableResult
@@ -136,6 +139,12 @@ public final class CombatWorld {
     public func setEscalationPolicy(_ policy: NeutralEscalationPolicy) {
         escalation = CombatEscalationState(policy: policy)
     }
+
+    public func setFeaturePolicy(_ policy: CombatFeaturePolicy) {
+        featurePolicy = policy
+    }
+
+    public var currentFeaturePolicy: CombatFeaturePolicy { featurePolicy }
 
     public func teamState(_ teamID: String) -> TeamCombatState? { teams[teamID] }
     public var escalationState: CombatEscalationState { escalation }
@@ -299,7 +308,9 @@ public final class CombatWorld {
             energy.advance(
                 frame: frame,
                 regenerationAllowed: body.healthState == .active &&
-                    projectiles.values.contains(where: { $0.ownerID == actorID }) == false)
+                    projectiles.values.contains(where: { $0.ownerID == actorID }) == false,
+                regenerationScale: featurePolicy.energyEnabled
+                    ? featurePolicy.energyRecoveryScale : 0)
             body.gameplayEnergy = energy
 
             if body.hitStopFrames > 0 {
@@ -411,15 +422,18 @@ public final class CombatWorld {
     }
 
     private func advanceTeams(events: inout [CombatEvent]) {
+        guard featurePolicy.teamsEnabled else { return }
         for teamID in teams.keys.sorted() {
             guard var team = teams[teamID] else { continue }
             let activeInput = inputs[team.activeID.raw] ?? .neutral
             let previousInput = buffers[team.activeID.raw]?.newest ?? .neutral
-            if activeInput.systemControls.contains(.assist),
+            if featurePolicy.assistsEnabled,
+               activeInput.systemControls.contains(.assist),
                !previousInput.systemControls.contains(.assist) {
                 _ = team.requestAssist(frame: frame)
             }
-            if activeInput.systemControls.contains(.tag),
+            if featurePolicy.freeTagEnabled,
+               activeInput.systemControls.contains(.tag),
                !previousInput.systemControls.contains(.tag),
                body(for: team.activeID)?.canAcceptAction == true {
                 _ = team.requestTag(frame: frame)
@@ -527,6 +541,7 @@ public final class CombatWorld {
         guard body.locomotion != .dragged && body.locomotion != .tossed else { return }
         if (body.phase == .hitStun || body.phase == .blockStun),
            let burst = profile.moves.first(where: {
+               featurePolicy.permits($0) &&
                $0.systemControl == .defensiveBurst &&
                    buffer.containsSystemControlPress(
                        .defensiveBurst, withinLast: 16)
@@ -541,10 +556,12 @@ public final class CombatWorld {
            let allowed = current.cancelInto {
             let candidates = profile.moves.filter { candidate in
                 allowed.contains(candidate.id) &&
+                    featurePolicy.permits(candidate) &&
                     ((candidate.systemControl.map(buffer.isSystemControlPress) ?? false) ||
                      (candidate.systemControl == nil && CommandMatcher.matches(
                         candidate.command, buffer: buffer, facing: body.facing))) &&
-                    body.gameplayEnergy.current >= candidate.effectiveResourceRules.startCost
+                    body.gameplayEnergy.current >= featurePolicy.scaledCost(
+                        candidate.effectiveResourceRules.startCost)
             }
             if let next = candidates.max(by: {
                 commandSpecificity($0.command) < commandSpecificity($1.command)
@@ -560,10 +577,12 @@ public final class CombatWorld {
         guard body.canAcceptAction, body.actionTimeline == nil else { return }
 
         let matchingMoves = profile.moves.enumerated().filter {
-            (($0.element.systemControl.map(buffer.isSystemControlPress) ?? false) ||
+            featurePolicy.permits($0.element) &&
+                (($0.element.systemControl.map(buffer.isSystemControlPress) ?? false) ||
                 ($0.element.systemControl == nil && CommandMatcher.matches(
                     $0.element.command, buffer: buffer, facing: body.facing))) &&
-                body.gameplayEnergy.current >= $0.element.effectiveResourceRules.startCost
+                body.gameplayEnergy.current >= featurePolicy.scaledCost(
+                    $0.element.effectiveResourceRules.startCost)
         }
         if let move = matchingMoves.max(by: { lhs, rhs in
             let left = commandSpecificity(lhs.element.command)
@@ -606,8 +625,10 @@ public final class CombatWorld {
         events: inout [CombatEvent]
     ) -> Bool {
         let resource = move.effectiveResourceRules
+        guard featurePolicy.permits(move) else { return false }
+        let cost = featurePolicy.scaledCost(resource.startCost)
         var energy = body.gameplayEnergy
-        guard energy.spend(resource.startCost, frame: frame) else { return false }
+        guard energy.spend(cost, frame: frame) else { return false }
         body.gameplayEnergy = energy
         let instanceID = body.rules.actionSequence ?? 0
         body.rules.actionSequence = instanceID + 1
@@ -619,10 +640,10 @@ public final class CombatWorld {
         events.append(CombatEvent(
             frame: frame, kind: .moveStarted,
             actorID: body.actorID, moveID: move.id))
-        if resource.startCost > 0 {
+        if cost > 0 {
             events.append(CombatEvent(
                 frame: frame, kind: .energySpent, actorID: body.actorID,
-                moveID: move.id, amount: resource.startCost))
+                moveID: move.id, amount: cost))
         }
         if resource.family == .powerUp {
             body.powerUpFrames = 480
@@ -791,6 +812,7 @@ public final class CombatWorld {
         owner: CombatBodyState,
         events: inout [CombatEvent]
     ) {
+        guard featurePolicy.projectilesEnabled else { return }
         let entityID = EntityID(
             "projectile:\(owner.actorID.raw):\(timeline.instanceID):\(definition.id)")
         guard projectiles[entityID.raw] == nil else { return }
@@ -1103,16 +1125,18 @@ public final class CombatWorld {
                 .effectiveResourceRules ?? MoveResourceRules()
             if var attacker = body(for: attackerAtDetection.actorID) {
                 var energy = attacker.gameplayEnergy
-                energy.gain(hit.guarding ? resource.onGuardGain : resource.onHitGain)
+                let gain = featurePolicy.scaledGain(
+                    hit.guarding ? resource.onGuardGain : resource.onHitGain)
+                energy.gain(gain)
                 attacker.gameplayEnergy = energy
                 save(attacker)
                 events.append(CombatEvent(
                     frame: frame, kind: .energyGained,
                     actorID: attacker.actorID, moveID: hit.moveID,
-                    amount: hit.guarding ? resource.onGuardGain : resource.onHitGain))
+                    amount: gain))
             }
             var defenderEnergy = defender.gameplayEnergy
-            defenderEnergy.gain(resource.defenderGain)
+            defenderEnergy.gain(featurePolicy.scaledGain(resource.defenderGain))
             defender.gameplayEnergy = defenderEnergy
 
             if defenderWasAlive && defender.hp == 0 {

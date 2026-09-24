@@ -1,5 +1,6 @@
 import Foundation
 import MyPetCore
+import MyPet2D
 
 public struct CastRuntimeSnapshot: Codable, Equatable, Sendable {
     public let kernel: KernelSnapshot
@@ -53,13 +54,15 @@ public final class CastRuntime {
         bodyExecutionMode: BodyExecutionMode = .headless,
         arrivalDelayTicks: Int64 = 2,
         storyConfiguration: StoryDirectorConfiguration = StoryDirectorConfiguration(),
-        storyExecutionProvider: (any StoryExecutionProvider)? = nil
+        storyExecutionProvider: (any StoryExecutionProvider)? = nil,
+        combatRuntime: CombatRuntime? = nil
     ) {
         self.init(
             packs: resolvedPacks.map(\.pack), stories: stories, selection: selection, seed: seed,
             bodyExecutionMode: bodyExecutionMode, arrivalDelayTicks: arrivalDelayTicks,
             storyConfiguration: storyConfiguration,
             storyExecutionProvider: storyExecutionProvider,
+            combatRuntime: combatRuntime,
             characterDefinitions: resolvedPacks.reduce(into: [:]) { result, resolved in
                 result.merge(resolved.characters) { first, _ in first }
             })
@@ -74,13 +77,15 @@ public final class CastRuntime {
         arrivalDelayTicks: Int64 = 2,
         storyConfiguration: StoryDirectorConfiguration = StoryDirectorConfiguration(),
         storyExecutionProvider: (any StoryExecutionProvider)? = nil,
+        combatRuntime: CombatRuntime? = nil,
         characterDefinitions: [String: CharacterDefinition] = [:]
     ) {
         self.characterDefinitions = characterDefinitions
         runtime = GameRuntime(kernel: GameKernel(
             seed: seed,
             storyInterruptionPolicy: storyConfiguration.interruptionPolicy),
-            bodyExecutionMode: bodyExecutionMode)
+            bodyExecutionMode: bodyExecutionMode,
+            combatRuntime: combatRuntime)
         director = CastDirector(
             packs: packs,
             selection: selection,
@@ -140,6 +145,26 @@ public final class CastRuntime {
     public func tick() -> TickReport {
         _ = start()
         return runtime.step(storyDirector: storyDirector, castDirector: director)!
+    }
+
+    @discardableResult
+    public func advance(
+        elapsedSeconds: Double,
+        combatEnvironment: BodyEnvironment,
+        combatPlatformContext: GameplayPlatformContext = .idle,
+        bodyStep: ((Int64) -> Void)? = nil
+    ) -> RuntimeAdvanceResult {
+        _ = start()
+        return runtime.advance(
+            elapsedSeconds: elapsedSeconds,
+            combatEnvironment: combatEnvironment,
+            combatPlatformContext: combatPlatformContext,
+            bodyStep: bodyStep,
+            semanticStep: { [unowned self] in
+                self.runtime.step(
+                    storyDirector: self.storyDirector,
+                    castDirector: self.director)
+            })
     }
 
     public var activeMemberIDs: [String] {
@@ -207,6 +232,14 @@ public final class CastRuntime {
 
     public func consumeStoryHandoffEvents() -> [StoryHandoffEvent] {
         storyDirector.drainStoryHandoffEvents()
+    }
+
+    public func setStoryUnavailableActorIDs(_ actorIDs: Set<EntityID>) {
+        runtime.setStoryUnavailableActorIDs(actorIDs, director: storyDirector)
+    }
+
+    public func updateStoryConfiguration(_ configuration: StoryDirectorConfiguration) {
+        runtime.updateStoryConfiguration(configuration, director: storyDirector)
     }
 
     public func snapshot() -> CastRuntimeSnapshot {

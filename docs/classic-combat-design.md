@@ -88,6 +88,11 @@ Physical Key / Remapped Key        Gameplay CPU
 行为输出 `GameplayIntent`，经 capability/policy validation 转换成 PlatformAction；CPU 不直接调用
 AX、窗口 Adapter 或 renderer。
 
+生产菜单的“游戏功能设置 → 键盘控制”编辑第一层，而不是把物理键写入角色 profile。它提供
+默认方案和角色级覆盖；重复逻辑键以交换方式保持一对一；控制窗口仍有按键按下时，新方案只进入
+pending，直到所有物理键释放或窗口失焦并发出全键抬起后才原子切换。旧的独立键位文件只允许
+一次性合并到统一 Settings，迁移后删除旧存储键，禁止继续形成第二个配置权威。
+
 ## 4. 首批完整对局角色
 
 ### 4.1 林黛玉：花瓣诗术

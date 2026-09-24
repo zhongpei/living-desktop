@@ -24,14 +24,13 @@ final class CastSession: NSObject {
     private var castControllers: [String: PetController] = [:]
     private let castSceneGraph = SceneGraph(rootID: "cast-scene")
     /// One shared 60 Hz body/combat world for every visible cast member.
-    private let combatCoordinator = DesktopCombatCoordinator()
+    private var combatCoordinator = DesktopCombatCoordinator()
     private let castOverlays = CastOverlayPresentation()
     private var castTimer: Timer?
     private var castTimerHz: Int?
     private var cadenceState = RuntimeCadenceState()
     private var pointerTimer: Timer?
     private var pointerTimerHz: Int?
-    private var castFrameClock: FixedStepClock?
     private var lastCastFrameAt = ProcessInfo.processInfo.systemUptime
     private var castDepartureDeadlines: [String: Int64] = [:]
     private var pointerReflex = PointerReflex()
@@ -71,6 +70,7 @@ final class CastSession: NSObject {
 
     func updateSettings(_ settings: Settings) {
         for pet in castControllers.values { pet.updateSettings(settings) }
+        castRuntime?.updateStoryConfiguration(settings.storySettings.coreConfiguration)
         if !settings.pointerInputEnabled { pointerReflex.reset() }
         configureCastTimer(force: true)
         configurePointerTimer()
@@ -97,6 +97,7 @@ final class CastSession: NSObject {
         stop()
 
         let runtime: CastRuntime
+        let combatRuntime = CombatRuntime()
         if !resolvedCastPacks.isEmpty {
             runtime = CastRuntime(
                 resolvedPacks: resolvedCastPacks,
@@ -104,7 +105,8 @@ final class CastSession: NSObject {
                 selection: settings.castSelection,
                 seed: UInt64(Date().timeIntervalSince1970),
                 bodyExecutionMode: .external,
-                storyConfiguration: settings.storySettings.coreConfiguration)
+                storyConfiguration: settings.storySettings.coreConfiguration,
+                combatRuntime: combatRuntime)
         } else {
             runtime = CastRuntime(
                 packs: castPacks,
@@ -112,14 +114,17 @@ final class CastSession: NSObject {
                 selection: settings.castSelection,
                 seed: UInt64(Date().timeIntervalSince1970),
                 bodyExecutionMode: .external,
-                storyConfiguration: settings.storySettings.coreConfiguration)
+                storyConfiguration: settings.storySettings.coreConfiguration,
+                combatRuntime: combatRuntime)
         }
         castRuntime = runtime
+        combatCoordinator = DesktopCombatCoordinator(
+            runtime: runtime.runtime, combatRuntime: combatRuntime)
+        combatCoordinator.configure(settings.gameFeatures)
         perceptionHub.resetWindowLifecycle(knownEntities: Array(runtime.runtime.world.entities.values))
         _ = runtime.start()
         _ = runtime.tick()
         syncCastControllers()
-        castFrameClock = FixedStepClock(stepMilliseconds: runtime.clock.stepMilliseconds)
         lastCastFrameAt = ProcessInfo.processInfo.systemUptime
 
         configureCastTimer(force: true)
@@ -134,7 +139,6 @@ final class CastSession: NSObject {
         pointerTimer?.invalidate()
         pointerTimer = nil
         pointerTimerHz = nil
-        castFrameClock = nil
         for pet in castControllers.values {
             pet.stop()
             pet.closePanel()
@@ -184,29 +188,29 @@ final class CastSession: NSObject {
 
     @objc private func tickCastRuntime() {
         guard let runtime = castRuntime else { return }
+        runtime.setStoryUnavailableActorIDs(combatCoordinator.storyUnavailableActorIDs)
         let now = ProcessInfo.processInfo.systemUptime
         let dt = min(0.25, max(0, now - lastCastFrameAt))
         lastCastFrameAt = now
-        let steps = castFrameClock?.advance(elapsedSeconds: dt) ?? 0
-        if steps == 0 { syncCastControllers() }
-        for _ in 0..<steps {
-            _ = runtime.tick()
-            syncCastControllers()
-        }
-        let effects = runtime.runtime.drainPresentationEffects()
         let firstController = castControllers.keys.sorted().first.flatMap { castControllers[$0] }
-        let combatEvents = firstController.map { controller in
-            combatCoordinator.advance(
+        let result = firstController.map { controller in
+            runtime.advance(
                 elapsedSeconds: dt,
-                environment: controller.model.bodyEnvironmentSnapshot(),
-                platformContext: controller.combatPlatformContext(),
-                beforeFrame: { [weak self] in
+                combatEnvironment: controller.model.bodyEnvironmentSnapshot(),
+                combatPlatformContext: controller.combatPlatformContext(),
+                bodyStep: { [weak self] _ in
                     guard let self else { return }
                     for id in self.castControllers.keys.sorted() {
                         self.castControllers[id]?.prepareBodySimulationFrame()
                     }
                 })
-        } ?? []
+        }
+        if firstController == nil {
+            _ = runtime.tick()
+        }
+        syncCastControllers()
+        let effects = runtime.runtime.drainPresentationEffects()
+        let combatEvents = result?.combatEvents ?? []
         for pet in castControllers.values { pet.syncBodyProjection() }
         for pet in castControllers.values { pet.consumeCombatEvents(combatEvents) }
         for pet in castControllers.values { pet.consumeCombatPlatformEffect() }

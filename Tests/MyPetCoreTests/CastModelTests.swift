@@ -5,6 +5,14 @@ import MyPetContent
 import MyPetSimulation
 
 final class CastModelTests: XCTestCase {
+    func testCastSemanticAndCombatShareOneGameRuntime() {
+        let combat = CombatRuntime()
+        let cast = CastRuntime(
+            packs: [], selection: CastSelection(), combatRuntime: combat)
+
+        XCTAssertTrue(cast.runtime.combatRuntime === combat)
+    }
+
     func testSeparateStoryPacksNamespaceEqualEpisodeIDsAndOwnPrerequisites() {
         let episode = StoryEpisode(id: "intro", title: "Intro", participants: ["actor"],
             prerequisites: [.init(requiredFact: "episode/intro/completed")])

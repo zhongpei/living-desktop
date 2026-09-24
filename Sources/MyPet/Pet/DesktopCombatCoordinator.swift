@@ -15,16 +15,33 @@ final class DesktopCombatCoordinator {
     var bodyWorld: BodyWorld { combatRuntime.bodyWorld }
     var world: CombatWorld { combatRuntime.world }
     var hasActiveSession: Bool { world.session?.state == .active }
+    var storyUnavailableActorIDs: Set<EntityID> {
+        guard hasActiveSession else { return [] }
+        return Set(world.snapshot().bodies.compactMap { body in
+            switch body.participation {
+            case .uninvolved, .withdrawing:
+                return body.authority == .scripted ? nil : body.actorID
+            case .alerted, .incidentalCombatant, .rosterParticipant:
+                return body.actorID
+            }
+        })
+    }
     private var registeredActors = Set<String>()
     private var deliveredPlatformIntents: [String: String] = [:]
 
-    init() {
-        let combatRuntime = CombatRuntime()
+    init(
+        runtime injectedRuntime: GameRuntime? = nil,
+        combatRuntime injectedCombatRuntime: CombatRuntime? = nil
+    ) {
+        let combatRuntime = injectedCombatRuntime ?? CombatRuntime()
         self.combatRuntime = combatRuntime
-        self.runtime = GameRuntime(bodyExecutionMode: .external, combatRuntime: combatRuntime)
+        self.runtime = injectedRuntime ?? GameRuntime(
+            bodyExecutionMode: .external, combatRuntime: combatRuntime)
+        precondition(self.runtime.combatRuntime === combatRuntime)
     }
 
     func configure(_ settings: GameFeatureSettings) {
+        combatRuntime.setFeaturePolicy(settings.combatPolicy)
         combatRuntime.setEscalationPolicy(settings.neutralNPC)
         combatRuntime.setWindowInteractionPolicy(settings.windowInteraction.policy)
         for actor in registeredActors {
@@ -100,6 +117,10 @@ final class DesktopCombatCoordinator {
     }
 
     func body(actorID: EntityID) -> CombatBodyState? { world.body(for: actorID) }
+
+    func ownsCombatActivity(actorID: EntityID) -> Bool {
+        combatRuntime.ownsCombatActivity(for: actorID)
+    }
 
     func combatHUDBody(actorID: EntityID) -> CombatBodyState? {
         guard world.session?.state == .active,

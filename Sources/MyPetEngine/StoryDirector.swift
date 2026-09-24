@@ -482,6 +482,10 @@ public final class StoryDirector {
     private var queuedHandoffEvents: [StoryHandoffEvent] = []
     private var nextEpisodeTick: Int64 = 0
     private var currentStartedAtTick: Int64?
+    /// Derived from the combat/control authority each tick. This is transient:
+    /// checkpoints restore the deterministic story state, then the host
+    /// reapplies current activity ownership before the next pulse.
+    private var unavailableActorIDs = Set<String>()
 
     public init(
         episodes: [StoryEpisode],
@@ -502,6 +506,7 @@ public final class StoryDirector {
             $0.status == .running && $0.request.priority == .story
         }) else { return nil }
         let available = Set(kernel.world.entities.values.filter(\.alive).map { $0.id.raw })
+            .subtracting(unavailableActorIDs)
         let eligible = StoryCatalog.eligible(
             episodes: episodes,
             world: kernel.world,
@@ -541,6 +546,10 @@ public final class StoryDirector {
     /// 在 Runtime 的语义阶段调用，观察上一轮已经确认的行为终态。
     func tick(in kernel: GameKernel) {
         guard let episode = currentEpisode else { return }
+        if !Set(episode.participants).isDisjoint(with: unavailableActorIDs) {
+            abort(episode: episode, in: kernel)
+            return
+        }
         guard !requestIDs.isEmpty else {
             if executionProvider.waitingForPrefetch {
                 if let startedAt = currentStartedAtTick,
@@ -661,6 +670,22 @@ public final class StoryDirector {
     func abortCurrent(in kernel: GameKernel) {
         guard let episode = currentEpisode else { return }
         abort(episode: episode, in: kernel)
+    }
+
+    func setUnavailableActorIDs(_ actorIDs: Set<EntityID>, in kernel: GameKernel) {
+        unavailableActorIDs = Set(actorIDs.map(\.raw))
+        guard let episode = currentEpisode,
+              !Set(episode.participants).isDisjoint(with: unavailableActorIDs) else { return }
+        abort(episode: episode, in: kernel)
+    }
+
+    func updateConfiguration(
+        _ configuration: StoryDirectorConfiguration,
+        in kernel: GameKernel
+    ) {
+        self.configuration = configuration
+        kernel.storyInterruptionPolicy = configuration.interruptionPolicy
+        if !configuration.enabled { abortCurrent(in: kernel) }
     }
 
     private func scheduleCurrentBeat(in kernel: GameKernel) {

@@ -48,6 +48,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         discoverContent()
         var settings = Settings.load()
+        if let migrated = ManualControlMappingStore().migrate(
+            into: settings.gameFeatures.controls) {
+            settings.gameFeatures.controls = migrated
+            settings.save()
+        }
         settings.castSelection = settings.castSelection.normalized(availablePacks: castPacks)
         // 优先级：-pet 启动参数 > 上次选择 > 库里第一只。空的 currentPet 视为未选择。
         let saved = settings.currentPet.isEmpty ? nil : settings.currentPet

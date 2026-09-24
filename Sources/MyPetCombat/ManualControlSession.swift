@@ -24,6 +24,22 @@ public struct ManualControlMapping: Codable, Equatable, Sendable {
         self.bindings = bindings
     }
 
+    /// Keeps the default one-to-one control layout usable while rebinding.
+    /// Choosing an already assigned logical control swaps the two physical keys.
+    public mutating func rebind(
+        _ physicalKey: KeyboardControlKey,
+        to logicalControl: ManualControlKey
+    ) {
+        let previous = bindings[physicalKey]
+        if let conflict = bindings.first(where: {
+            $0.key != physicalKey && $0.value == logicalControl
+        })?.key {
+            if let previous { bindings[conflict] = previous }
+            else { bindings[conflict] = nil }
+        }
+        bindings[physicalKey] = logicalControl
+    }
+
     public static let standard = ManualControlMapping(id: "standard", bindings: [
         .arrowLeft: .left, .arrowRight: .right,
         .arrowUp: .up, .arrowDown: .down,
@@ -99,6 +115,15 @@ public struct ManualControlSession: Codable, Equatable, Sendable {
     public mutating func focusLost() -> FighterInputFrame {
         pressedKeys.removeAll()
         return .neutral
+    }
+
+    /// Applies a hot-reloaded physical layout only between complete input
+    /// frames, so held keys can never change meaning halfway through a press.
+    @discardableResult
+    public mutating func applyMappingIfIdle(_ mapping: ManualControlMapping) -> Bool {
+        guard pressedKeys.isEmpty else { return false }
+        self.mapping = mapping
+        return true
     }
 
     @discardableResult

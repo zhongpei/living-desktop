@@ -90,6 +90,20 @@ struct GameFeatureSettings: Codable, Equatable {
 
     init() {}
 
+    var combatPolicy: CombatFeaturePolicy {
+        CombatFeaturePolicy(
+            projectilesEnabled: projectilesEnabled,
+            teamsEnabled: teamsEnabled,
+            freeTagEnabled: freeTagEnabled,
+            assistsEnabled: assistsEnabled,
+            supersEnabled: supersEnabled,
+            powerUpEnabled: powerUpEnabled,
+            defensiveBurstEnabled: defensiveBurstEnabled,
+            energyEnabled: energyEnabled,
+            energyCostScale: energyCostScale,
+            energyRecoveryScale: energyRecoveryScale)
+    }
+
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true

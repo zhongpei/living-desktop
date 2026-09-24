@@ -205,6 +205,9 @@ public final class CombatRuntime {
     }
 
     public func unregister(_ actorID: EntityID) {
+        let interruptedParticipants = world.session?.state == .active &&
+            world.session?.participantIDs.contains(actorID) == true
+            ? world.session?.participantIDs ?? [] : []
         controls.removeActor(actorID)
         gameplayCPUs.removeValue(forKey: actorID.raw)
         platformIntents.removeValue(forKey: actorID.raw)
@@ -213,6 +216,7 @@ public final class CombatRuntime {
         cpuDifficulties.removeValue(forKey: actorID.raw)
         gameplayStyles.removeValue(forKey: actorID.raw)
         world.unregister(actorID: actorID)
+        if !interruptedParticipants.isEmpty { releaseNonManualCombatControls() }
         refreshSession()
     }
 
@@ -294,8 +298,24 @@ public final class CombatRuntime {
         world.setEscalationPolicy(policy)
     }
 
+    public func setFeaturePolicy(_ policy: CombatFeaturePolicy) {
+        world.setFeaturePolicy(policy)
+    }
+
     public func setGameplayEnergy(_ current: Int, for actorID: EntityID) {
         world.setGameplayEnergy(current, for: actorID)
+    }
+
+    public func ownsCombatActivity(for actorID: EntityID) -> Bool {
+        guard world.session?.state == .active,
+              let body = world.body(for: actorID) else { return false }
+        switch body.participation {
+        case .uninvolved, .withdrawing:
+            return body.authority == .manual || body.authority == .autonomous ||
+                body.authority == .authored
+        case .alerted, .incidentalCombatant, .rosterParticipant:
+            return true
+        }
     }
 
     public func setWindowInteractionPolicy(_ policy: WindowInteractionPolicy) {
@@ -311,6 +331,7 @@ public final class CombatRuntime {
 
     public func endSession(cancelled: Bool = false) {
         world.endSession(cancelled: cancelled)
+        releaseNonManualCombatControls()
     }
 
     @discardableResult
@@ -337,7 +358,8 @@ public final class CombatRuntime {
         }
         let checkpoint = world.checkpoint()
         let profiles = Dictionary(uniqueKeysWithValues: snapshot.bodies.map {
-            ($0.actorID.raw, world.profile(for: $0.actorID) ?? CombatProfile())
+            ($0.actorID.raw, policyAdjustedProfile(
+                world.profile(for: $0.actorID) ?? CombatProfile()))
         })
         for body in snapshot.bodies {
             if body.rosterRole == .bench { continue }
@@ -394,15 +416,61 @@ public final class CombatRuntime {
                     actorID: body.actorID,
                     context: platformContext)
                 controls.setInput(
-                    output.fighterInput,
+                    policyAdjustedInput(output.fighterInput),
                     source: .autonomous,
                     for: body.actorID)
             }
             applyResolvedInput(for: body.actorID)
         }
         let events = world.step(environment: environment)
+        if events.contains(where: { $0.kind == .roundEnded }) {
+            releaseNonManualCombatControls()
+        }
         restorePointerAuthorityAfterLanding()
         return events
+    }
+
+    private func releaseNonManualCombatControls() {
+        let actorIDs = controls.actorIDs(activeIn: [.autonomous, .authored])
+        for actorID in actorIDs {
+            controls.deactivate(.autonomous, for: actorID)
+            controls.deactivate(.authored, for: actorID)
+            applyResolvedInput(for: actorID)
+        }
+    }
+
+    private func policyAdjustedProfile(_ profile: CombatProfile) -> CombatProfile {
+        var adjusted = profile
+        let policy = world.currentFeaturePolicy
+        adjusted.moves = profile.moves.compactMap { move in
+            guard policy.permits(move) else { return nil }
+            var move = move
+            var resources = move.effectiveResourceRules
+            resources.startCost = policy.scaledCost(resources.startCost)
+            resources.onHitGain = policy.scaledGain(resources.onHitGain)
+            resources.onGuardGain = policy.scaledGain(resources.onGuardGain)
+            resources.defenderGain = policy.scaledGain(resources.defenderGain)
+            move.resourceRules = resources
+            return move
+        }
+        return adjusted
+    }
+
+    private func policyAdjustedInput(_ input: FighterInputFrame) -> FighterInputFrame {
+        var adjusted = input
+        let policy = world.currentFeaturePolicy
+        if !policy.teamsEnabled {
+            adjusted.systemControls.remove(.tag)
+            adjusted.systemControls.remove(.assist)
+        } else {
+            if !policy.freeTagEnabled { adjusted.systemControls.remove(.tag) }
+            if !policy.assistsEnabled { adjusted.systemControls.remove(.assist) }
+        }
+        if !policy.powerUpEnabled { adjusted.systemControls.remove(.powerUp) }
+        if !policy.defensiveBurstEnabled {
+            adjusted.systemControls.remove(.defensiveBurst)
+        }
+        return adjusted
     }
 
     private func isOpponent(_ candidate: CombatBodyState, of actor: CombatBodyState) -> Bool {

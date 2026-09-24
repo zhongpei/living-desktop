@@ -37,10 +37,13 @@ public struct GameplayEnergyState: Codable, Equatable, Sendable {
         current = min(maximum, current + max(0, amount))
     }
 
-    public mutating func advance(frame: Int64, regenerationAllowed: Bool = true) {
+    public mutating func advance(
+        frame: Int64, regenerationAllowed: Bool = true,
+        regenerationScale: Double = 1
+    ) {
         guard regenerationAllowed, current < maximum,
               lastSpendFrame.map({ frame - $0 >= Int64(regenDelayFrames) }) ?? true else { return }
-        fractionalRegen += regenPerFrame
+        fractionalRegen += regenPerFrame * max(0, regenerationScale)
         let whole = Int(fractionalRegen)
         guard whole > 0 else { return }
         current = min(maximum, current + whole)
@@ -73,6 +76,68 @@ public struct MoveResourceRules: Codable, Equatable, Sendable {
         self.onGuardGain = max(0, onGuardGain)
         self.defenderGain = max(0, defenderGain)
         self.juggleCost = max(0, juggleCost)
+    }
+}
+
+/// Runtime feature switches applied at the rules boundary. UI and CPU may hide
+/// disabled actions, but CombatWorld remains the final authority for manual,
+/// authored and replayed input alike.
+public struct CombatFeaturePolicy: Codable, Equatable, Sendable {
+    public var projectilesEnabled: Bool
+    public var teamsEnabled: Bool
+    public var freeTagEnabled: Bool
+    public var assistsEnabled: Bool
+    public var supersEnabled: Bool
+    public var powerUpEnabled: Bool
+    public var defensiveBurstEnabled: Bool
+    public var energyEnabled: Bool
+    public var energyCostScale: Double
+    public var energyRecoveryScale: Double
+
+    public init(
+        projectilesEnabled: Bool = true,
+        teamsEnabled: Bool = true,
+        freeTagEnabled: Bool = true,
+        assistsEnabled: Bool = true,
+        supersEnabled: Bool = true,
+        powerUpEnabled: Bool = true,
+        defensiveBurstEnabled: Bool = true,
+        energyEnabled: Bool = true,
+        energyCostScale: Double = 1,
+        energyRecoveryScale: Double = 1
+    ) {
+        self.projectilesEnabled = projectilesEnabled
+        self.teamsEnabled = teamsEnabled
+        self.freeTagEnabled = freeTagEnabled
+        self.assistsEnabled = assistsEnabled
+        self.supersEnabled = supersEnabled
+        self.powerUpEnabled = powerUpEnabled
+        self.defensiveBurstEnabled = defensiveBurstEnabled
+        self.energyEnabled = energyEnabled
+        self.energyCostScale = max(0, energyCostScale)
+        self.energyRecoveryScale = max(0, energyRecoveryScale)
+    }
+
+    public func permits(_ move: CombatMoveDefinition) -> Bool {
+        if !projectilesEnabled && !move.authoredProjectiles.isEmpty { return false }
+        switch move.effectiveResourceRules.family {
+        case .superMove: return supersEnabled
+        case .powerUp: return powerUpEnabled
+        case .burst: return defensiveBurstEnabled
+        case .tag: return teamsEnabled && freeTagEnabled
+        case .assist: return teamsEnabled && assistsEnabled
+        default: return true
+        }
+    }
+
+    public func scaledCost(_ amount: Int) -> Int {
+        guard energyEnabled else { return 0 }
+        return max(0, Int((Double(amount) * energyCostScale).rounded()))
+    }
+
+    public func scaledGain(_ amount: Int) -> Int {
+        guard energyEnabled else { return 0 }
+        return max(0, Int((Double(amount) * energyRecoveryScale).rounded()))
     }
 }
 

@@ -28,4 +28,21 @@ final class ManualControlMappingStore {
         guard let data = try? JSONEncoder().encode(catalog) else { return }
         defaults.set(data, forKey: key)
     }
+
+    /// One-time migration from the pre-settings catalog. Values already stored
+    /// in Settings win; legacy entries only fill untouched defaults/characters.
+    func migrate(into current: ManualControlMappingCatalog) -> ManualControlMappingCatalog? {
+        guard defaults.data(forKey: key) != nil else { return nil }
+        let legacy = load()
+        var merged = current
+        if current.defaultMapping == .standard, legacy.defaultMapping != .standard {
+            merged.defaultMapping = legacy.defaultMapping
+        }
+        for (characterID, mapping) in legacy.characterMappings
+        where merged.characterMappings[characterID] == nil {
+            merged.set(mapping, for: characterID)
+        }
+        defaults.removeObject(forKey: key)
+        return merged
+    }
 }

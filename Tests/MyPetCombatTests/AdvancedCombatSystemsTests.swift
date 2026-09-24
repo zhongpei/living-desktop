@@ -211,6 +211,71 @@ final class AdvancedCombatSystemsTests: XCTestCase {
         XCTAssertEqual(world.body(for: EntityID("b"))?.rosterRole, .assist)
     }
 
+    func testFeaturePolicyGatesProjectileSuperTagAndAssistAtWorldBoundary() {
+        let projectile = ProjectileDefinition(
+            id: "petal", spawnFrame: 0, velocity: CombatPoint(x: 5, y: 0),
+            lifetimeFrames: 30, hit: CombatHitDefinition(damage: 10),
+            visualResourceID: "petal")
+        let ranged = CombatMoveDefinition(
+            id: "ranged", command: .button(.x), startupFrames: 0, activeFrames: 1,
+            recoveryFrames: 2, hit: CombatHitDefinition(damage: 0), visualAction: "ranged",
+            projectile: projectile,
+            resourceRules: MoveResourceRules(family: .projectile))
+        let superMove = CombatMoveDefinition(
+            id: "super", command: .button(.y), startupFrames: 0, activeFrames: 1,
+            recoveryFrames: 2, hit: CombatHitDefinition(damage: 100), visualAction: "super",
+            resourceRules: MoveResourceRules(family: .superMove, startCost: 100))
+        let world = CombatWorld()
+        world.register(actorID: EntityID("a"), profile: CombatProfile(moves: [ranged, superMove]),
+                       x: 400, yFeet: 700)
+        world.register(actorID: EntityID("b"), x: 300, yFeet: 700)
+        world.register(actorID: EntityID("c"), x: 470, yFeet: 700, facing: .left)
+        world.register(actorID: EntityID("d"), x: 560, yFeet: 700, facing: .left)
+        world.configureTeam(teamID: "red", activeID: EntityID("a"), benchID: EntityID("b"))
+        world.configureTeam(teamID: "blue", activeID: EntityID("c"), benchID: EntityID("d"))
+        XCTAssertTrue(world.beginSession(
+            id: "policy", participants: ["a", "b", "c", "d"].map(EntityID.init)))
+        world.setGameplayEnergy(300, for: EntityID("a"))
+        world.setFeaturePolicy(CombatFeaturePolicy(
+            projectilesEnabled: false, teamsEnabled: false, freeTagEnabled: false,
+            assistsEnabled: false, supersEnabled: false))
+        world.setInput(FighterInputFrame(
+            buttons: [.x, .y], systemControls: [.tag, .assist]), for: EntityID("a"))
+
+        let events = world.step(environment: floor)
+
+        XCTAssertFalse(events.contains { $0.kind == .moveStarted })
+        XCTAssertFalse(events.contains { $0.kind == .projectileSpawned })
+        XCTAssertFalse(events.contains { $0.kind == .tagStarted || $0.kind == .assistEntered })
+        XCTAssertEqual(world.body(for: EntityID("a"))?.gameplayEnergy.current, 300)
+    }
+
+    func testFeaturePolicyScalesEnergyCostsAndCanDisableRecovery() {
+        let move = CombatMoveDefinition(
+            id: "scaled", command: .button(.x), startupFrames: 0, activeFrames: 1,
+            recoveryFrames: 2,
+            hit: CombatHitDefinition(damage: 10, hitStopFrames: 0), visualAction: "scaled",
+            resourceRules: MoveResourceRules(
+                family: .special, startCost: 40, onHitGain: 10,
+                onGuardGain: 4, defenderGain: 8))
+        let world = CombatWorld()
+        world.register(actorID: EntityID("a"), profile: CombatProfile(moves: [move]),
+                       x: 400, yFeet: 700)
+        world.register(actorID: EntityID("b"), x: 445, yFeet: 700, facing: .left)
+        XCTAssertTrue(world.beginSession(id: "energy-policy", participants: ["a", "b"].map(EntityID.init)))
+        world.setGameplayEnergy(100, for: EntityID("a"))
+        world.setFeaturePolicy(CombatFeaturePolicy(
+            energyCostScale: 2, energyRecoveryScale: 0))
+        world.setInput(FighterInputFrame(buttons: [.x]), for: EntityID("a"))
+
+        _ = world.step(environment: floor)
+
+        XCTAssertEqual(world.body(for: EntityID("a"))?.gameplayEnergy.current, 20)
+        XCTAssertEqual(world.body(for: EntityID("b"))?.gameplayEnergy.current, 150)
+        for _ in 0..<300 { _ = world.step(environment: floor) }
+        XCTAssertEqual(world.body(for: EntityID("a"))?.gameplayEnergy.current, 20)
+    }
+
     func testHeldSystemControlDoesNotRepeatWithoutReleaseEdge() {
         var buffer = CombatInputBuffer()
         buffer.push(FighterInputFrame(systemControls: [.powerUp]))

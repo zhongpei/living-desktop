@@ -50,4 +50,28 @@ final class ManualControlSessionTests: XCTestCase {
             from: JSONEncoder().encode(catalog))
         XCTAssertEqual(restored, catalog)
     }
+
+    func testRebindingSwapsConflictingLogicalControls() {
+        var mapping = ManualControlMapping.standard
+
+        mapping.rebind(.keyZ, to: .buttonY)
+
+        XCTAssertEqual(mapping.bindings[.keyZ], .buttonY)
+        XCTAssertEqual(mapping.bindings[.keyX], .buttonX)
+        XCTAssertEqual(Set(mapping.bindings.values).count, mapping.bindings.count)
+    }
+
+    func testHotMappingWaitsUntilAllPhysicalKeysAreReleased() {
+        var session = ManualControlSession()
+        _ = session.begin()
+        _ = session.press(.keyZ)
+        let alternate = ManualControlMapping(
+            id: "alternate", bindings: [.keyZ: .buttonD])
+
+        XCTAssertFalse(session.applyMappingIfIdle(alternate))
+        XCTAssertEqual(session.input.buttons, [.x])
+        _ = session.release(.keyZ)
+        XCTAssertTrue(session.applyMappingIfIdle(alternate))
+        XCTAssertEqual(session.press(.keyZ).buttons, [.d])
+    }
 }

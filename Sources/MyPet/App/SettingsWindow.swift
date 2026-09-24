@@ -8,7 +8,7 @@ import MyPetCombatCPU
 
 /// 设置窗：完整配置的唯一入口（菜单只留快捷开关）。
 ///
-/// 六页：通用 / 玩法 / 角色 / 大脑 / 感知 / 诊断；玩法、大脑、感知再分二级 Tab。
+/// 通用 / 游戏功能设置 / 角色 / 大脑 / 感知 / 诊断；游戏、大脑、感知再分二级 Tab。
 /// 「大脑」页承载模型配置：端点 / 模型（可探测）/ 密钥 / 连通性测试，
 /// 探测与测试直接打当前表单里的端点（不必先保存）。
 /// 授权状态页内实时刷新；「保存」不关闭窗口，「保存并关闭」应用后关闭。
@@ -53,6 +53,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var powerUpBox: NSButton!
     private var defensiveBurstBox: NSButton!
     private var cpuDifficultyPopup: NSPopUpButton!
+    private var controlScopePopup: NSPopUpButton!
+    private var controlOverrideBox: NSButton!
+    private var controlBindingPopups: [KeyboardControlKey: NSPopUpButton] = [:]
     private var neutralNPCBox: NSButton!
     private var teamLiabilityBox: NSButton!
     private var cascadeBox: NSButton!
@@ -62,10 +65,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var energyBox: NSButton!
     private var energyCostScaleField: NSTextField!
     private var energyRecoveryScaleField: NSTextField!
+    private var windowInteractionBox: NSButton!
     private var damageOverlayBox: NSButton!
     private var windowCostScaleField: NSTextField!
     private var minimumEnergyField: NSTextField!
     private var windowActionsField: NSTextField!
+    private var pullCooldownSecondsField: NSTextField!
+    private var damageCooldownSecondsField: NSTextField!
     private var suppressActiveBox: NSButton!
     private var protectForegroundBox: NSButton!
     private var cadenceBox: NSButton!
@@ -469,14 +475,93 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func buildControlSettingsTab() -> NSView {
-        let mapping = draft.gameFeatures.controls.defaultMapping
-        let lines = mapping.bindings.sorted { $0.key.rawValue < $1.key.rawValue }
-            .map { "\($0.key.rawValue) → \($0.value.rawValue)" }.joined(separator: "\n")
-        return scrollFormStack([
+        controlScopePopup = NSPopUpButton()
+        let defaultItem = NSMenuItem(title: "默认方案", action: nil, keyEquivalent: "")
+        controlScopePopup.menu?.addItem(defaultItem)
+        let knownCharacterIDs = Set(characters.map(\.id))
+            .union(draft.gameFeatures.controls.characterMappings.keys)
+        for id in knownCharacterIDs.sorted() {
+            let title = characters.first { $0.id == id }?.displayNames.zhHans ?? id
+            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            item.representedObject = id
+            controlScopePopup.menu?.addItem(item)
+        }
+        controlScopePopup.target = self
+        controlScopePopup.action = #selector(controlScopeChanged(_:))
+        controlOverrideBox = checkbox(
+            "为这个角色使用独立键位", false, #selector(controlOverrideChanged(_:)))
+
+        controlBindingPopups.removeAll()
+        var views: [NSView] = [
             note("键位始终先映射为逻辑控制，再由 CommandMatcher 和角色 CombatProfile 解析招式。"),
-            NSTextField(wrappingLabelWithString: lines),
-            note("默认方案：方向键 + Z/X/C/A/S/D + Q/W/E/R。角色覆盖沿用现有映射目录；完整重绑编辑器在下一 UI 增量接入。"),
-        ])
+            row("映射范围", controlScopePopup, labelWidth: 120),
+            controlOverrideBox,
+            separator(),
+        ]
+        for key in KeyboardControlKey.allCases {
+            let popup = NSPopUpButton()
+            popup.addItems(withTitles: ManualControlKey.allCases.map(controlLabel))
+            popup.tag = KeyboardControlKey.allCases.firstIndex(of: key) ?? 0
+            popup.target = self
+            popup.action = #selector(controlBindingChanged(_:))
+            controlBindingPopups[key] = popup
+            views.append(row(physicalKeyLabel(key), popup, labelWidth: 120))
+        }
+        let reset = NSButton(
+            title: "恢复当前范围默认键位", target: self,
+            action: #selector(resetControlMapping(_:)))
+        reset.bezelStyle = .rounded
+        views.append(separator())
+        views.append(reset)
+        views.append(note("发生重复时自动交换两个逻辑控制；运行中的手动控制会在按键全部释放后采用新映射。"))
+        refreshControlMappingEditor()
+        return scrollFormStack(views)
+    }
+
+    private var selectedControlCharacterID: String? {
+        controlScopePopup.selectedItem?.representedObject as? String
+    }
+
+    private func physicalKeyLabel(_ key: KeyboardControlKey) -> String {
+        switch key {
+        case .arrowLeft: return "方向键 ←"
+        case .arrowRight: return "方向键 →"
+        case .arrowUp: return "方向键 ↑"
+        case .arrowDown: return "方向键 ↓"
+        default: return key.rawValue.replacingOccurrences(of: "key", with: "按键 ")
+        }
+    }
+
+    private func controlLabel(_ control: ManualControlKey) -> String {
+        switch control {
+        case .left: return "向左"
+        case .right: return "向右"
+        case .up: return "向上 / 跳跃"
+        case .down: return "向下 / 蹲伏"
+        case .buttonX, .buttonY, .buttonZ, .buttonA, .buttonS, .buttonD:
+            return control.rawValue.replacingOccurrences(of: "button", with: "动作键 ")
+        case .tag: return "换人"
+        case .assist: return "援护"
+        case .powerUp: return "爆气"
+        case .defensiveBurst: return "防御爆发"
+        }
+    }
+
+    private func refreshControlMappingEditor() {
+        guard controlScopePopup != nil else { return }
+        let characterID = selectedControlCharacterID
+        let catalog = draft.gameFeatures.controls
+        let mapping = characterID.map(catalog.mapping(for:)) ?? catalog.defaultMapping
+        controlOverrideBox.isHidden = characterID == nil
+        controlOverrideBox.state = characterID.map {
+            catalog.characterMappings[$0] == nil ? .off : .on
+        } ?? .on
+        let editable = characterID == nil || controlOverrideBox.state == .on
+        for (key, popup) in controlBindingPopups {
+            let control = mapping.bindings[key] ?? ManualControlMapping.standard.bindings[key]
+            popup.selectItem(at: control.flatMap { ManualControlKey.allCases.firstIndex(of: $0) } ?? 0)
+            popup.isEnabled = editable
+        }
     }
 
     private func buildDesktopSafetyTab() -> NSView {
@@ -487,10 +572,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         energyBox = checkbox("启用能量系统", game.energyEnabled, #selector(toggleDraft(_:)))
         energyCostScaleField = numberField(String(format: "%.2f", game.energyCostScale))
         energyRecoveryScaleField = numberField(String(format: "%.2f", game.energyRecoveryScale))
+        windowInteractionBox = checkbox(
+            "允许战斗影响窗口", window.enabled, #selector(toggleDraft(_:)))
         damageOverlayBox = checkbox("允许窗口损伤表现", window.damageOverlayEnabled, #selector(toggleDraft(_:)))
         windowCostScaleField = numberField(String(format: "%.2f", window.energyCostScale))
         minimumEnergyField = numberField("\(window.minimumEnergyAfterAction)")
         windowActionsField = numberField("\(window.maxActionsPerMinute)")
+        pullCooldownSecondsField = numberField(
+            String(format: "%.1f", Double(window.pullCooldownFrames) / 60))
+        damageCooldownSecondsField = numberField(
+            String(format: "%.1f", Double(window.damageCooldownFrames) / 60))
         suppressActiveBox = checkbox("用户活跃时禁止窗口行为", window.suppressWhileUserActive,
                                      #selector(toggleDraft(_:)))
         protectForegroundBox = checkbox("保护前台窗口", window.protectForegroundWindow,
@@ -499,11 +590,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             energyBox,
             row("消耗倍率", energyCostScaleField, labelWidth: 110),
             row("恢复倍率", energyRecoveryScaleField, labelWidth: 110),
-            separator(), windowPullBox,
+            separator(), windowInteractionBox, windowPullBox,
             damageOverlayBox,
             row("窗口成本倍率", windowCostScaleField, labelWidth: 110),
             row("行为后保留能量", minimumEnergyField, labelWidth: 110),
             row("每分钟最多次数", windowActionsField, labelWidth: 110),
+            row("拉动冷却（秒）", pullCooldownSecondsField, labelWidth: 110),
+            row("损伤冷却（秒）", damageCooldownSecondsField, labelWidth: 110),
             suppressActiveBox, protectForegroundBox,
         ])
     }
@@ -1089,7 +1182,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         draft.gameFeatures.energyEnabled = energyBox.state == .on
         draft.gameFeatures.energyCostScale = max(0, parsedDouble(energyCostScaleField, fallback: 1))
         draft.gameFeatures.energyRecoveryScale = max(0, parsedDouble(energyRecoveryScaleField, fallback: 1))
-        draft.gameFeatures.windowInteraction.enabled = true
+        draft.gameFeatures.windowInteraction.enabled = windowInteractionBox.state == .on
         draft.gameFeatures.windowInteraction.pullEnabled = draft.windowPullEnabled
         draft.gameFeatures.windowInteraction.damageOverlayEnabled = damageOverlayBox.state == .on
         draft.gameFeatures.windowInteraction.energyCostScale = max(
@@ -1098,6 +1191,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             0, parsedInt(minimumEnergyField, fallback: 60))
         draft.gameFeatures.windowInteraction.maxActionsPerMinute = max(
             0, parsedInt(windowActionsField, fallback: 2))
+        draft.gameFeatures.windowInteraction.pullCooldownFrames = max(
+            0, Int(parsedDouble(pullCooldownSecondsField, fallback: 30) * 60))
+        draft.gameFeatures.windowInteraction.damageCooldownFrames = max(
+            0, Int(parsedDouble(damageCooldownSecondsField, fallback: 15) * 60))
         draft.gameFeatures.windowInteraction.suppressWhileUserActive = suppressActiveBox.state == .on
         draft.gameFeatures.windowInteraction.protectForegroundWindow = protectForegroundBox.state == .on
         draft.gameFeatures.cadence = RuntimeCadenceSettings(
@@ -1285,6 +1382,51 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     // MARK: 动作
+
+    @objc private func controlScopeChanged(_ sender: NSPopUpButton) {
+        refreshControlMappingEditor()
+    }
+
+    @objc private func controlOverrideChanged(_ sender: NSButton) {
+        guard let characterID = selectedControlCharacterID else { return }
+        if sender.state == .on {
+            let resolved = draft.gameFeatures.controls.mapping(for: characterID)
+            draft.gameFeatures.controls.set(
+                ManualControlMapping(
+                    id: "character:\(characterID)", bindings: resolved.bindings),
+                for: characterID)
+        } else {
+            draft.gameFeatures.controls.remove(for: characterID)
+        }
+        refreshControlMappingEditor()
+    }
+
+    @objc private func controlBindingChanged(_ sender: NSPopUpButton) {
+        guard KeyboardControlKey.allCases.indices.contains(sender.tag),
+              ManualControlKey.allCases.indices.contains(sender.indexOfSelectedItem) else { return }
+        let physical = KeyboardControlKey.allCases[sender.tag]
+        let logical = ManualControlKey.allCases[sender.indexOfSelectedItem]
+        if let characterID = selectedControlCharacterID {
+            var mapping = draft.gameFeatures.controls.characterMappings[characterID]
+                ?? ManualControlMapping(
+                    id: "character:\(characterID)",
+                    bindings: draft.gameFeatures.controls.defaultMapping.bindings)
+            mapping.rebind(physical, to: logical)
+            draft.gameFeatures.controls.set(mapping, for: characterID)
+        } else {
+            draft.gameFeatures.controls.defaultMapping.rebind(physical, to: logical)
+        }
+        refreshControlMappingEditor()
+    }
+
+    @objc private func resetControlMapping(_ sender: NSButton) {
+        if let characterID = selectedControlCharacterID {
+            draft.gameFeatures.controls.remove(for: characterID)
+        } else {
+            draft.gameFeatures.controls.defaultMapping = .standard
+        }
+        refreshControlMappingEditor()
+    }
 
     @objc private func saveSettings() {
         collectDraft()

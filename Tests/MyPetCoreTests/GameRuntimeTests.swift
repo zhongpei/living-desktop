@@ -5,6 +5,33 @@ import MyPet2D
 import MyPetSimulation
 
 final class GameRuntimeTests: XCTestCase {
+    func testStorySchedulingExcludesCombatActorsButKeepsLifeActorsRunning() {
+        let fighter = EntityState(id: EntityID("fighter"), kind: .actor)
+        let life = EntityState(id: EntityID("life"), kind: .actor)
+        let runtime = GameRuntime(kernel: GameKernel(scenario: HarnessScenario(
+            id: "mixed-activity", entities: [fighter, life])))
+        let director = StoryDirector(episodes: [
+            StoryEpisode(
+                id: "fighter-story", title: "Blocked", participants: ["fighter"],
+                beats: [StoryBeat(
+                    id: "fight-wave", actorIDs: ["fighter"], intent: "wave",
+                    durationTicks: 1)]),
+            StoryEpisode(
+                id: "life-story", title: "Allowed", participants: ["life"],
+                beats: [StoryBeat(
+                    id: "life-wave", actorIDs: ["life"], intent: "wave",
+                    durationTicks: 1)]),
+        ], configuration: StoryDirectorConfiguration(repeatEpisodes: false))
+
+        runtime.setStoryUnavailableActorIDs([fighter.id], director: director)
+        XCTAssertEqual(runtime.startStory(director), "life-story")
+        for _ in 0..<4 { _ = runtime.step(storyDirector: director) }
+
+        XCTAssertEqual(director.completedEpisodeCount, 1)
+        XCTAssertNotNil(runtime.world.facts["episode/life-story/completed"])
+        XCTAssertNil(runtime.world.facts["episode/fighter-story/completed"])
+    }
+
     func testRuntimeAccumulatorAdvancesBodyAtSixtyHzAndSemanticEveryThirdFrame() {
         let runtime = GameRuntime()
         var frames: [Int64] = []
