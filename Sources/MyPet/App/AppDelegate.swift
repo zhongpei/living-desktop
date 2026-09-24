@@ -605,6 +605,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     OCRSensor.requestPermission()
                     self.tray?.openScreenRecordingPrompt()
                 }
+            case .gameEnabled:
+                settings.gameFeatures.enabled.toggle()
+            case .automaticCombat:
+                settings.gameFeatures.automaticCombatEnabled.toggle()
+            case .combatHUD:
+                settings.gameFeatures.combatHUDEnabled.toggle()
+            case .neutralNPC:
+                settings.gameFeatures.neutralNPC.enabled.toggle()
+            case .automaticCadence:
+                settings.gameFeatures.cadence.enabled.toggle()
             }
             self.applySettings(settings)
         }

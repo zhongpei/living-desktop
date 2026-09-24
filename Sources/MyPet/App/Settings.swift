@@ -2,6 +2,160 @@ import Foundation
 import ServiceManagement
 import MyPetCore
 import MyPetEngine
+import MyPetCombat
+import MyPetCombatCPU
+
+struct RuntimeCadenceSettings: Codable, Equatable {
+    var enabled: Bool
+    var fixedHzWhenDisabled: Int
+    var quiescentHz: Int
+    var lifeHz: Int
+    var physicalHz: Int
+    var combatHz: Int
+    var downshiftDelaySeconds: Double
+
+    init(
+        enabled: Bool = true, fixedHzWhenDisabled: Int = 60,
+        quiescentHz: Int = 5, lifeHz: Int = 20,
+        physicalHz: Int = 60, combatHz: Int = 60,
+        downshiftDelaySeconds: Double = 2
+    ) {
+        self.enabled = enabled
+        self.fixedHzWhenDisabled = Self.clamp(fixedHzWhenDisabled)
+        self.quiescentHz = Self.clamp(quiescentHz)
+        self.lifeHz = max(self.quiescentHz, Self.clamp(lifeHz))
+        self.physicalHz = max(self.lifeHz, Self.clamp(physicalHz))
+        self.combatHz = max(self.physicalHz, Self.clamp(combatHz))
+        self.downshiftDelaySeconds = max(0, downshiftDelaySeconds)
+    }
+
+    private static func clamp(_ value: Int) -> Int { min(120, max(1, value)) }
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled, fixedHzWhenDisabled, quiescentHz, lifeHz, physicalHz, combatHz
+        case downshiftDelaySeconds
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            enabled: try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true,
+            fixedHzWhenDisabled: try c.decodeIfPresent(Int.self, forKey: .fixedHzWhenDisabled) ?? 60,
+            quiescentHz: try c.decodeIfPresent(Int.self, forKey: .quiescentHz) ?? 5,
+            lifeHz: try c.decodeIfPresent(Int.self, forKey: .lifeHz) ?? 20,
+            physicalHz: try c.decodeIfPresent(Int.self, forKey: .physicalHz) ?? 60,
+            combatHz: try c.decodeIfPresent(Int.self, forKey: .combatHz) ?? 60,
+            downshiftDelaySeconds: try c.decodeIfPresent(
+                Double.self, forKey: .downshiftDelaySeconds) ?? 2)
+    }
+}
+
+struct WindowInteractionSettings: Codable, Equatable {
+    var enabled = true
+    var pullEnabled = false
+    var damageOverlayEnabled = true
+    var energyCostScale = 1.0
+    var minimumEnergyAfterAction = 60
+    var pullCooldownFrames = 1_800
+    var damageCooldownFrames = 900
+    var maxActionsPerMinute = 2
+    var suppressWhileUserActive = true
+    var protectForegroundWindow = true
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case enabled, pullEnabled, damageOverlayEnabled, energyCostScale
+        case minimumEnergyAfterAction, pullCooldownFrames, damageCooldownFrames
+        case maxActionsPerMinute, suppressWhileUserActive, protectForegroundWindow
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        pullEnabled = try c.decodeIfPresent(Bool.self, forKey: .pullEnabled) ?? false
+        damageOverlayEnabled = try c.decodeIfPresent(Bool.self, forKey: .damageOverlayEnabled) ?? true
+        energyCostScale = max(0, try c.decodeIfPresent(Double.self, forKey: .energyCostScale) ?? 1)
+        minimumEnergyAfterAction = max(0, try c.decodeIfPresent(
+            Int.self, forKey: .minimumEnergyAfterAction) ?? 60)
+        pullCooldownFrames = max(0, try c.decodeIfPresent(Int.self, forKey: .pullCooldownFrames) ?? 1_800)
+        damageCooldownFrames = max(0, try c.decodeIfPresent(Int.self, forKey: .damageCooldownFrames) ?? 900)
+        maxActionsPerMinute = max(0, try c.decodeIfPresent(Int.self, forKey: .maxActionsPerMinute) ?? 2)
+        suppressWhileUserActive = try c.decodeIfPresent(
+            Bool.self, forKey: .suppressWhileUserActive) ?? true
+        protectForegroundWindow = try c.decodeIfPresent(
+            Bool.self, forKey: .protectForegroundWindow) ?? true
+    }
+
+    var policy: WindowInteractionPolicy {
+        var value = WindowInteractionPolicy()
+        value.enabled = enabled
+        value.pullEnabled = pullEnabled
+        value.damageOverlayEnabled = damageOverlayEnabled
+        value.energyCostScale = max(0, energyCostScale)
+        value.minimumEnergyAfterAction = max(0, minimumEnergyAfterAction)
+        value.pullCooldownFrames = max(0, pullCooldownFrames)
+        value.damageCooldownFrames = max(0, damageCooldownFrames)
+        value.maxActionsPerMinute = max(0, maxActionsPerMinute)
+        value.suppressWhileUserActive = suppressWhileUserActive
+        value.protectForegroundWindow = protectForegroundWindow
+        return value
+    }
+}
+
+struct GameFeatureSettings: Codable, Equatable {
+    var enabled = true
+    var automaticCombatEnabled = true
+    var combatHUDEnabled = true
+    var projectilesEnabled = true
+    var teamsEnabled = true
+    var freeTagEnabled = true
+    var assistsEnabled = true
+    var supersEnabled = true
+    var powerUpEnabled = true
+    var defensiveBurstEnabled = true
+    var energyEnabled = true
+    var energyCostScale = 1.0
+    var energyRecoveryScale = 1.0
+    var cpuDifficulty = CombatCPUDifficulty.normal
+    var neutralNPC = NeutralEscalationPolicy.desktopBrawl
+    var windowInteraction = WindowInteractionSettings()
+    var controls = ManualControlMappingCatalog()
+    var cadence = RuntimeCadenceSettings()
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled, automaticCombatEnabled, combatHUDEnabled, projectilesEnabled
+        case teamsEnabled, freeTagEnabled, assistsEnabled, supersEnabled
+        case powerUpEnabled, defensiveBurstEnabled, energyEnabled
+        case energyCostScale, energyRecoveryScale, cpuDifficulty, neutralNPC
+        case windowInteraction, controls, cadence
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        automaticCombatEnabled = try c.decodeIfPresent(Bool.self, forKey: .automaticCombatEnabled) ?? true
+        combatHUDEnabled = try c.decodeIfPresent(Bool.self, forKey: .combatHUDEnabled) ?? true
+        projectilesEnabled = try c.decodeIfPresent(Bool.self, forKey: .projectilesEnabled) ?? true
+        teamsEnabled = try c.decodeIfPresent(Bool.self, forKey: .teamsEnabled) ?? true
+        freeTagEnabled = try c.decodeIfPresent(Bool.self, forKey: .freeTagEnabled) ?? true
+        assistsEnabled = try c.decodeIfPresent(Bool.self, forKey: .assistsEnabled) ?? true
+        supersEnabled = try c.decodeIfPresent(Bool.self, forKey: .supersEnabled) ?? true
+        powerUpEnabled = try c.decodeIfPresent(Bool.self, forKey: .powerUpEnabled) ?? true
+        defensiveBurstEnabled = try c.decodeIfPresent(Bool.self, forKey: .defensiveBurstEnabled) ?? true
+        energyEnabled = try c.decodeIfPresent(Bool.self, forKey: .energyEnabled) ?? true
+        energyCostScale = max(0, try c.decodeIfPresent(Double.self, forKey: .energyCostScale) ?? 1)
+        energyRecoveryScale = max(0, try c.decodeIfPresent(Double.self, forKey: .energyRecoveryScale) ?? 1)
+        cpuDifficulty = try c.decodeIfPresent(CombatCPUDifficulty.self, forKey: .cpuDifficulty) ?? .normal
+        neutralNPC = try c.decodeIfPresent(NeutralEscalationPolicy.self, forKey: .neutralNPC) ?? .desktopBrawl
+        windowInteraction = try c.decodeIfPresent(
+            WindowInteractionSettings.self, forKey: .windowInteraction) ?? .init()
+        controls = try c.decodeIfPresent(ManualControlMappingCatalog.self, forKey: .controls) ?? .init()
+        cadence = try c.decodeIfPresent(RuntimeCadenceSettings.self, forKey: .cadence) ?? .init()
+    }
+}
 
 struct StorySettings: Codable, Equatable {
     var enabled = true
@@ -177,10 +331,15 @@ struct Settings: Codable {
 
     // ---- 玩法 ----
 
+    /// 统一游戏规则、战斗、控制和运行节奏。旧的顶层玩法字段保留一个迁移周期。
+    var gameFeatures = GameFeatureSettings()
+
     /// 场景玩法总闸（Action Recipe 目标-场景执行环）。关闭 = 旧的随机闲逛模式。
     var scenesEnabled = true
     /// 道具系统（场景配方里的拿放道具）。
     var propsEnabled = true
+    var scenesRuntimeEnabled: Bool { gameFeatures.enabled && scenesEnabled }
+    var propsRuntimeEnabled: Bool { gameFeatures.enabled && propsEnabled }
 
     // ---- 感知 ----
 
@@ -287,7 +446,7 @@ struct Settings: Codable {
         case goalBrainMinInterval, goalBrainMaxInterval
         case speechEnabled, characterSpeechSettings, voicePlaybackEnabled, brainTraceEnabled
         case slowBrainLogEnabled, teacherLogEnabled // legacy wire keys
-        case scenesEnabled, propsEnabled
+        case gameFeatures, scenesEnabled, propsEnabled
         case sensesEnabled, ocrEnabled, inputPlugins, pointerInputEnabled, pointerInputHz
         case castSelection, storySettings
     }
@@ -356,6 +515,7 @@ struct Settings: Codable {
         try c.encode(characterSpeechSettings, forKey: .characterSpeechSettings)
         try c.encode(voicePlaybackEnabled, forKey: .voicePlaybackEnabled)
         try c.encode(brainTraceEnabled, forKey: .brainTraceEnabled)
+        try c.encode(gameFeatures, forKey: .gameFeatures)
         try c.encode(scenesEnabled, forKey: .scenesEnabled)
         try c.encode(propsEnabled, forKey: .propsEnabled)
         try c.encode(sensesEnabled, forKey: .sensesEnabled)
@@ -440,6 +600,8 @@ struct Settings: Codable {
         brainTraceEnabled = try c.decodeIfPresent(Bool.self, forKey: .brainTraceEnabled)
             ?? c.decodeIfPresent(Bool.self, forKey: .slowBrainLogEnabled)
             ?? c.decodeIfPresent(Bool.self, forKey: .teacherLogEnabled) ?? true
+        gameFeatures = try c.decodeIfPresent(GameFeatureSettings.self, forKey: .gameFeatures)
+            ?? GameFeatureSettings()
         scenesEnabled = try c.decodeIfPresent(Bool.self, forKey: .scenesEnabled) ?? true
         propsEnabled = try c.decodeIfPresent(Bool.self, forKey: .propsEnabled) ?? true
         sensesEnabled = try c.decodeIfPresent(Bool.self, forKey: .sensesEnabled) ?? false
@@ -474,5 +636,8 @@ struct Settings: Codable {
             ?? CastSelection()
         storySettings = try c.decodeIfPresent(StorySettings.self, forKey: .storySettings)
             ?? StorySettings()
+        if !c.contains(.gameFeatures) {
+            gameFeatures.windowInteraction.pullEnabled = windowPullEnabled
+        }
     }
 }

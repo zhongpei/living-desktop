@@ -23,9 +23,18 @@ final class DesktopCombatCoordinator {
         self.runtime = GameRuntime(bodyExecutionMode: .external, combatRuntime: combatRuntime)
     }
 
+    func configure(_ settings: GameFeatureSettings) {
+        combatRuntime.setEscalationPolicy(settings.neutralNPC)
+        combatRuntime.setWindowInteractionPolicy(settings.windowInteraction.policy)
+        for actor in registeredActors {
+            combatRuntime.setAutonomousDifficulty(settings.cpuDifficulty, for: EntityID(actor))
+        }
+    }
+
     func register(actorID: EntityID, profile: CombatProfile, x: CGFloat, yFeet: CGFloat,
                   facingRight: Bool, displayHeight: CGFloat,
-                  realCombatReady: Bool = true) {
+                  realCombatReady: Bool = true,
+                  cpuDifficulty: CombatCPUDifficulty = .normal) {
         guard !registeredActors.contains(actorID.raw) else {
             world.setProfile(profile, for: actorID)
             return
@@ -39,6 +48,7 @@ final class DesktopCombatCoordinator {
             facing: facingRight ? .right : .left,
             visualScale: max(0.05, Double(displayHeight) / 110.0),
             realCombatReady: realCombatReady)
+        combatRuntime.setAutonomousDifficulty(cpuDifficulty, for: actorID)
     }
 
     func unregister(actorID: EntityID) {

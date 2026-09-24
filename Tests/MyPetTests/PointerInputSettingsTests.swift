@@ -67,6 +67,18 @@ final class PointerInputSettingsTests: XCTestCase {
         XCTAssertTrue(opened)
     }
 
+    func testTrayUsesSingleGameFeatureSettingsMenu() throws {
+        _ = NSApplication.shared
+        let tray = Tray(settings: Settings())
+        let items = try XCTUnwrap(tray.attachedMenu?.items)
+        XCTAssertNil(items.first { $0.title == "玩法" })
+        let game = try XCTUnwrap(items.first { $0.title == "游戏功能设置" }?.submenu)
+        for title in ["游戏功能总开关", "场景玩法", "自动战斗", "战斗 HUD",
+                      "中立 NPC 误伤参战", "自动时钟调频", "打开游戏功能设置…"] {
+            XCTAssertNotNil(game.items.first { $0.title == title }, title)
+        }
+    }
+
     func testSettingsWindowSavesPointerControls() throws {
         _ = NSApplication.shared
         let controller = SettingsWindowController(settings: Settings())
@@ -77,7 +89,7 @@ final class PointerInputSettingsTests: XCTestCase {
         }
         let root = try XCTUnwrap(window.contentView)
         let pages = try XCTUnwrap(descendants(root).compactMap { $0 as? NSTabView }.first)
-        let senses = try XCTUnwrap(pages.tabViewItems.first { $0.label == "感知" })
+        let senses = try XCTUnwrap(pages.tabViewItems.first { $0.label == "感知与权限" })
         pages.selectTabViewItem(senses)
         let sensesView = try XCTUnwrap(senses.view)
         let sensesTabs = try XCTUnwrap((sensesView as? NSTabView)

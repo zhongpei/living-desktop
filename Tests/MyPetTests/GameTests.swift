@@ -758,6 +758,37 @@ final class GameTests: XCTestCase {
         XCTAssertTrue(migrated.localSpeechPromptOverrides.isEmpty)
     }
 
+    func testGameFeatureSettingsRoundTripAndCadenceNormalization() throws {
+        var settings = Settings()
+        settings.gameFeatures.enabled = false
+        settings.gameFeatures.automaticCombatEnabled = false
+        settings.gameFeatures.combatHUDEnabled = false
+        settings.gameFeatures.cpuDifficulty = .hard
+        settings.gameFeatures.assistsEnabled = false
+        settings.gameFeatures.neutralNPC.maxIncidentalCombatants = 2
+        settings.gameFeatures.windowInteraction.energyCostScale = 1.75
+        settings.gameFeatures.cadence = RuntimeCadenceSettings(
+            enabled: true, fixedHzWhenDisabled: 60,
+            quiescentHz: 30, lifeHz: 10, physicalHz: 40, combatHz: 20,
+            downshiftDelaySeconds: -1)
+
+        let decoded = try JSONDecoder().decode(
+            Settings.self, from: JSONEncoder().encode(settings))
+
+        XCTAssertFalse(decoded.gameFeatures.enabled)
+        XCTAssertFalse(decoded.gameFeatures.automaticCombatEnabled)
+        XCTAssertFalse(decoded.gameFeatures.combatHUDEnabled)
+        XCTAssertEqual(decoded.gameFeatures.cpuDifficulty, .hard)
+        XCTAssertFalse(decoded.gameFeatures.assistsEnabled)
+        XCTAssertEqual(decoded.gameFeatures.neutralNPC.maxIncidentalCombatants, 2)
+        XCTAssertEqual(decoded.gameFeatures.windowInteraction.energyCostScale, 1.75)
+        XCTAssertEqual(decoded.gameFeatures.cadence.quiescentHz, 30)
+        XCTAssertEqual(decoded.gameFeatures.cadence.lifeHz, 30)
+        XCTAssertEqual(decoded.gameFeatures.cadence.physicalHz, 40)
+        XCTAssertEqual(decoded.gameFeatures.cadence.combatHz, 40)
+        XCTAssertEqual(decoded.gameFeatures.cadence.downshiftDelaySeconds, 0)
+    }
+
     func testSettingsDecodePartialInputCatalogKeepsAllBuiltInPluginEntries() throws {
         let data = """
         {

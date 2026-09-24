@@ -183,6 +183,11 @@ final class Tray: NSObject {
         case props = "道具"
         case senses = "AX 屏幕感知（辅助功能）"
         case ocr = "OCR 屏幕感知（屏幕录制）"
+        case gameEnabled = "游戏功能总开关"
+        case automaticCombat = "自动战斗"
+        case combatHUD = "战斗 HUD"
+        case neutralNPC = "中立 NPC 误伤参战"
+        case automaticCadence = "自动时钟调频"
     }
 
     enum MenuID {
@@ -204,6 +209,11 @@ final class Tray: NSObject {
         static let brain = NSUserInterfaceItemIdentifier("brain")
         static let perception = NSUserInterfaceItemIdentifier("perception")
         static let general = NSUserInterfaceItemIdentifier("general")
+        static let gameEnabled = NSUserInterfaceItemIdentifier("game.enabled")
+        static let automaticCombat = NSUserInterfaceItemIdentifier("game.automatic-combat")
+        static let combatHUD = NSUserInterfaceItemIdentifier("game.combat-hud")
+        static let neutralNPC = NSUserInterfaceItemIdentifier("game.neutral-npc")
+        static let automaticCadence = NSUserInterfaceItemIdentifier("game.automatic-cadence")
     }
 
     func rebuild() {
@@ -261,7 +271,7 @@ final class Tray: NSObject {
         menu.addItem(.separator())
 
         // 按用户心智模型拆开入口：玩法、大脑、感知和通用设置互不混排。
-        let gameplay = NSMenuItem(title: "玩法", action: nil, keyEquivalent: "")
+        let gameplay = NSMenuItem(title: "游戏功能设置", action: nil, keyEquivalent: "")
         gameplay.identifier = MenuID.gameplay
         gameplay.submenu = buildGameplayMenu()
         menu.addItem(gameplay)
@@ -414,13 +424,16 @@ final class Tray: NSObject {
         castSelection.allMembersEnabled || castSelection.enabledMemberIDs.contains(memberID)
     }
 
-    /// 玩法子菜单（完整字段在设置窗“玩法”页）。
+    /// 游戏快捷项；完整字段在设置窗“游戏功能设置”页。
     private func buildGameplayMenu() -> NSMenu {
-        let submenu = NSMenu(title: "玩法")
-        submenu.addItem(checkmarkItem(Toggle.voicePlayback, id: MenuID.voicePlayback,
-                                      on: settings.voicePlaybackEnabled))
+        let submenu = NSMenu(title: "游戏功能设置")
+        submenu.addItem(checkmarkItem(.gameEnabled, id: MenuID.gameEnabled,
+                                      on: settings.gameFeatures.enabled))
+        submenu.addItem(checkmarkItem(.scenes, id: MenuID.scenes,
+                                      on: settings.scenesEnabled, title: "场景玩法"))
         if let gameplayCatalog {
             for plugin in gameplayCatalog.plugins where plugin.surfaces.contains("tray") {
+                if plugin.implementationID == GameplayImplementationID.scenes.rawValue { continue }
                 guard let item = gameplayMenuItem(for: plugin) else { continue }
                 submenu.addItem(item)
             }
@@ -432,6 +445,19 @@ final class Tray: NSObject {
             submenu.addItem(checkmarkItem(Toggle.foregroundFollow, id: MenuID.foreground, on: settings.foregroundFollow))
             submenu.addItem(checkmarkItem(Toggle.windowPull, id: MenuID.pull, on: settings.windowPullEnabled))
         }
+        submenu.addItem(.separator())
+        submenu.addItem(checkmarkItem(.automaticCombat, id: MenuID.automaticCombat,
+                                      on: settings.gameFeatures.automaticCombatEnabled))
+        submenu.addItem(checkmarkItem(.combatHUD, id: MenuID.combatHUD,
+                                      on: settings.gameFeatures.combatHUDEnabled))
+        submenu.addItem(checkmarkItem(.neutralNPC, id: MenuID.neutralNPC,
+                                      on: settings.gameFeatures.neutralNPC.enabled))
+        submenu.addItem(checkmarkItem(.automaticCadence, id: MenuID.automaticCadence,
+                                      on: settings.gameFeatures.cadence.enabled))
+        submenu.addItem(.separator())
+        let open = NSMenuItem(title: "打开游戏功能设置…", action: #selector(openSettings), keyEquivalent: "")
+        open.target = self
+        submenu.addItem(open)
         return submenu
     }
 
@@ -629,6 +655,11 @@ final class Tray: NSObject {
         case MenuID.props: toggle = .props
         case MenuID.senses: toggle = .senses
         case MenuID.ocr: toggle = .ocr
+        case MenuID.gameEnabled: toggle = .gameEnabled
+        case MenuID.automaticCombat: toggle = .automaticCombat
+        case MenuID.combatHUD: toggle = .combatHUD
+        case MenuID.neutralNPC: toggle = .neutralNPC
+        case MenuID.automaticCadence: toggle = .automaticCadence
         default: return
         }
         onToggle?(toggle)

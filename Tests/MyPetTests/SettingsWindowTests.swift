@@ -21,24 +21,26 @@ final class SettingsWindowTests: XCTestCase {
         let views = descendants(of: try XCTUnwrap(window.contentView))
         let tabs = try XCTUnwrap(views.compactMap { $0 as? NSTabView }.first)
         XCTAssertEqual(tabs.tabViewItems.map(\.label),
-                       ["通用", "玩法", "角色", "大脑", "感知", "诊断"])
+                       ["通用", "游戏功能设置", "角色", "大脑", "感知与权限", "诊断"])
         XCTAssertEqual(window.title, "Living Desktop 设置")
         let general = try XCTUnwrap(tabs.tabViewItems.first { $0.label == "通用" }?.view)
         XCTAssertTrue(descendants(of: general).compactMap { $0 as? NSButton }
             .contains { $0.title == "打开内容包管理…" })
-        let gameplay = try XCTUnwrap(tabs.tabViewItems.first { $0.label == "玩法" }?.view)
+        let gameplay = try XCTUnwrap(tabs.tabViewItems.first { $0.label == "游戏功能设置" }?.view)
         let gameplayTabs = try XCTUnwrap(firstTab(in: gameplay))
-        XCTAssertEqual(gameplayTabs.tabViewItems.map(\.label), ["基础玩法", "剧情与关系"])
-        let story = try XCTUnwrap(gameplayTabs.tabViewItems.last?.view)
+        XCTAssertEqual(gameplayTabs.tabViewItems.map(\.label),
+                       ["总览", "生活与场景", "战斗规则", "队伍与中立 NPC",
+                        "键盘控制", "能量与桌面安全", "剧情与关系", "运行节奏"])
+        let story = try XCTUnwrap(gameplayTabs.tabViewItems.first { $0.label == "剧情与关系" }?.view)
         let browse = try XCTUnwrap(descendants(of: story).compactMap { $0 as? NSButton }
             .first { $0.title == "查看剧情内容…" })
         var opened = false
         controller.onOpenStoryLibrary = { opened = true }
         browse.performClick(nil)
         XCTAssertTrue(opened)
-        let basics = try XCTUnwrap(gameplayTabs.tabViewItems.first?.view)
-        XCTAssertFalse(descendants(of: basics).contains { $0 is NSTabView || $0 is NSScrollView })
-        let senses = try XCTUnwrap(tabs.tabViewItems.first { $0.label == "感知" }?.view)
+        let basics = try XCTUnwrap(gameplayTabs.tabViewItems.first { $0.label == "生活与场景" }?.view)
+        XCTAssertTrue(basics is NSScrollView || descendants(of: basics).contains { $0 is NSScrollView })
+        let senses = try XCTUnwrap(tabs.tabViewItems.first { $0.label == "感知与权限" }?.view)
         XCTAssertEqual(firstTab(in: senses)?.tabViewItems.map(\.label),
                        ["窗口与权限", "内容输入"])
         let role = try XCTUnwrap(tabs.tabViewItems.first { $0.label == "角色" }?.view)

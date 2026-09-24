@@ -14,9 +14,10 @@ final class ManualControlPanel: NSPanel {
     private let mappingStore: ManualControlMappingStore
     private var mappings: ManualControlMappingCatalog
 
-    init(mappingStore: ManualControlMappingStore = ManualControlMappingStore()) {
+    init(mappingStore: ManualControlMappingStore = ManualControlMappingStore(),
+         mappings: ManualControlMappingCatalog? = nil) {
         self.mappingStore = mappingStore
-        self.mappings = mappingStore.load()
+        self.mappings = mappings ?? mappingStore.load()
         super.init(
             contentRect: NSRect(x: 0, y: 0, width: 330, height: 92),
             styleMask: [.titled, .utilityWindow],
@@ -44,6 +45,11 @@ final class ManualControlPanel: NSPanel {
         ) { [weak self] _ in
             Task { @MainActor in self?.inputView.focusLost() }
         }
+    }
+
+    func applyMappings(_ mappings: ManualControlMappingCatalog) {
+        guard !isVisible else { return }
+        self.mappings = mappings
     }
 
     func setMapping(_ mapping: ManualControlMapping, for characterID: String) {

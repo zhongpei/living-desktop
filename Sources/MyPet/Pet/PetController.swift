@@ -120,7 +120,7 @@ final class PetController {
     private let usesSharedCombatWorld: Bool
     private let combatProfile: CombatProfile
     private let combatEnabled: Bool
-    private let manualControlPanel = ManualControlPanel()
+    private let manualControlPanel: ManualControlPanel
     private var manualInput = FighterInputFrame.neutral
     private var previousManualInput = FighterInputFrame.neutral
     /// 行动脑只提交语义请求。只有 Kernel 接受且计划世代仍有效时，
@@ -190,6 +190,7 @@ final class PetController {
          needle: NeedleBrain? = nil,
          localBrain: LocalBrain? = nil,
          teacherBrain: TeacherBrain? = nil) {
+        self.manualControlPanel = ManualControlPanel(mappings: settings.gameFeatures.controls)
         self.library = library
         self.settings = settings
         self.runtimeActorID = actorID ?? EntityID(library.characterID)
@@ -210,6 +211,7 @@ final class PetController {
         // Only validated v2 evidence may open a damage-producing CombatSession.
         self.combatEnabled = combatLoad.readiness == .realCombatReady
         self.combatCoordinator = injectedCombatCoordinator ?? DesktopCombatCoordinator()
+        self.combatCoordinator.configure(settings.gameFeatures)
         self.usesSharedCombatWorld = injectedCombatCoordinator != nil
         self.characterDefinition = characterDefinition
         self.declaredCapabilities = capabilities.map(Set.init)
@@ -257,7 +259,8 @@ final class PetController {
             yFeet: model.yFeet,
             facingRight: model.facingRight,
             displayHeight: displayH,
-            realCombatReady: combatEnabled)
+            realCombatReady: combatEnabled,
+            cpuDifficulty: settings.gameFeatures.cpuDifficulty)
 
         self.presentation = ActorPresentation(
             source: library,
@@ -679,9 +682,9 @@ final class PetController {
 
         updateSleepState()
         for _ in 0..<runtimeSteps {
-            if settings.scenesEnabled {
+            if settings.scenesRuntimeEnabled {
                 driveSemanticMind()
-                preparedSemanticProvider.setPropsEnabled(settings.propsEnabled)
+                preparedSemanticProvider.setPropsEnabled(settings.propsRuntimeEnabled)
                 _ = gameplayRuntime.step(
                     pipeline: semanticPipeline, context: runtimeContext(),
                     afterSemanticWork: { [weak self] in
@@ -784,7 +787,8 @@ final class PetController {
 
     private func updatePresentationPose() {
         let combat = combatCoordinator.body(actorID: runtimeActorID)
-        let combatHUD = combatCoordinator.combatHUDBody(actorID: runtimeActorID)
+        let combatHUD = settings.gameFeatures.enabled && settings.gameFeatures.combatHUDEnabled
+            ? combatCoordinator.combatHUDBody(actorID: runtimeActorID) : nil
         gameplayRuntime.updateBodyPose(BodyPose(
             actorID: runtimeActorID,
             x: Double(model.x),
@@ -1300,7 +1304,7 @@ final class PetController {
         goalActivity = goal.activity
         brainState.adopt(goal: goal, now: clock)
         pushRecentEvent("goal: \(goal.kind.rawValue)\(goal.activity.map { " (\($0.rawValue))" } ?? "")")
-        if !usesSharedGameplayKernel, settings.scenesEnabled {
+        if !usesSharedGameplayKernel, settings.scenesRuntimeEnabled {
             let decision = goal.semanticDecision(atTick: gameplayRuntime.clock.tick)
             semanticGoal = decision
             preparedSemanticProvider.prepareGoal(
@@ -1315,7 +1319,7 @@ final class PetController {
         guard let goal = currentGoal else { return }
         cancelPendingRuntimeActions()
         pushRecentEvent("goal cleared: \(reason)")
-        if !usesSharedGameplayKernel, settings.scenesEnabled {
+        if !usesSharedGameplayKernel, settings.scenesRuntimeEnabled {
             let recipeID = semanticPipeline.sceneRunner.recipeID
             if let recipeID, semanticPipeline.sceneRunner.status == .running {
                 logGoalOutcome(goal: goal, scene: recipeID,
@@ -1393,7 +1397,7 @@ final class PetController {
 
     private func abortScene(reason: String = "interrupted") {
         needle.invalidatePendingDecision(for: runtimeActorID.raw)
-        if !usesSharedGameplayKernel, settings.scenesEnabled,
+        if !usesSharedGameplayKernel, settings.scenesRuntimeEnabled,
            semanticPipeline.sceneRunner.status == .running {
             if let id = semanticPipeline.cancel() { gameplayRuntime.cancelBodyBehavior(id) }
             semanticBodyAdapter.invalidate()
@@ -1456,7 +1460,7 @@ final class PetController {
     }
 
     private var semanticActiveSceneID: String? {
-        guard !usesSharedGameplayKernel, settings.scenesEnabled,
+        guard !usesSharedGameplayKernel, settings.scenesRuntimeEnabled,
               semanticPipeline.sceneRunner.status == .running else { return nil }
         return semanticPipeline.sceneRunner.recipeID
     }
@@ -1606,8 +1610,8 @@ final class PetController {
             (id: $0.snapshotID, distance: $0.distance, owner: $0.owner,
              activity: $0.activity.rawValue, affordances: $0.affordances.map { $0.rawValue })
         }
-        facts.props = settings.propsEnabled ? PropCatalog.ids : []
-        if settings.propsEnabled {
+        facts.props = settings.propsRuntimeEnabled ? PropCatalog.ids : []
+        if settings.propsRuntimeEnabled {
             facts.heldProp = soloProp?.phase == .held ? soloProp?.propID : nil
             // 附近可再拿的道具（放下的东西自己还在原地）。
             if soloProp?.isPlacedNear(
@@ -1615,7 +1619,7 @@ final class PetController {
                 facts.propNearby = soloProp?.propID
             }
         }
-        if let goal = currentGoal, settings.scenesEnabled {
+        if let goal = currentGoal, settings.scenesRuntimeEnabled {
             let userBusy = GoalPolicy.isBusy(.init(
                 brain: brainState, personality: personality,
                 userActivity: world.foreground?.appActivity ?? .unknown,
@@ -1711,7 +1715,7 @@ final class PetController {
 
     @discardableResult
     func scenePutDown() -> Bool {
-        guard settings.propsEnabled, soloProp?.phase == .held else { return false }
+        guard settings.propsRuntimeEnabled, soloProp?.phase == .held else { return false }
         let propID = soloProp?.propID ?? "prop"
         model.wake()
         model.stopWalk()
@@ -1726,7 +1730,7 @@ final class PetController {
 
     @discardableResult
     func scenePickUp() -> Bool {
-        guard settings.propsEnabled,
+        guard settings.propsRuntimeEnabled,
               soloProp?.isPlacedNear(
                   x: Double(model.x), y: Double(model.yFeet), within: 90) == true else { return false }
         let propID = soloProp?.propID ?? "prop"
@@ -1936,13 +1940,15 @@ final class PetController {
     /// 菜单/设置窗改设置后热更新。displayHeight 也已支持实时预览：
     /// 物理尺寸（bodyRadius 等）与面板大小下一帧即按新值运转。
     func updateSettings(_ s: Settings) {
-        if !usesSharedGameplayKernel, settings.propsEnabled && !s.propsEnabled {
+        combatCoordinator.configure(s.gameFeatures)
+        manualControlPanel.applyMappings(s.gameFeatures.controls)
+        if !usesSharedGameplayKernel, settings.propsRuntimeEnabled && !s.propsRuntimeEnabled {
             if currentGoal != nil || semanticActiveSceneID != nil {
                 cancelGoalAndScene(reason: "prop setting changed")
             }
             submitProp(PropCommand(.clear))
         }
-        if !usesSharedGameplayKernel, settings.scenesEnabled != s.scenesEnabled,
+        if !usesSharedGameplayKernel, settings.scenesRuntimeEnabled != s.scenesRuntimeEnabled,
            currentGoal != nil {
             clearGoal(reason: "scene setting changed")
         }
@@ -2299,7 +2305,7 @@ final class PetController {
                         available: Set(library.actionNames)) != nil)
             }
         primary.append(RenderActionItem(id: "__manual_control__", label: "接管控制", enabled: true))
-        if combatEnabled {
+        if combatEnabled && settings.gameFeatures.enabled && settings.gameFeatures.automaticCombatEnabled {
             primary.append(RenderActionItem(id: "__autonomous_combat__", label: "自主格斗", enabled: true))
         }
         actionRing.show(at: cursor, primary: primary, extended: [])
@@ -2403,7 +2409,9 @@ final class PetController {
     }
 
     private func beginAutonomousCombat(reason: String) {
-        guard combatEnabled, !isStopped else { return }
+        guard settings.gameFeatures.enabled,
+              settings.gameFeatures.automaticCombatEnabled,
+              combatEnabled, !isStopped else { return }
         manualInput = .neutral
         model.stopWalk()
         actions.cancelPerformance()
@@ -2734,7 +2742,7 @@ final class PetController {
     /// 全局菜单「召唤道具」（用户指令）：宠物变出指定道具——手上（拿着）或
     /// 面前（placed 落地，原地待着后自然淡出）。正做的场景让位。
     func summonProp(_ id: String, placed: Bool) {
-        guard settings.propsEnabled, PropCatalog.def(id) != nil else { return }
+        guard settings.propsRuntimeEnabled, PropCatalog.def(id) != nil else { return }
         model.wake()
         model.stopWalk()
         cancelGoalAndScene(reason: "user command")
@@ -2792,7 +2800,7 @@ final class PetController {
             ? (teacherBrain.isAvailable ? "Qwen VLM（\(settings.teacherBrainModel)）" : "未配置") : "关闭"
         let action = settings.actionBrainEnabled
             ? (needle.isAvailable ? "Needle 3" : "缺模型") : "关闭"
-        r.brains = "行动脑 \(action) · 人物台词 \(localSpeech) · 目标决策 \(local) · 高阶教师脑 \(teacher) · 场景 \(settings.scenesEnabled ? "开" : "关")"
+        r.brains = "行动脑 \(action) · 人物台词 \(localSpeech) · 目标决策 \(local) · 高阶教师脑 \(teacher) · 场景 \(settings.scenesRuntimeEnabled ? "开" : "关")"
         r.lastSpeech = brainState.lastSpeech ?? "—"
         return r
     }

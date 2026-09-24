@@ -3,6 +3,8 @@ import MyPetContent
 import MyPetPlatform
 import MyPetCore
 import MyPetEngine
+import MyPetCombat
+import MyPetCombatCPU
 
 /// 设置窗：完整配置的唯一入口（菜单只留快捷开关）。
 ///
@@ -40,6 +42,39 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var foregroundBox: NSButton!
     private var windowPullBox: NSButton!
     private var pullStatusLabel: NSTextField!
+    private var gameEnabledBox: NSButton!
+    private var automaticCombatBox: NSButton!
+    private var combatHUDBox: NSButton!
+    private var projectilesBox: NSButton!
+    private var teamsBox: NSButton!
+    private var freeTagBox: NSButton!
+    private var assistsBox: NSButton!
+    private var supersBox: NSButton!
+    private var powerUpBox: NSButton!
+    private var defensiveBurstBox: NSButton!
+    private var cpuDifficultyPopup: NSPopUpButton!
+    private var neutralNPCBox: NSButton!
+    private var teamLiabilityBox: NSButton!
+    private var cascadeBox: NSButton!
+    private var incidentalCountField: NSTextField!
+    private var cascadeDepthField: NSTextField!
+    private var hostilitySecondsField: NSTextField!
+    private var energyBox: NSButton!
+    private var energyCostScaleField: NSTextField!
+    private var energyRecoveryScaleField: NSTextField!
+    private var damageOverlayBox: NSButton!
+    private var windowCostScaleField: NSTextField!
+    private var minimumEnergyField: NSTextField!
+    private var windowActionsField: NSTextField!
+    private var suppressActiveBox: NSButton!
+    private var protectForegroundBox: NSButton!
+    private var cadenceBox: NSButton!
+    private var fixedHzField: NSTextField!
+    private var quiescentHzField: NSTextField!
+    private var lifeHzField: NSTextField!
+    private var physicalHzField: NSTextField!
+    private var combatHzField: NSTextField!
+    private var downshiftField: NSTextField!
 
     private var teacherBrainBox: NSButton!
     private var baseURLField: NSTextField!
@@ -163,10 +198,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let tabs = NSTabView()
         tabs.translatesAutoresizingMaskIntoConstraints = false
         tabs.addTabViewItem(tab("通用", buildGeneralTab()))
-        tabs.addTabViewItem(tab("玩法", buildGameplayTab()))
+        tabs.addTabViewItem(tab("游戏功能设置", buildGameplayTab()))
         tabs.addTabViewItem(tab("角色", buildCastTab()))
         tabs.addTabViewItem(tab("大脑", buildBrainTab()))
-        tabs.addTabViewItem(tab("感知", buildSensesTab()))
+        tabs.addTabViewItem(tab("感知与权限", buildSensesTab()))
         tabs.addTabViewItem(tab("诊断", buildDiagnosticsTab()))
 
         let save = NSButton(title: "保存", target: self, action: #selector(saveSettings))
@@ -345,9 +380,26 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private func buildGameplayTab() -> NSView {
         let tabs = NSTabView()
-        tabs.addTabViewItem(tab("基础玩法", buildBaseGameplayTab()))
+        tabs.addTabViewItem(tab("总览", buildGameOverviewTab()))
+        tabs.addTabViewItem(tab("生活与场景", buildBaseGameplayTab()))
+        tabs.addTabViewItem(tab("战斗规则", buildCombatSettingsTab()))
+        tabs.addTabViewItem(tab("队伍与中立 NPC", buildNeutralSettingsTab()))
+        tabs.addTabViewItem(tab("键盘控制", buildControlSettingsTab()))
+        tabs.addTabViewItem(tab("能量与桌面安全", buildDesktopSafetyTab()))
         tabs.addTabViewItem(tab("剧情与关系", buildStoryTab()))
+        tabs.addTabViewItem(tab("运行节奏", buildCadenceTab()))
         return tabs
+    }
+
+    private func buildGameOverviewTab() -> NSView {
+        gameEnabledBox = checkbox("游戏功能总开关", draft.gameFeatures.enabled,
+                                  #selector(toggleDraft(_:)))
+        return scrollFormStack([
+            gameEnabledBox,
+            note("关闭后停止新的自主玩法和战斗，但保留角色显示、直接互动、大脑、感知和内容管理。"),
+            separator(),
+            note("所有游戏设置通过同一份配置快照在逻辑 tick 边界生效。"),
+        ])
     }
 
     private func buildBaseGameplayTab() -> NSView {
@@ -355,13 +407,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         propsBox = checkbox(gameplayLabel("props", fallback: "道具"), draft.propsEnabled, #selector(toggleDraft(_:)))
         perchingBox = checkbox(gameplayLabel("perching", fallback: "栖息在窗口上"), draft.perchingEnabled, #selector(toggleDraft(_:)))
         foregroundBox = checkbox(gameplayLabel("foreground-follow", fallback: "跟随前台应用"), draft.foregroundFollow, #selector(toggleDraft(_:)))
-        windowPullBox = checkbox(gameplayLabel("window-pull", fallback: "拉扯窗口"), draft.windowPullEnabled, #selector(toggleDraft(_:)))
         pullStatusLabel = note("")
         let basics = NSTextField(labelWithString: "基础玩法")
         basics.font = .boldSystemFont(ofSize: 13)
         let windows = NSTextField(labelWithString: "窗口互动")
         windows.font = .boldSystemFont(ofSize: 13)
-        return formStack([
+        return scrollFormStack([
             basics,
             scenesBox,
             propsBox,
@@ -370,9 +421,111 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             separator(),
             windows,
             foregroundBox,
-            windowPullBox,
             pullStatusLabel,
             note("前台反应不依赖 AX/OCR；拉扯窗口需要辅助功能授权。"),
+        ])
+    }
+
+    private func buildCombatSettingsTab() -> NSView {
+        automaticCombatBox = checkbox("允许自主战斗", draft.gameFeatures.automaticCombatEnabled,
+                                      #selector(toggleDraft(_:)))
+        combatHUDBox = checkbox("战斗时显示头顶 HP 与能量槽", draft.gameFeatures.combatHUDEnabled,
+                                #selector(toggleDraft(_:)))
+        projectilesBox = checkbox("允许投射物", draft.gameFeatures.projectilesEnabled, #selector(toggleDraft(_:)))
+        teamsBox = checkbox("允许队伍战斗", draft.gameFeatures.teamsEnabled, #selector(toggleDraft(_:)))
+        freeTagBox = checkbox("允许自由换人", draft.gameFeatures.freeTagEnabled, #selector(toggleDraft(_:)))
+        assistsBox = checkbox("允许援护", draft.gameFeatures.assistsEnabled, #selector(toggleDraft(_:)))
+        supersBox = checkbox("允许超级技", draft.gameFeatures.supersEnabled, #selector(toggleDraft(_:)))
+        powerUpBox = checkbox("允许爆气", draft.gameFeatures.powerUpEnabled, #selector(toggleDraft(_:)))
+        defensiveBurstBox = checkbox("允许防御爆发", draft.gameFeatures.defensiveBurstEnabled,
+                                     #selector(toggleDraft(_:)))
+        cpuDifficultyPopup = NSPopUpButton()
+        cpuDifficultyPopup.addItems(withTitles: ["简单", "普通", "困难", "极难"])
+        cpuDifficultyPopup.selectItem(at: ["easy", "normal", "hard", "veryHard"]
+            .firstIndex(of: draft.gameFeatures.cpuDifficulty.rawValue) ?? 1)
+        return scrollFormStack([
+            automaticCombatBox, combatHUDBox, row("CPU 难度", cpuDifficultyPopup, labelWidth: 90),
+            separator(), teamsBox, freeTagBox, assistsBox, projectilesBox,
+            supersBox, powerUpBox, defensiveBurstBox,
+            note("招式伤害、帧数据、碰撞框和射程由 CombatProfile 管理，不在普通设置中覆盖。"),
+        ])
+    }
+
+    private func buildNeutralSettingsTab() -> NSView {
+        let policy = draft.gameFeatures.neutralNPC
+        neutralNPCBox = checkbox("中立 NPC 被误伤后参战", policy.enabled, #selector(toggleDraft(_:)))
+        teamLiabilityBox = checkbox("追究攻击者整队", policy.teamLiability, #selector(toggleDraft(_:)))
+        cascadeBox = checkbox("允许连锁误伤升级", policy.cascadeEnabled, #selector(toggleDraft(_:)))
+        incidentalCountField = numberField("\(policy.maxIncidentalCombatants)")
+        cascadeDepthField = numberField("\(policy.maxCascadeDepth)")
+        hostilitySecondsField = numberField(String(format: "%.1f", Double(policy.hostilityDecayFrames) / 60))
+        return scrollFormStack([
+            neutralNPCBox, teamLiabilityBox, cascadeBox,
+            row("最多参战", incidentalCountField, labelWidth: 100),
+            row("连锁深度", cascadeDepthField, labelWidth: 100),
+            row("敌意消退（秒）", hostilitySecondsField, labelWidth: 100),
+            note("缺少真实战斗内容的 NPC 只会惊吓并撤离，不会被强制冒充战斗角色。"),
+        ])
+    }
+
+    private func buildControlSettingsTab() -> NSView {
+        let mapping = draft.gameFeatures.controls.defaultMapping
+        let lines = mapping.bindings.sorted { $0.key.rawValue < $1.key.rawValue }
+            .map { "\($0.key.rawValue) → \($0.value.rawValue)" }.joined(separator: "\n")
+        return scrollFormStack([
+            note("键位始终先映射为逻辑控制，再由 CommandMatcher 和角色 CombatProfile 解析招式。"),
+            NSTextField(wrappingLabelWithString: lines),
+            note("默认方案：方向键 + Z/X/C/A/S/D + Q/W/E/R。角色覆盖沿用现有映射目录；完整重绑编辑器在下一 UI 增量接入。"),
+        ])
+    }
+
+    private func buildDesktopSafetyTab() -> NSView {
+        let game = draft.gameFeatures
+        let window = game.windowInteraction
+        windowPullBox = checkbox(gameplayLabel("window-pull", fallback: "拉扯窗口"),
+                                 draft.windowPullEnabled, #selector(toggleDraft(_:)))
+        energyBox = checkbox("启用能量系统", game.energyEnabled, #selector(toggleDraft(_:)))
+        energyCostScaleField = numberField(String(format: "%.2f", game.energyCostScale))
+        energyRecoveryScaleField = numberField(String(format: "%.2f", game.energyRecoveryScale))
+        damageOverlayBox = checkbox("允许窗口损伤表现", window.damageOverlayEnabled, #selector(toggleDraft(_:)))
+        windowCostScaleField = numberField(String(format: "%.2f", window.energyCostScale))
+        minimumEnergyField = numberField("\(window.minimumEnergyAfterAction)")
+        windowActionsField = numberField("\(window.maxActionsPerMinute)")
+        suppressActiveBox = checkbox("用户活跃时禁止窗口行为", window.suppressWhileUserActive,
+                                     #selector(toggleDraft(_:)))
+        protectForegroundBox = checkbox("保护前台窗口", window.protectForegroundWindow,
+                                        #selector(toggleDraft(_:)))
+        return scrollFormStack([
+            energyBox,
+            row("消耗倍率", energyCostScaleField, labelWidth: 110),
+            row("恢复倍率", energyRecoveryScaleField, labelWidth: 110),
+            separator(), windowPullBox,
+            damageOverlayBox,
+            row("窗口成本倍率", windowCostScaleField, labelWidth: 110),
+            row("行为后保留能量", minimumEnergyField, labelWidth: 110),
+            row("每分钟最多次数", windowActionsField, labelWidth: 110),
+            suppressActiveBox, protectForegroundBox,
+        ])
+    }
+
+    private func buildCadenceTab() -> NSView {
+        let cadence = draft.gameFeatures.cadence
+        cadenceBox = checkbox("自动时钟调频", cadence.enabled, #selector(toggleDraft(_:)))
+        fixedHzField = numberField("\(cadence.fixedHzWhenDisabled)")
+        quiescentHzField = numberField("\(cadence.quiescentHz)")
+        lifeHzField = numberField("\(cadence.lifeHz)")
+        physicalHzField = numberField("\(cadence.physicalHz)")
+        combatHzField = numberField("\(cadence.combatHz)")
+        downshiftField = numberField(String(format: "%.1f", cadence.downshiftDelaySeconds))
+        return scrollFormStack([
+            cadenceBox,
+            row("关闭时固定 Hz", fixedHzField, labelWidth: 120),
+            row("静止 Hz", quiescentHzField, labelWidth: 120),
+            row("生活 Hz", lifeHzField, labelWidth: 120),
+            row("物理 Hz", physicalHzField, labelWidth: 120),
+            row("战斗 Hz", combatHzField, labelWidth: 120),
+            row("降档延迟（秒）", downshiftField, labelWidth: 120),
+            note("必须满足静止 ≤ 生活 ≤ 物理 ≤ 战斗；升档立即生效，降档经过确定性迟滞。"),
         ])
     }
 
@@ -911,6 +1064,50 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         draft.perchingEnabled = perchingBox.state == .on
         draft.foregroundFollow = foregroundBox.state == .on
         draft.windowPullEnabled = windowPullBox.state == .on
+        draft.gameFeatures.enabled = gameEnabledBox.state == .on
+        draft.gameFeatures.automaticCombatEnabled = automaticCombatBox.state == .on
+        draft.gameFeatures.combatHUDEnabled = combatHUDBox.state == .on
+        draft.gameFeatures.projectilesEnabled = projectilesBox.state == .on
+        draft.gameFeatures.teamsEnabled = teamsBox.state == .on
+        draft.gameFeatures.freeTagEnabled = freeTagBox.state == .on
+        draft.gameFeatures.assistsEnabled = assistsBox.state == .on
+        draft.gameFeatures.supersEnabled = supersBox.state == .on
+        draft.gameFeatures.powerUpEnabled = powerUpBox.state == .on
+        draft.gameFeatures.defensiveBurstEnabled = defensiveBurstBox.state == .on
+        let difficulties: [CombatCPUDifficulty] = [.easy, .normal, .hard, .veryHard]
+        draft.gameFeatures.cpuDifficulty = difficulties[max(0, cpuDifficultyPopup.indexOfSelectedItem)]
+        let previousNeutral = draft.gameFeatures.neutralNPC
+        draft.gameFeatures.neutralNPC = NeutralEscalationPolicy(
+            enabled: neutralNPCBox.state == .on,
+            joinOnFirstDamagingHit: true,
+            teamLiability: teamLiabilityBox.state == .on,
+            cascadeEnabled: cascadeBox.state == .on,
+            maxIncidentalCombatants: parsedInt(incidentalCountField, fallback: 4),
+            maxCascadeDepth: parsedInt(cascadeDepthField, fallback: 2),
+            hostilityDecayFrames: Int(parsedDouble(hostilitySecondsField, fallback: 30) * 60),
+            reactionDelayFrames: previousNeutral.reactionDelayFrames)
+        draft.gameFeatures.energyEnabled = energyBox.state == .on
+        draft.gameFeatures.energyCostScale = max(0, parsedDouble(energyCostScaleField, fallback: 1))
+        draft.gameFeatures.energyRecoveryScale = max(0, parsedDouble(energyRecoveryScaleField, fallback: 1))
+        draft.gameFeatures.windowInteraction.enabled = true
+        draft.gameFeatures.windowInteraction.pullEnabled = draft.windowPullEnabled
+        draft.gameFeatures.windowInteraction.damageOverlayEnabled = damageOverlayBox.state == .on
+        draft.gameFeatures.windowInteraction.energyCostScale = max(
+            0, parsedDouble(windowCostScaleField, fallback: 1))
+        draft.gameFeatures.windowInteraction.minimumEnergyAfterAction = max(
+            0, parsedInt(minimumEnergyField, fallback: 60))
+        draft.gameFeatures.windowInteraction.maxActionsPerMinute = max(
+            0, parsedInt(windowActionsField, fallback: 2))
+        draft.gameFeatures.windowInteraction.suppressWhileUserActive = suppressActiveBox.state == .on
+        draft.gameFeatures.windowInteraction.protectForegroundWindow = protectForegroundBox.state == .on
+        draft.gameFeatures.cadence = RuntimeCadenceSettings(
+            enabled: cadenceBox.state == .on,
+            fixedHzWhenDisabled: parsedInt(fixedHzField, fallback: 60),
+            quiescentHz: parsedInt(quiescentHzField, fallback: 5),
+            lifeHz: parsedInt(lifeHzField, fallback: 20),
+            physicalHz: parsedInt(physicalHzField, fallback: 60),
+            combatHz: parsedInt(combatHzField, fallback: 60),
+            downshiftDelaySeconds: parsedDouble(downshiftField, fallback: 2))
         draft.teacherBrainEnabled = teacherBrainBox.state == .on
         draft.teacherBrainBaseURL = baseURLField.stringValue.trimmingCharacters(in: .whitespaces)
         draft.teacherBrainModel = modelCombo.stringValue.trimmingCharacters(in: .whitespaces)
