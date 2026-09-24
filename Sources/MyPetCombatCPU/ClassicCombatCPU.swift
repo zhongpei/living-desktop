@@ -188,7 +188,9 @@ public struct ClassicCombatCPU: Sendable {
             (state.moveUseCounts?[$0.move.id, default: 0] ?? 0) == 0
         }
         if !unseenCandidates.isEmpty {
-            candidates = unseenCandidates.sorted { lhs, rhs in
+            candidates = observation.tactics.projectile > 1.25
+                ? unseenCandidates
+                : unseenCandidates.sorted { lhs, rhs in
                 let lhsCommitment = lhs.move.startupFrames + lhs.move.activeFrames +
                     lhs.move.recoveryFrames
                 let rhsCommitment = rhs.move.startupFrames + rhs.move.activeFrames +
