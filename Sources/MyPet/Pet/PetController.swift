@@ -144,6 +144,8 @@ final class PetController {
     private var lastWorldFingerprint = ""
 
     private var timer: Timer?
+    private var timerHz: Int?
+    private var cadenceState = RuntimeCadenceState()
     private var pointerTimer: Timer?
     private var pointerTimerHz: Int?
     private var lastTick = ProcessInfo.processInfo.systemUptime
@@ -299,9 +301,7 @@ final class PetController {
         // Cast 的 Runtime 与所有角色帧由 AppDelegate 的单一 driver 推进；
         // 角色不再各自创建 Timer。单宠物仍由自己的 panel driver 推进。
         guard !usesSharedGameplayKernel else { return }
-        let t = Timer(timeInterval: 1.0 / 40.0, target: self, selector: #selector(tick), userInfo: nil, repeats: true)
-        RunLoop.main.add(t, forMode: .common)
-        timer = t
+        configureMainTimer(force: true)
         configurePointerTimer()
     }
 
@@ -580,6 +580,7 @@ final class PetController {
         presentation.stop()
         timer?.invalidate()
         timer = nil
+        timerHz = nil
         pointerTimer?.invalidate()
         pointerTimer = nil
         pointerTimerHz = nil
@@ -622,6 +623,29 @@ final class PetController {
     // ============ 主循环 ============
 
     @objc func tick() { tickFrame(presentationEffects: nil) }
+
+    var runtimeCadenceDemand: RuntimeCadenceDemand {
+        if combatCoordinator.hasActiveSession || manualControlPanel.isVisible { return .combat }
+        if model.walking || [.airborne, .dragged, .tossed].contains(model.state) { return .physical }
+        if model.state == .asleep && currentGoal == nil && pendingRuntimeActions.isEmpty { return .quiescent }
+        return .life
+    }
+
+    private func configureMainTimer(force: Bool = false) {
+        guard !usesSharedGameplayKernel, !isStopped else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        let hz = cadenceState.select(
+            demands: [runtimeCadenceDemand],
+            configuration: settings.gameFeatures.cadence,
+            now: now)
+        guard force || timerHz != hz else { return }
+        timer?.invalidate()
+        let next = Timer(timeInterval: 1.0 / Double(hz), target: self,
+                         selector: #selector(tick), userInfo: nil, repeats: true)
+        RunLoop.main.add(next, forMode: .common)
+        timer = next
+        timerHz = hz
+    }
 
     func tickFrame(presentationEffects: [PresentationEffect]?) {
         guard !isStopped else { return }
@@ -677,6 +701,7 @@ final class PetController {
             model.stopWalk()
             updatePresentationPose()
             renderFrame(dt: 0, effects: presentationEffects)
+            configureMainTimer()
             return
         }
 
@@ -734,6 +759,7 @@ final class PetController {
         } else {
             presentation.displayProp(image: nil, rect: .zero)
         }
+        configureMainTimer()
     }
 
     func combatPlatformContext() -> GameplayPlatformContext {
@@ -1989,6 +2015,7 @@ final class PetController {
             || s.ocrEnabled != settings.ocrEnabled
         settings = s
         if !s.pointerInputEnabled { cancelPointerResponse() }
+        configureMainTimer(force: true)
         configurePointerTimer()
         presentation.voicePlaybackEnabled = s.voicePlaybackEnabled
         props.userScale = s.propScale

@@ -5,50 +5,7 @@ import MyPetEngine
 import MyPetCombat
 import MyPetCombatCPU
 
-struct RuntimeCadenceSettings: Codable, Equatable {
-    var enabled: Bool
-    var fixedHzWhenDisabled: Int
-    var quiescentHz: Int
-    var lifeHz: Int
-    var physicalHz: Int
-    var combatHz: Int
-    var downshiftDelaySeconds: Double
-
-    init(
-        enabled: Bool = true, fixedHzWhenDisabled: Int = 60,
-        quiescentHz: Int = 5, lifeHz: Int = 20,
-        physicalHz: Int = 60, combatHz: Int = 60,
-        downshiftDelaySeconds: Double = 2
-    ) {
-        self.enabled = enabled
-        self.fixedHzWhenDisabled = Self.clamp(fixedHzWhenDisabled)
-        self.quiescentHz = Self.clamp(quiescentHz)
-        self.lifeHz = max(self.quiescentHz, Self.clamp(lifeHz))
-        self.physicalHz = max(self.lifeHz, Self.clamp(physicalHz))
-        self.combatHz = max(self.physicalHz, Self.clamp(combatHz))
-        self.downshiftDelaySeconds = max(0, downshiftDelaySeconds)
-    }
-
-    private static func clamp(_ value: Int) -> Int { min(120, max(1, value)) }
-
-    private enum CodingKeys: String, CodingKey {
-        case enabled, fixedHzWhenDisabled, quiescentHz, lifeHz, physicalHz, combatHz
-        case downshiftDelaySeconds
-    }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.init(
-            enabled: try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true,
-            fixedHzWhenDisabled: try c.decodeIfPresent(Int.self, forKey: .fixedHzWhenDisabled) ?? 60,
-            quiescentHz: try c.decodeIfPresent(Int.self, forKey: .quiescentHz) ?? 5,
-            lifeHz: try c.decodeIfPresent(Int.self, forKey: .lifeHz) ?? 20,
-            physicalHz: try c.decodeIfPresent(Int.self, forKey: .physicalHz) ?? 60,
-            combatHz: try c.decodeIfPresent(Int.self, forKey: .combatHz) ?? 60,
-            downshiftDelaySeconds: try c.decodeIfPresent(
-                Double.self, forKey: .downshiftDelaySeconds) ?? 2)
-    }
-}
+typealias RuntimeCadenceSettings = RuntimeCadenceConfiguration
 
 struct WindowInteractionSettings: Codable, Equatable {
     var enabled = true

@@ -14,6 +14,7 @@ final class DesktopCombatCoordinator {
     private let runtime: GameRuntime
     var bodyWorld: BodyWorld { combatRuntime.bodyWorld }
     var world: CombatWorld { combatRuntime.world }
+    var hasActiveSession: Bool { world.session?.state == .active }
     private var registeredActors = Set<String>()
     private var deliveredPlatformIntents: [String: String] = [:]
 

@@ -27,6 +27,8 @@ final class CastSession: NSObject {
     private let combatCoordinator = DesktopCombatCoordinator()
     private let castOverlays = CastOverlayPresentation()
     private var castTimer: Timer?
+    private var castTimerHz: Int?
+    private var cadenceState = RuntimeCadenceState()
     private var pointerTimer: Timer?
     private var pointerTimerHz: Int?
     private var castFrameClock: FixedStepClock?
@@ -70,6 +72,7 @@ final class CastSession: NSObject {
     func updateSettings(_ settings: Settings) {
         for pet in castControllers.values { pet.updateSettings(settings) }
         if !settings.pointerInputEnabled { pointerReflex.reset() }
+        configureCastTimer(force: true)
         configurePointerTimer()
     }
 
@@ -119,10 +122,7 @@ final class CastSession: NSObject {
         castFrameClock = FixedStepClock(stepMilliseconds: runtime.clock.stepMilliseconds)
         lastCastFrameAt = ProcessInfo.processInfo.systemUptime
 
-        let timer = Timer(timeInterval: 1.0 / 40.0, target: self,
-                          selector: #selector(tickCastRuntime), userInfo: nil, repeats: true)
-        RunLoop.main.add(timer, forMode: .common)
-        castTimer = timer
+        configureCastTimer(force: true)
         configurePointerTimer()
     }
 
@@ -130,6 +130,7 @@ final class CastSession: NSObject {
         let wasCastActive = castRuntime != nil || !castControllers.isEmpty
         castTimer?.invalidate()
         castTimer = nil
+        castTimerHz = nil
         pointerTimer?.invalidate()
         pointerTimer = nil
         pointerTimerHz = nil
@@ -165,6 +166,22 @@ final class CastSession: NSObject {
         stop()
     }
 
+    private func configureCastTimer(force: Bool = false) {
+        guard castRuntime != nil, let settings else { return }
+        let demands = castControllers.values.map(\.runtimeCadenceDemand)
+        let hz = cadenceState.select(
+            demands: demands.isEmpty ? [.life] : demands,
+            configuration: settings.gameFeatures.cadence,
+            now: ProcessInfo.processInfo.systemUptime)
+        guard force || castTimerHz != hz else { return }
+        castTimer?.invalidate()
+        let timer = Timer(timeInterval: 1.0 / Double(hz), target: self,
+                          selector: #selector(tickCastRuntime), userInfo: nil, repeats: true)
+        RunLoop.main.add(timer, forMode: .common)
+        castTimer = timer
+        castTimerHz = hz
+    }
+
     @objc private func tickCastRuntime() {
         guard let runtime = castRuntime else { return }
         let now = ProcessInfo.processInfo.systemUptime
@@ -193,6 +210,7 @@ final class CastSession: NSObject {
         for pet in castControllers.values { pet.syncBodyProjection() }
         for pet in castControllers.values { pet.consumeCombatEvents(combatEvents) }
         for pet in castControllers.values { pet.consumeCombatPlatformEffect() }
+        configureCastTimer()
         for (id, pet) in castControllers {
             pet.tickFrame(presentationEffects: effects.filter { $0.actorID.raw == id })
         }
