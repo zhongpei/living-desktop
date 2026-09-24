@@ -72,13 +72,18 @@ public final class CombatWorld {
     }
 
     @discardableResult
-    public func beginSession(id: String, participants: [EntityID]) -> Bool {
+    public func beginSession(
+        id: String, participants: [EntityID],
+        roundRules: CombatRoundRules = .desktop
+    ) -> Bool {
         let unique = Array(Set(participants)).sorted { $0.raw < $1.raw }
         guard unique.count >= 2,
               unique.allSatisfy({ rules[$0.raw] != nil }) else { return false }
         if let session, session.state == .active,
            session.id == id, session.participantIDs == unique { return true }
-        session = CombatSession(id: id, participants: unique, startedAtFrame: frame)
+        session = CombatSession(
+            id: id, participants: unique, startedAtFrame: frame,
+            roundRules: roundRules)
         for actorID in unique where teamID(for: actorID) == nil {
             guard var rule = rules[actorID.raw] else { continue }
             rule.participation = .rosterParticipant(teamID: "solo:\(actorID.raw)")
@@ -89,14 +94,18 @@ public final class CombatWorld {
 
     public func endSession(cancelled: Bool = false) {
         guard var active = session, active.state == .active else { return }
-        active.state = cancelled ? .cancelled : .completed
-        active.endedAtFrame = frame
+        active.complete(
+            at: frame, winners: [],
+            reason: cancelled ? .cancelled : .completed)
         session = active
         for id in active.participantIDs {
             inputs[id.raw] = .neutral
             buffers[id.raw] = CombatInputBuffer()
-            if teamID(for: id) == nil, var rule = rules[id.raw] {
-                rule.participation = .uninvolved
+            if var rule = rules[id.raw] {
+                var combo = rule.combo ?? ComboState()
+                combo.end(reason: .sessionEnded)
+                rule.combo = combo
+                if teamID(for: id) == nil { rule.participation = .uninvolved }
                 rules[id.raw] = rule
             }
         }
@@ -271,6 +280,7 @@ public final class CombatWorld {
             guard var body = body(for: actorID), let profile = profiles[id] else { continue }
             let input = inputs[id] ?? .neutral
             var buffer = buffers[id] ?? CombatInputBuffer()
+            let previousInput = buffer.newest ?? .neutral
             buffer.push(input)
             buffers[id] = buffer
 
@@ -304,7 +314,9 @@ public final class CombatWorld {
                 continue
             }
 
-            advanceHealth(&body, profile: profile, input: input, events: &events)
+            advanceHealth(
+                &body, profile: profile, input: input,
+                previousInput: previousInput, events: &events)
             advanceStun(&body)
             orientTowardNearestOpponent(&body, snapshot: frameSnapshot)
             if body.healthState == .active && body.rosterRole != .bench {
@@ -327,7 +339,8 @@ public final class CombatWorld {
         }
 
         bodyWorld.advance(environment)
-        resolveHits(events: &events)
+        clampProjectilesToAuthoredRange()
+        resolveHits(environment: environment, events: &events)
         expireProjectiles(environment: environment, events: &events)
         advanceEscalation(events: &events)
         // A KO becomes downed only after its physical knockback has actually landed.
@@ -342,8 +355,59 @@ public final class CombatWorld {
             }
         }
 
+        advanceSession(events: &events)
+
         frame += 1
         return events
+    }
+
+    private func advanceSession(events: inout [CombatEvent]) {
+        guard var active = session, active.state == .active else { return }
+        let participants = active.participantIDs.compactMap(body(for:))
+        let grouped = Dictionary(grouping: participants) { body in
+            teamID(for: body.actorID) ?? "solo:\(body.actorID.raw)"
+        }
+        let defeatedTeams = Set(grouped.compactMap { key, members in
+            members.allSatisfy { $0.hp == 0 } ? key : nil
+        })
+        let shouldEndForKO = active.roundRules.endOnKnockout && !defeatedTeams.isEmpty
+        let timedOut = active.roundRules.durationFrames > 0 &&
+            frame - active.startedAtFrame + 1 >= Int64(active.roundRules.durationFrames)
+        guard shouldEndForKO || timedOut else { return }
+
+        let reason: CombatSessionEndReason
+        let winners: [EntityID]
+        if shouldEndForKO {
+            let winningTeams = Set(grouped.keys).subtracting(defeatedTeams)
+            winners = participants.filter {
+                winningTeams.contains(teamID(for: $0.actorID) ?? "solo:\($0.actorID.raw)")
+            }.map(\.actorID)
+            reason = winningTeams.isEmpty ? .doubleKnockout : .knockout
+        } else {
+            let teamHP = grouped.mapValues { members in members.reduce(0) { $0 + $1.hp } }
+            let bestHP = teamHP.values.max() ?? 0
+            let winningTeams = Set(teamHP.compactMap { $0.value == bestHP ? $0.key : nil })
+            winners = participants.filter {
+                winningTeams.contains(teamID(for: $0.actorID) ?? "solo:\($0.actorID.raw)")
+            }.map(\.actorID)
+            reason = .timeout
+        }
+        active.complete(at: frame, winners: winners, reason: reason)
+        session = active
+        for id in active.participantIDs {
+            inputs[id.raw] = .neutral
+            buffers[id.raw] = CombatInputBuffer()
+            if var rule = rules[id.raw] {
+                var combo = rule.combo ?? ComboState()
+                combo.end(reason: .sessionEnded)
+                rule.combo = combo
+                rules[id.raw] = rule
+            }
+        }
+        events.append(CombatEvent(
+            frame: frame, kind: .roundEnded,
+            actorID: winners.first ?? active.participantIDs[0],
+            moveID: reason.rawValue, amount: winners.count))
     }
 
     private func advanceTeams(events: inout [CombatEvent]) {
@@ -470,6 +534,28 @@ public final class CombatWorld {
             body.stunFrames = 0
             body.invulnerabilityFrames = max(body.invulnerabilityFrames, 12)
             return
+        }
+        if let timeline = body.actionTimeline,
+           timeline.canCancel,
+           let current = profile.move(id: body.currentMoveID),
+           let allowed = current.cancelInto {
+            let candidates = profile.moves.filter { candidate in
+                allowed.contains(candidate.id) &&
+                    ((candidate.systemControl.map(buffer.isSystemControlPress) ?? false) ||
+                     (candidate.systemControl == nil && CommandMatcher.matches(
+                        candidate.command, buffer: buffer, facing: body.facing))) &&
+                    body.gameplayEnergy.current >= candidate.effectiveResourceRules.startCost
+            }
+            if let next = candidates.max(by: {
+                commandSpecificity($0.command) < commandSpecificity($1.command)
+            }) {
+                _ = startMove(next, body: &body, events: &events)
+                events.append(CombatEvent(
+                    frame: frame, kind: .moveCancelled,
+                    actorID: body.actorID, targetID: nil,
+                    moveID: "\(current.id)->\(next.id)"))
+                return
+            }
         }
         guard body.canAcceptAction, body.actionTimeline == nil else { return }
 
@@ -598,9 +684,27 @@ public final class CombatWorld {
 
     private func advanceHealth(_ body: inout CombatBodyState, profile: CombatProfile,
                                input: FighterInputFrame,
+                               previousInput: FighterInputFrame,
                                events: inout [CombatEvent]) {
         switch body.healthState {
-        case .active, .knockedOut:
+        case .active:
+            if body.locomotion == .airborne,
+               (1...12).contains(body.stunFrames),
+               body.combo.juggleRemaining > 0,
+               body.lastRecoveryChoice != .air,
+               !input.buttons.subtracting(previousInput.buttons).isEmpty {
+                body.stunFrames = 0
+                body.phase = .neutral
+                body.lastRecoveryChoice = .air
+                body.invulnerabilityFrames = max(body.invulnerabilityFrames, 10)
+                body.velocity.x = input.forward(facing: body.facing) ? 3.5 * body.facing.sign :
+                    (input.back(facing: body.facing) ? -3.5 * body.facing.sign : 0)
+                body.velocity.y = min(body.velocity.y, -2.5)
+                events.append(CombatEvent(
+                    frame: frame, kind: .airTech,
+                    actorID: body.actorID, moveID: RecoveryChoice.air.rawValue))
+            }
+        case .knockedOut:
             break
         case .downed:
             if body.locomotion == .grounded {
@@ -724,7 +828,10 @@ public final class CombatWorld {
             actorID: owner.actorID, targetID: entityID, moveID: move.id))
     }
 
-    private func resolveHits(events: inout [CombatEvent]) {
+    private func resolveHits(
+        environment: BodyEnvironment,
+        events: inout [CombatEvent]
+    ) {
         // Detect against one immutable frame snapshot first. Resolution happens only
         // after every legal contact is known, so A<->B trades are independent of
         // actor iteration order.
@@ -943,6 +1050,7 @@ public final class CombatWorld {
                     juggleCost: moveRules.juggleCost,
                     frame: frame)
                 defender.combo = combo
+                defender.lastRecoveryChoice = nil
                 defender.hp = max(0, defender.hp - scaled.damage)
                 defender.actionTimeline = nil
                 defender.hitTargets.removeAll()
@@ -955,6 +1063,31 @@ public final class CombatWorld {
                     defender.currentSurfaceID = nil
                     defender.surfaceFraction = nil
                     defender.locomotion = .airborne
+                }
+                let reachesWall = defender.position.x + defender.velocity.x <= environment.bounds.minX ||
+                    defender.position.x + defender.velocity.x >= environment.bounds.maxX
+                if definition.wallBounce, reachesWall, combo.consumeWallBounce() {
+                    defender.velocity.x *= -0.72
+                    defender.combo = combo
+                    events.append(CombatEvent(
+                        frame: frame, kind: .wallBounce,
+                        actorID: defender.actorID,
+                        targetID: attackerAtDetection.actorID,
+                        moveID: hit.moveID))
+                }
+                if definition.groundBounce,
+                   defender.locomotion == .grounded,
+                   combo.consumeGroundBounce() {
+                    defender.velocity.y = -max(2.5, abs(definition.knockbackY))
+                    defender.currentSurfaceID = nil
+                    defender.surfaceFraction = nil
+                    defender.locomotion = .airborne
+                    defender.combo = combo
+                    events.append(CombatEvent(
+                        frame: frame, kind: .groundBounce,
+                        actorID: defender.actorID,
+                        targetID: attackerAtDetection.actorID,
+                        moveID: hit.moveID))
                 }
                 events.append(CombatEvent(
                     frame: frame, kind: .hit,
@@ -997,6 +1130,8 @@ public final class CombatWorld {
                    if case .alerted = defender.participation { return true }
                    return false
                }() {
+                let parentDepth = escalation.cascadeDepth(
+                    for: attackerAtDetection.actorID)
                 escalation.recordCollateralHit(
                     victimID: defender.actorID,
                     offenderID: attackerAtDetection.actorID,
@@ -1005,7 +1140,7 @@ public final class CombatWorld {
                         $0.kind == .hit && $0.actorID == attackerAtDetection.actorID &&
                             $0.targetID == defender.actorID
                     })?.amount ?? definition.damage,
-                    frame: frame, cascadeDepth: 0)
+                    frame: frame, cascadeDepth: max(0, parentDepth + 1))
                 defender.participation = .alerted(offenderID: attackerAtDetection.actorID)
                 events.append(CombatEvent(
                     frame: frame, kind: .neutralAlerted,
@@ -1083,12 +1218,51 @@ public final class CombatWorld {
                 (body.position.x >= environment.bounds.maxX && body.velocity.x > 0) ||
                 (body.position.y <= environment.bounds.minY && body.velocity.y < 0) ||
                 (body.position.y >= environment.bounds.maxY && body.velocity.y > 0)
-            if age >= Int64(projectile.definition.lifetimeFrames) || outside {
+            let exhaustedRange = projectile.definition.maxTravelDistance.map {
+                projectile.travelledDistance >= $0
+            } ?? false
+            if age >= Int64(projectile.definition.lifetimeFrames) || outside || exhaustedRange {
                 removeProjectile(id, events: &events)
             } else {
                 projectile.previousPosition = body.position
                 projectiles[id] = projectile
             }
+        }
+    }
+
+    private func clampProjectilesToAuthoredRange() {
+        for id in projectiles.keys.sorted() {
+            guard var projectile = projectiles[id],
+                  var body = bodyWorld.state(for: projectile.entityID) else { continue }
+            let dx = body.position.x - projectile.previousPosition.x
+            let dy = body.position.y - projectile.previousPosition.y
+            let stepDistance = hypot(dx, dy)
+            if let limit = projectile.definition.maxTravelDistance,
+               projectile.travelledDistance >= limit {
+                body.position = projectile.previousPosition
+                body.velocity = Vec2()
+                bodyWorld.update(projectile.entityID) { $0 = body }
+                projectiles[id] = projectile
+                continue
+            }
+            guard stepDistance > 0 else { continue }
+            if let limit = projectile.definition.maxTravelDistance {
+                let remaining = max(0, limit - projectile.travelledDistance)
+                if stepDistance > remaining {
+                    let fraction = remaining / stepDistance
+                    body.position = Vec2(
+                        x: projectile.previousPosition.x + dx * fraction,
+                        y: projectile.previousPosition.y + dy * fraction)
+                    body.velocity = Vec2()
+                    bodyWorld.update(projectile.entityID) { $0 = body }
+                    projectile.travelledDistance = limit
+                } else {
+                    projectile.travelledDistance += stepDistance
+                }
+            } else {
+                projectile.travelledDistance += stepDistance
+            }
+            projectiles[id] = projectile
         }
     }
 
@@ -1125,7 +1299,9 @@ public final class CombatWorld {
         if let attacker = rules[attackerID.raw] {
             switch attacker.participation ?? .uninvolved {
             case .incidentalCombatant(let offenderID):
-                return offenderID == defenderID
+                return offenderID == defenderID || escalation.isHostile(
+                    actorID: attackerID, toward: defenderID,
+                    candidateTeamID: teamID(for: defenderID))
             case .alerted(let offenderID):
                 return offenderID == defenderID
             case .uninvolved, .withdrawing: break

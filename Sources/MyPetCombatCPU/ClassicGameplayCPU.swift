@@ -14,6 +14,21 @@ public enum GameplayPlatformIntent: Codable, Equatable, Sendable {
     case damageWindowOverlay(String)
     case rest
     case observe
+    case interactProp
+    case perform
+}
+
+public enum GameplayReconsiderationReason: String, Codable, Sendable {
+    case formalRound, commitmentExpired, attacked, invalidated, committed
+}
+
+public struct GameplayDecision: Codable, Equatable, Sendable {
+    public var frame: Int64
+    public var planner: String
+    public var activity: GameplayActivity
+    public var reason: GameplayReconsiderationReason
+    public var legalActivities: [GameplayActivity]
+    public var utilities: [GameplayActivity: Double]
 }
 
 /// Read-only desktop metadata used by the gameplay planner. It deliberately
@@ -38,6 +53,22 @@ public struct GameplayWindowState: Codable, Equatable, Sendable {
         self.isMoving = isMoving
         self.isPullable = isPullable
         self.allowsDamageOverlay = allowsDamageOverlay
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, areaRatio, isForeground, isMoving, isPullable, allowsDamageOverlay
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try values.decode(String.self, forKey: .id),
+            areaRatio: try values.decodeIfPresent(Double.self, forKey: .areaRatio) ?? 0.25,
+            isForeground: try values.decodeIfPresent(Bool.self, forKey: .isForeground) ?? false,
+            isMoving: try values.decodeIfPresent(Bool.self, forKey: .isMoving) ?? false,
+            isPullable: try values.decodeIfPresent(Bool.self, forKey: .isPullable) ?? false,
+            allowsDamageOverlay: try values.decodeIfPresent(
+                Bool.self, forKey: .allowsDamageOverlay) ?? true)
     }
 }
 
@@ -76,18 +107,21 @@ public struct GameplayCPUObservation: Sendable {
     public var windowIDs: [String]
     public var windows: [GameplayWindowState]
     public var style: CharacterGameplayStyle
+    public var windowPolicy: WindowInteractionPolicy
 
     public init(
         combat: CPUCombatObservation, formalRound: Bool = true,
         wasAttacked: Bool = false, userActive: Bool = false,
         windowIDs: [String] = [], windows: [GameplayWindowState] = [],
-        style: CharacterGameplayStyle = .balanced
+        style: CharacterGameplayStyle = .balanced,
+        windowPolicy: WindowInteractionPolicy = WindowInteractionPolicy()
     ) {
         self.combat = combat; self.formalRound = formalRound
         self.wasAttacked = wasAttacked; self.userActive = userActive
         self.windows = windows.sorted { $0.id < $1.id }
         self.windowIDs = Array(Set(windowIDs + windows.map(\.id))).sorted()
         self.style = style
+        self.windowPolicy = windowPolicy
     }
 }
 
@@ -97,6 +131,7 @@ public struct GameplayCPUOutput: Equatable, Sendable {
     public var combatOutput: CombatCPUOutput?
     public var platformIntent: GameplayPlatformIntent?
     public var utilities: [GameplayActivity: Double]
+    public var decision: GameplayDecision
 }
 
 public struct ClassicGameplayCPUCheckpoint: Codable, Equatable, Sendable {
@@ -107,6 +142,37 @@ public struct ClassicGameplayCPUCheckpoint: Codable, Equatable, Sendable {
     public var boredom: Double
     public var visits: [String: SurfaceVisit]
     public var history: ActionHistory
+    public var lastTeamActionFrame: Int64? = nil
+
+    private enum CodingKeys: String, CodingKey {
+        case actorID, combat, activity, commitmentUntilFrame, boredom, visits, history
+        case lastTeamActionFrame
+    }
+
+    public init(
+        actorID: EntityID, combat: ClassicCombatCPUCheckpoint,
+        activity: GameplayActivity, commitmentUntilFrame: Int64,
+        boredom: Double, visits: [String: SurfaceVisit], history: ActionHistory,
+        lastTeamActionFrame: Int64? = nil
+    ) {
+        self.actorID = actorID; self.combat = combat; self.activity = activity
+        self.commitmentUntilFrame = commitmentUntilFrame; self.boredom = boredom
+        self.visits = visits; self.history = history
+        self.lastTeamActionFrame = lastTeamActionFrame
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        actorID = try values.decode(EntityID.self, forKey: .actorID)
+        combat = try values.decode(ClassicCombatCPUCheckpoint.self, forKey: .combat)
+        activity = try values.decode(GameplayActivity.self, forKey: .activity)
+        commitmentUntilFrame = try values.decode(Int64.self, forKey: .commitmentUntilFrame)
+        boredom = try values.decode(Double.self, forKey: .boredom)
+        visits = try values.decode([String: SurfaceVisit].self, forKey: .visits)
+        history = try values.decode(ActionHistory.self, forKey: .history)
+        lastTeamActionFrame = try values.decodeIfPresent(
+            Int64.self, forKey: .lastTeamActionFrame)
+    }
 }
 
 /// Top-level fast brain. It chooses an activity and emits only logical fighter
@@ -147,14 +213,25 @@ public struct ClassicGameplayCPU: Sendable {
         let mayReconsider = frame >= state.commitmentUntilFrame ||
             observation.wasAttacked || commitmentInvalid
         let utilities = scoreActivities(observation)
+        let reason: GameplayReconsiderationReason
         if observation.formalRound {
             state.activity = .fight
+            reason = .formalRound
         } else if mayReconsider {
             state.activity = utilities.max {
                 $0.value == $1.value ? $0.key.rawValue > $1.key.rawValue : $0.value < $1.value
             }?.key ?? .observe
             state.commitmentUntilFrame = frame + Int64(60 + stableOffset(frame: frame, range: 121))
+            reason = observation.wasAttacked ? .attacked :
+                (commitmentInvalid ? .invalidated : .commitmentExpired)
+        } else {
+            reason = .committed
         }
+        let decision = GameplayDecision(
+            frame: frame, planner: plannerName(for: state.activity),
+            activity: state.activity, reason: reason,
+            legalActivities: utilities.filter { $0.value > -1_000 }.map(\.key)
+                .sorted { $0.rawValue < $1.rawValue }, utilities: utilities)
 
         switch state.activity {
         case .fight:
@@ -167,20 +244,30 @@ public struct ClassicGameplayCPU: Sendable {
                 state.boredom = min(1, state.boredom + 0.001)
             }
             var fighterInput = output.input
-            if frame > 0, frame % 1_800 == 0 {
+            let hpRatio = Double(observation.combat.selfBody.hp) /
+                Double(max(1, observation.combat.selfProfile.maxHP))
+            let teamReady = state.lastTeamActionFrame.map { frame - $0 >= 240 } ?? true
+            if teamReady, hpRatio < 0.35 {
                 fighterInput.systemControls.insert(.tag)
-            } else if frame > 0, frame % 600 == 0 {
+                state.lastTeamActionFrame = frame
+            } else if teamReady,
+                      observation.combat.opponents.contains(where: {
+                          abs($0.position.x - observation.combat.selfBody.position.x) < 120
+                      }) {
                 fighterInput.systemControls.insert(.assist)
+                state.lastTeamActionFrame = frame
             }
             return GameplayCPUOutput(
                 activity: .fight, fighterInput: fighterInput,
-                combatOutput: output, platformIntent: nil, utilities: utilities)
+                combatOutput: output, platformIntent: nil, utilities: utilities,
+                decision: decision)
         case .explore:
             let input = explorationInput(observation.combat)
             state.boredom = max(0, state.boredom - 0.002)
             return GameplayCPUOutput(
                 activity: .explore, fighterInput: input,
-                combatOutput: nil, platformIntent: nil, utilities: utilities)
+                combatOutput: nil, platformIntent: nil, utilities: utilities,
+                decision: decision)
         case .interactWindow:
             let window = viableWindows(observation).sorted { lhs, rhs in
                 let left = windowInterest(lhs, frame: frame)
@@ -203,13 +290,24 @@ public struct ClassicGameplayCPU: Sendable {
             }
             return GameplayCPUOutput(
                 activity: .interactWindow, fighterInput: .neutral,
-                combatOutput: nil, platformIntent: intent, utilities: utilities)
+                combatOutput: nil, platformIntent: intent, utilities: utilities,
+                decision: decision)
         case .rest:
             return GameplayCPUOutput(activity: .rest, fighterInput: .neutral,
-                                     combatOutput: nil, platformIntent: .rest, utilities: utilities)
-        case .observe, .perform, .interactProp:
+                                     combatOutput: nil, platformIntent: .rest,
+                                     utilities: utilities, decision: decision)
+        case .perform:
+            return GameplayCPUOutput(activity: .perform, fighterInput: .neutral,
+                                     combatOutput: nil, platformIntent: .perform,
+                                     utilities: utilities, decision: decision)
+        case .interactProp:
+            return GameplayCPUOutput(activity: .interactProp, fighterInput: .neutral,
+                                     combatOutput: nil, platformIntent: .interactProp,
+                                     utilities: utilities, decision: decision)
+        case .observe:
             return GameplayCPUOutput(activity: state.activity, fighterInput: .neutral,
-                                     combatOutput: nil, platformIntent: .observe, utilities: utilities)
+                                     combatOutput: nil, platformIntent: .observe,
+                                     utilities: utilities, decision: decision)
         }
     }
 
@@ -264,15 +362,26 @@ public struct ClassicGameplayCPU: Sendable {
         let energy = observation.combat.selfBody.gameplayEnergy.current
         return metadata.filter { window in
             guard !window.isForeground else { return false }
-            let requestedCost: Int
+            let requestedAction: WindowGameplayAction?
             if observation.style.destruction > 0.65, window.allowsDamageOverlay {
-                requestedCost = 120
+                requestedAction = .damageOverlay
             } else if observation.style.explore > 0.7, window.isPullable {
-                requestedCost = 180
+                requestedAction = .pull
             } else {
-                requestedCost = 0
+                requestedAction = nil
             }
-            return energy - requestedCost >= 60
+            return requestedAction.map {
+                observation.windowPolicy.canAfford($0, energy: energy)
+            } ?? true
+        }
+    }
+
+    private func plannerName(for activity: GameplayActivity) -> String {
+        switch activity {
+        case .fight: return "combat"
+        case .interactWindow: return "window"
+        case .explore, .interactProp: return "exploration"
+        case .perform, .rest, .observe: return "entertainment"
         }
     }
 

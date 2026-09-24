@@ -81,13 +81,15 @@ public struct CPUCombatObservation: Sendable {
     public var environment: BodyEnvironment
     public var worldCheckpoint: CombatWorldCheckpoint?
     public var engagementReservations: [EngagementSlot]
+    public var tactics: CombatTactics
 
     public init(
         frame: Int64, selfBody: CombatBodyState,
         opponents: [CombatBodyState], selfProfile: CombatProfile,
         opponentProfiles: [String: CombatProfile], environment: BodyEnvironment,
         worldCheckpoint: CombatWorldCheckpoint? = nil,
-        engagementReservations: [EngagementSlot] = []
+        engagementReservations: [EngagementSlot] = [],
+        tactics: CombatTactics = .balanced
     ) {
         self.frame = frame
         self.selfBody = selfBody
@@ -97,6 +99,28 @@ public struct CPUCombatObservation: Sendable {
         self.environment = environment
         self.worldCheckpoint = worldCheckpoint
         self.engagementReservations = engagementReservations
+        self.tactics = tactics
+    }
+}
+
+public struct CombatTactics: Codable, Equatable, Sendable {
+    public var aggression: Double
+    public var defense: Double
+    public var projectile: Double
+    public var throwBias: Double
+    public var antiAir: Double
+
+    public static let balanced = CombatTactics()
+    public init(
+        aggression: Double = 1, defense: Double = 1,
+        projectile: Double = 1, throwBias: Double = 1,
+        antiAir: Double = 1
+    ) {
+        self.aggression = max(0, aggression)
+        self.defense = max(0, defense)
+        self.projectile = max(0, projectile)
+        self.throwBias = max(0, throwBias)
+        self.antiAir = max(0, antiAir)
     }
 }
 

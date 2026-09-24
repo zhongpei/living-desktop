@@ -54,6 +54,8 @@ public struct CombatHitDefinition: Codable, Equatable, Sendable {
     public var hitGroup: String
     public var rehitFrames: Int?
     public var clashLevel: Int
+    public var wallBounce: Bool
+    public var groundBounce: Bool
 
     public init(id: String = "primary", damage: Int = 40, chipDamage: Int = 0,
                 hitStopFrames: Int = 5,
@@ -62,7 +64,8 @@ public struct CombatHitDefinition: Codable, Equatable, Sendable {
                 attackBoxes: [CollisionBox] = [CollisionBox(x1: 18, y1: -78, x2: 78, y2: -25)],
                 attackHeight: CombatAttackHeight = .mid,
                 hitGroup: String = "primary", rehitFrames: Int? = nil,
-                clashLevel: Int = 0) {
+                clashLevel: Int = 0, wallBounce: Bool = false,
+                groundBounce: Bool = false) {
         self.id = id.isEmpty ? "primary" : id
         self.damage = max(0, damage)
         self.chipDamage = max(0, chipDamage)
@@ -76,11 +79,14 @@ public struct CombatHitDefinition: Codable, Equatable, Sendable {
         self.hitGroup = hitGroup.isEmpty ? self.id : hitGroup
         self.rehitFrames = rehitFrames.map { max(1, $0) }
         self.clashLevel = max(0, clashLevel)
+        self.wallBounce = wallBounce
+        self.groundBounce = groundBounce
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, damage, chipDamage, hitStopFrames, hitStunFrames, blockStunFrames
         case knockbackX, knockbackY, attackBoxes, attackHeight, hitGroup, rehitFrames, clashLevel
+        case wallBounce, groundBounce
     }
 
     public init(from decoder: Decoder) throws {
@@ -99,7 +105,9 @@ public struct CombatHitDefinition: Codable, Equatable, Sendable {
             attackHeight: try values.decodeIfPresent(CombatAttackHeight.self, forKey: .attackHeight) ?? .mid,
             hitGroup: try values.decodeIfPresent(String.self, forKey: .hitGroup) ?? "primary",
             rehitFrames: try values.decodeIfPresent(Int.self, forKey: .rehitFrames),
-            clashLevel: try values.decodeIfPresent(Int.self, forKey: .clashLevel) ?? 0)
+            clashLevel: try values.decodeIfPresent(Int.self, forKey: .clashLevel) ?? 0,
+            wallBounce: try values.decodeIfPresent(Bool.self, forKey: .wallBounce) ?? false,
+            groundBounce: try values.decodeIfPresent(Bool.self, forKey: .groundBounce) ?? false)
     }
 }
 
@@ -121,13 +129,18 @@ public struct CombatMoveDefinition: Codable, Equatable, Sendable {
     /// Optional mapped gameplay control. Character profiles bind a logical
     /// control to a move; physical keys remain entirely outside content data.
     public var systemControl: CombatSystemControl?
+    /// Optional keeps schema-v1 profiles presentation-compatible.
+    public var cancelWindows: [ActionFrameWindow]?
+    public var cancelInto: [String]?
 
     public init(id: String, command: CombatCommand, startupFrames: Int, activeFrames: Int,
                 recoveryFrames: Int, hit: CombatHitDefinition, visualAction: String,
                 projectile: ProjectileDefinition? = nil,
                 projectiles: [ProjectileDefinition]? = nil,
                 resourceRules: MoveResourceRules? = nil,
-                systemControl: CombatSystemControl? = nil) {
+                systemControl: CombatSystemControl? = nil,
+                cancelWindows: [ActionFrameWindow]? = nil,
+                cancelInto: [String]? = nil) {
         self.id = id
         self.command = command
         self.startupFrames = max(0, startupFrames)
@@ -139,6 +152,8 @@ public struct CombatMoveDefinition: Codable, Equatable, Sendable {
         self.projectiles = projectiles
         self.resourceRules = resourceRules
         self.systemControl = systemControl
+        self.cancelWindows = cancelWindows
+        self.cancelInto = cancelInto
     }
 
     public var totalFrames: Int { startupFrames + activeFrames + recoveryFrames }
@@ -159,7 +174,8 @@ public struct CombatMoveDefinition: Codable, Equatable, Sendable {
             domain: .combat,
             startupFrames: startupFrames,
             activeFrames: activeFrames,
-            locomotionPolicy: .stationary)
+            locomotionPolicy: .stationary,
+            cancelWindows: cancelWindows ?? [])
     }
 }
 
@@ -383,6 +399,7 @@ public enum CombatEventKind: String, Codable, Sendable {
     case assistEntered, assistExited, tagStarted, tagHandoff, tagCompleted
     case neutralAlerted, neutralJoined, neutralWithdrew
     case powerUpStarted, powerUpEnded
+    case wallBounce, groundBounce, airTech, moveCancelled, roundEnded
 }
 
 public struct CombatEvent: Codable, Equatable, Sendable {

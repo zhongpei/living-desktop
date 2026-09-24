@@ -123,11 +123,33 @@ public struct ComboState: Codable, Equatable, Sendable {
     public private(set) var juggleRemaining: Int
     public private(set) var lastHitFrame: Int64?
     public private(set) var moveCounts: [String: Int] = [:]
+    public private(set) var wallBounces = 0
+    public private(set) var groundBounces = 0
     public var rules: ComboRules
+
+    private enum CodingKeys: String, CodingKey {
+        case comboID, attackerID, defenderID, hitCount, juggleRemaining
+        case lastHitFrame, moveCounts, wallBounces, groundBounces, rules
+    }
 
     public init(rules: ComboRules = .standard) {
         self.rules = rules
         self.juggleRemaining = rules.juggleBudget
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        rules = try values.decodeIfPresent(ComboRules.self, forKey: .rules) ?? .standard
+        comboID = try values.decodeIfPresent(Int64.self, forKey: .comboID)
+        attackerID = try values.decodeIfPresent(EntityID.self, forKey: .attackerID)
+        defenderID = try values.decodeIfPresent(EntityID.self, forKey: .defenderID)
+        hitCount = try values.decodeIfPresent(Int.self, forKey: .hitCount) ?? 0
+        juggleRemaining = try values.decodeIfPresent(
+            Int.self, forKey: .juggleRemaining) ?? rules.juggleBudget
+        lastHitFrame = try values.decodeIfPresent(Int64.self, forKey: .lastHitFrame)
+        moveCounts = try values.decodeIfPresent([String: Int].self, forKey: .moveCounts) ?? [:]
+        wallBounces = try values.decodeIfPresent(Int.self, forKey: .wallBounces) ?? 0
+        groundBounces = try values.decodeIfPresent(Int.self, forKey: .groundBounces) ?? 0
     }
 
     public mutating func recordHit(
@@ -168,6 +190,20 @@ public struct ComboState: Codable, Equatable, Sendable {
         juggleRemaining = rules.juggleBudget
         lastHitFrame = nil
         moveCounts.removeAll()
+        wallBounces = 0
+        groundBounces = 0
+    }
+
+    public mutating func consumeWallBounce(limit: Int = 1) -> Bool {
+        guard wallBounces < max(0, limit) else { return false }
+        wallBounces += 1
+        return true
+    }
+
+    public mutating func consumeGroundBounce(limit: Int = 1) -> Bool {
+        guard groundBounces < max(0, limit) else { return false }
+        groundBounces += 1
+        return true
     }
 
     @discardableResult
@@ -326,6 +362,22 @@ public struct NeutralEscalationPolicy: Codable, Equatable, Sendable {
         enabled: false, joinOnFirstDamagingHit: false, teamLiability: false,
         cascadeEnabled: false, maxIncidentalCombatants: 0, maxCascadeDepth: 0,
         hostilityDecayFrames: 0, reactionDelayFrames: 1)
+
+    public init(
+        enabled: Bool, joinOnFirstDamagingHit: Bool,
+        teamLiability: Bool, cascadeEnabled: Bool,
+        maxIncidentalCombatants: Int, maxCascadeDepth: Int,
+        hostilityDecayFrames: Int, reactionDelayFrames: Int
+    ) {
+        self.enabled = enabled
+        self.joinOnFirstDamagingHit = joinOnFirstDamagingHit
+        self.teamLiability = teamLiability
+        self.cascadeEnabled = cascadeEnabled
+        self.maxIncidentalCombatants = max(0, maxIncidentalCombatants)
+        self.maxCascadeDepth = max(0, maxCascadeDepth)
+        self.hostilityDecayFrames = max(0, hostilityDecayFrames)
+        self.reactionDelayFrames = max(0, reactionDelayFrames)
+    }
 }
 
 public struct AggroEntry: Codable, Equatable, Sendable {
@@ -355,11 +407,28 @@ public struct CombatEscalationState: Codable, Equatable, Sendable {
 
     public init(policy: NeutralEscalationPolicy) { self.policy = policy }
 
+    public func cascadeDepth(for actorID: EntityID) -> Int {
+        guard case .incidentalCombatant(let offenderID) = participation[actorID] else { return -1 }
+        return aggro[actorID]?[offenderID]?.cascadeDepth ?? 0
+    }
+
+    public func isHostile(
+        actorID: EntityID, toward candidateID: EntityID,
+        candidateTeamID: String?
+    ) -> Bool {
+        guard case .incidentalCombatant(let offenderID) = participation[actorID],
+              let entry = aggro[actorID]?[offenderID] else { return false }
+        if candidateID == offenderID { return true }
+        return policy.teamLiability && entry.offenderTeamID != nil &&
+            entry.offenderTeamID == candidateTeamID
+    }
+
     public mutating func recordCollateralHit(
         victimID: EntityID, offenderID: EntityID, offenderTeamID: String?,
         damage: Int, frame: Int64, cascadeDepth: Int
     ) {
         guard policy.enabled, damage > 0,
+              (cascadeDepth == 0 || policy.cascadeEnabled),
               cascadeDepth <= policy.maxCascadeDepth else { return }
         let prior = aggro[victimID]?[offenderID]
         aggro[victimID, default: [:]][offenderID] = AggroEntry(
@@ -434,6 +503,15 @@ public struct WindowInteractionPolicy: Codable, Equatable, Sendable {
 
     public init() {}
 
+    public func cost(for action: WindowGameplayAction) -> Int {
+        let baseCost = action == .pull ? 180 : 120
+        return max(0, Int((Double(baseCost) * max(0, energyCostScale)).rounded()))
+    }
+
+    public func canAfford(_ action: WindowGameplayAction, energy: Int) -> Bool {
+        energy - cost(for: action) >= minimumEnergyAfterAction
+    }
+
     public mutating func authorize(
         _ action: WindowGameplayAction, energy: inout GameplayEnergyState,
         frame: Int64, userActive: Bool, targetIsForeground: Bool
@@ -447,8 +525,7 @@ public struct WindowInteractionPolicy: Codable, Equatable, Sendable {
         if let last = lastFrame[action], frame - last < Int64(cooldown) { return .cooldown }
         recentFrames.removeAll { frame - $0 >= 3_600 }
         guard recentFrames.count < maxActionsPerMinute else { return .rateLimited }
-        let baseCost = action == .pull ? 180 : 120
-        let cost = max(0, Int((Double(baseCost) * max(0, energyCostScale)).rounded()))
+        let cost = cost(for: action)
         guard energy.current - cost >= minimumEnergyAfterAction else { return .insufficientEnergy }
         guard energy.spend(cost, frame: frame) else { return .insufficientEnergy }
         lastFrame[action] = frame

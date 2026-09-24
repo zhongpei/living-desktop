@@ -3,6 +3,7 @@ import MyPetCombat
 import MyPetCore
 import MyPet2D
 import MyPetEngine
+import MyPetCombatCPU
 
 /// Shared combat authority for every visible actor in one desktop session.
 /// Solo play owns one coordinator; CastSession injects one shared instance so
@@ -14,6 +15,7 @@ final class DesktopCombatCoordinator {
     var bodyWorld: BodyWorld { combatRuntime.bodyWorld }
     var world: CombatWorld { combatRuntime.world }
     private var registeredActors = Set<String>()
+    private var deliveredPlatformIntents: [String: String] = [:]
 
     init() {
         let combatRuntime = CombatRuntime()
@@ -90,12 +92,19 @@ final class DesktopCombatCoordinator {
 
     func combatHUDBody(actorID: EntityID) -> CombatBodyState? {
         guard world.session?.state == .active,
-              let body = world.body(for: actorID),
-              body.rosterRole != .bench else { return nil }
+              let body = world.body(for: actorID) else { return nil }
         switch body.participation {
         case .uninvolved, .withdrawing: return nil
         case .alerted, .incidentalCombatant, .rosterParticipant: return body
         }
+    }
+
+    func platformIntent(actorID: EntityID) -> GameplayPlatformIntent? {
+        guard let intent = combatRuntime.platformIntents[actorID.raw] else { return nil }
+        let token = "\(world.frame):\(String(describing: intent))"
+        guard deliveredPlatformIntents[actorID.raw] != token else { return nil }
+        deliveredPlatformIntents[actorID.raw] = token
+        return intent
     }
 
     func checkpoint() -> GameRuntimeCheckpoint { runtime.checkpoint() }
