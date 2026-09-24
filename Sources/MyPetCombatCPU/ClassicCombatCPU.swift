@@ -184,6 +184,20 @@ public struct ClassicCombatCPU: Sendable {
             return approach(
                 selfBody: observation.selfBody, target: target, slot: slot)
         }
+        let unseenCandidates = candidates.filter {
+            (state.moveUseCounts?[$0.move.id, default: 0] ?? 0) == 0
+        }
+        if !unseenCandidates.isEmpty {
+            candidates = unseenCandidates.sorted { lhs, rhs in
+                let lhsCommitment = lhs.move.startupFrames + lhs.move.activeFrames +
+                    lhs.move.recoveryFrames
+                let rhsCommitment = rhs.move.startupFrames + rhs.move.activeFrames +
+                    rhs.move.recoveryFrames
+                return lhsCommitment == rhsCommitment
+                    ? lhs.score > rhs.score
+                    : lhsCommitment < rhsCommitment
+            }
+        }
         candidates = Array(candidates.prefix(state.configuration.topK))
         let useSearch = state.configuration.searchIterations > 0 &&
             observation.worldCheckpoint != nil

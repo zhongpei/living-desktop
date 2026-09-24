@@ -355,6 +355,45 @@ final class ClassicCombatCPUTests: XCTestCase {
         XCTAssertTrue(output.input.right)
     }
 
+    func testCPUExploresEveryReachableMoveBeforeRepeatingOne() {
+        let profile = CombatProfile(moves: [
+            CombatMoveDefinition(
+                id: "high-damage", command: .button(.z), startupFrames: 1,
+                activeFrames: 1, recoveryFrames: 1,
+                hit: CombatHitDefinition(damage: 500, hitStopFrames: 0),
+                visualAction: "high-damage"),
+            CombatMoveDefinition(
+                id: "medium-damage", command: .button(.y), startupFrames: 1,
+                activeFrames: 1, recoveryFrames: 1,
+                hit: CombatHitDefinition(damage: 100, hitStopFrames: 0),
+                visualAction: "medium-damage"),
+            CombatMoveDefinition(
+                id: "low-damage", command: .button(.x), startupFrames: 1,
+                activeFrames: 1, recoveryFrames: 1,
+                hit: CombatHitDefinition(damage: 1, hitStopFrames: 0),
+                visualAction: "low-damage"),
+        ])
+        let me = CombatBodyState(actorID: EntityID("me"), x: 300, yFeet: 700)
+        let enemy = CombatBodyState(
+            actorID: EntityID("enemy"), x: 350, yFeet: 700, facing: .left)
+        var cpu = ClassicCombatCPU(actorID: me.actorID, difficulty: .normal, seed: 41)
+        var selected: [String] = []
+
+        for frame: Int64 in 0..<120 where selected.count < 3 {
+            let output = cpu.advance(CPUCombatObservation(
+                frame: frame, selfBody: me, opponents: [enemy],
+                selfProfile: profile, opponentProfiles: ["enemy": profile],
+                environment: floor))
+            if let moveID = output.moveID,
+               output.input != .neutral,
+               selected.last != moveID {
+                selected.append(moveID)
+            }
+        }
+
+        XCTAssertEqual(Set(selected), Set(["high-damage", "medium-damage", "low-damage"]))
+    }
+
     private var floor: BodyEnvironment {
         BodyEnvironment(
             bounds: Rect2D(x: 0, y: 0, width: 1000, height: 800),
