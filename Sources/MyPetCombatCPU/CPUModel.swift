@@ -193,6 +193,9 @@ public struct ClassicCombatCPUCheckpoint: Codable, Equatable, Sendable {
     var surfaceGraph: DynamicSurfaceGraph?
     var actionHistory: ActionHistory?
     var moveUseCounts: [String: Int]?
+    /// OpenBOR-style attack throttle: strategy/movement may continue before this frame,
+    /// but a new offensive move may not be selected.
+    var nextAttackFrame: Int64?
 }
 
 struct CombatCPUOutputCheckpoint: Codable, Equatable, Sendable {
