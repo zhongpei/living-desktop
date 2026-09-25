@@ -239,7 +239,9 @@ public final class BodyWorld {
                       ad.simulationEnabled, bd.simulationEnabled,
                       ad.collisionMask.contains(.body), bd.collisionMask.contains(.body),
                       a.locomotion == .grounded, b.locomotion == .grounded,
-                      abs(a.position.y - b.position.y) < 8 else { continue }
+                      let aSurfaceID = a.currentSurfaceID,
+                      let bSurfaceID = b.currentSurfaceID,
+                      aSurfaceID == bSurfaceID else { continue }
                 let overlap = ad.pushRadius + bd.pushRadius - abs(b.position.x - a.position.x)
                 guard overlap > 0 else { continue }
                 let sign = b.position.x - a.position.x >= 0 ? 1.0 : -1.0
