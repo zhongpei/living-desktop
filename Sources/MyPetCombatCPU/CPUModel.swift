@@ -84,6 +84,7 @@ public struct CPUCombatObservation: Sendable {
     public var tactics: CombatTactics
     public var pacingRate: Double
     public var recentlyHit: Bool
+    public var recentHitFrame: Int64?
 
     public init(
         frame: Int64, selfBody: CombatBodyState,
@@ -93,7 +94,8 @@ public struct CPUCombatObservation: Sendable {
         engagementReservations: [EngagementSlot] = [],
         tactics: CombatTactics = .balanced,
         pacingRate: Double = 1,
-        recentlyHit: Bool = false
+        recentlyHit: Bool = false,
+        recentHitFrame: Int64? = nil
     ) {
         self.frame = frame
         self.selfBody = selfBody
@@ -106,6 +108,7 @@ public struct CPUCombatObservation: Sendable {
         self.tactics = tactics
         self.pacingRate = min(2, max(0.25, pacingRate))
         self.recentlyHit = recentlyHit
+        self.recentHitFrame = recentHitFrame
     }
 }
 
@@ -196,6 +199,7 @@ public struct ClassicCombatCPUCheckpoint: Codable, Equatable, Sendable {
     /// OpenBOR-style attack throttle: strategy/movement may continue before this frame,
     /// but a new offensive move may not be selected.
     var nextAttackFrame: Int64?
+    var lastCounteredHitFrame: Int64?
 }
 
 struct CombatCPUOutputCheckpoint: Codable, Equatable, Sendable {
