@@ -630,11 +630,29 @@ public final class CombatWorld {
         guard body.locomotion == .grounded else { return }
         if input.left != input.right {
             let direction = input.right ? 1.0 : -1.0
-            body.velocity.x = direction * profile.walkSpeed
+            let distantChase = body.authority == .autonomous &&
+                input.forward(facing: body.facing) &&
+                (nearestOpponentHorizontalDistance(from: body) ?? 0) >= 320
+            let speed = profile.walkSpeed *
+                (distantChase ? profile.effectiveRunSpeedMultiplier : 1)
+            body.velocity.x = direction * speed
             body.facing = direction > 0 ? .right : .left
         } else {
             body.velocity.x = 0
         }
+    }
+
+    private func nearestOpponentHorizontalDistance(
+        from body: CombatBodyState
+    ) -> Double? {
+        snapshot().bodies.filter {
+            $0.actorID != body.actorID &&
+                $0.healthState == .active &&
+                $0.rosterRole != .bench &&
+                permitsContact(body.actorID, $0.actorID)
+        }.map {
+            abs($0.position.x - body.position.x)
+        }.min()
     }
 
     @discardableResult
