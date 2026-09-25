@@ -201,9 +201,11 @@ final class CoreAnimationActorSurface: ActorRenderSurface {
         view = PetView(frame: CGRect(origin: .zero, size: initialFrame.size),
                        coordinateSpace: coordinateSpace)
         panel = OverlayPanel(contentView: view, initialFrame: initialFrame)
-        combatHUD.frame = CGRect(x: 8, y: max(0, initialFrame.height - 30),
+        // PetView is flipped, so y=0 is the actor's visual top/head.
+        // Keep the combat HUD above the character instead of at its feet.
+        combatHUD.frame = CGRect(x: 8, y: 4,
                                  width: max(60, initialFrame.width - 16), height: 26)
-        combatHUD.autoresizingMask = [.width, .minYMargin]
+        combatHUD.autoresizingMask = [.width, .maxYMargin]
         view.addSubview(combatHUD)
     }
 
@@ -265,8 +267,9 @@ private final class CombatHUDView: NSView {
         let hpRatio = CGFloat(snapshot.hp) / CGFloat(snapshot.maxHP)
         let delayedRatio = CGFloat(snapshot.delayedHP) / CGFloat(snapshot.maxHP)
         let energyRatio = CGFloat(snapshot.energy) / CGFloat(snapshot.maxEnergy)
-        let hpColor: NSColor = hpRatio > 0.5 ? .systemGreen :
-            (hpRatio > 0.2 ? .systemOrange : .systemRed)
+        // Fighting-game health is a warning/readability channel, not a
+        // success-state indicator: use gold while healthy and red when critical.
+        let hpColor: NSColor = hpRatio > 0.25 ? .systemYellow : .systemRed
         NSColor.white.withAlphaComponent(0.55).setFill()
         NSBezierPath(rect: CGRect(x: inset.minX + 3, y: inset.minY + 9,
                                   width: width * delayedRatio, height: 5)).fill()
