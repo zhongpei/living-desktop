@@ -82,6 +82,8 @@ public struct CPUCombatObservation: Sendable {
     public var worldCheckpoint: CombatWorldCheckpoint?
     public var engagementReservations: [EngagementSlot]
     public var tactics: CombatTactics
+    public var pacingRate: Double
+    public var recentlyHit: Bool
 
     public init(
         frame: Int64, selfBody: CombatBodyState,
@@ -89,7 +91,9 @@ public struct CPUCombatObservation: Sendable {
         opponentProfiles: [String: CombatProfile], environment: BodyEnvironment,
         worldCheckpoint: CombatWorldCheckpoint? = nil,
         engagementReservations: [EngagementSlot] = [],
-        tactics: CombatTactics = .balanced
+        tactics: CombatTactics = .balanced,
+        pacingRate: Double = 1,
+        recentlyHit: Bool = false
     ) {
         self.frame = frame
         self.selfBody = selfBody
@@ -100,6 +104,8 @@ public struct CPUCombatObservation: Sendable {
         self.worldCheckpoint = worldCheckpoint
         self.engagementReservations = engagementReservations
         self.tactics = tactics
+        self.pacingRate = min(2, max(0.25, pacingRate))
+        self.recentlyHit = recentlyHit
     }
 }
 
