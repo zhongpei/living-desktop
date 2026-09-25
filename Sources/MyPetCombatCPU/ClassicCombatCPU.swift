@@ -27,7 +27,7 @@ public struct ClassicCombatCPU: Sendable {
             lastDecisionFrame: .min,
             lastOutput: CombatCPUOutputCheckpoint(), recentMoves: [],
             lastIssuedInput: .neutral, surfaceGraph: nil, actionHistory: ActionHistory(),
-            moveUseCounts: [:])
+            moveUseCounts: [:], nextAttackFrame: nil)
     }
 
     public init(checkpoint: ClassicCombatCPUCheckpoint) {
@@ -47,7 +47,10 @@ public struct ClassicCombatCPU: Sendable {
             return issue(.neutral, intent: .wait)
         }
 
-        if (observation.selfBody.phase == .hitStun ||
+        let burstPressure = observation.selfBody.combo.hitCount >= 2 ||
+            observation.selfBody.hp * 100 <= observation.selfProfile.maxHP * 30
+        if burstPressure,
+           (observation.selfBody.phase == .hitStun ||
                 observation.selfBody.phase == .blockStun),
            let burst = observation.selfProfile.moves.first(where: {
                $0.systemControl == .defensiveBurst &&
@@ -109,16 +112,6 @@ public struct ClassicCombatCPU: Sendable {
         }
 
         guard observation.selfBody.canAcceptAction else {
-            // A fighting-game CPU should not queue a new move on the first
-            // actionable frame after startup/active/recovery. Keep a short,
-            // deterministic neutral beat so attacks read as separate actions.
-            let minimumPostActionSpacing = max(
-                8, Int((18.0 / observation.pacingRate).rounded(.up)))
-            let decisionInterval = max(
-                1, Int((Double(state.configuration.decisionIntervalFrames) /
-                    observation.pacingRate).rounded(.up)))
-            state.lastDecisionFrame = observation.frame + Int64(max(
-                0, minimumPostActionSpacing - decisionInterval))
             return issue(.neutral, intent: .wait, targetID: target.actorID)
         }
         let decisionInterval = max(
@@ -127,47 +120,19 @@ public struct ClassicCombatCPU: Sendable {
         let decisionDue = state.lastDecisionFrame == .min ||
             observation.frame - state.lastDecisionFrame >= Int64(decisionInterval)
         guard decisionDue else {
-            return issue(.neutral, from: state.lastOutput)
+            return issue(sustainedInput(state.lastIssuedInput), from: state.lastOutput)
         }
         state.lastDecisionFrame = observation.frame
+        let attackReady = observation.frame >= (state.nextAttackFrame ?? .min)
 
-        let shouldReserveFirstBurst = shouldReserveFirstDefensiveBurst(
-            profile: observation.selfProfile,
-            selfBody: observation.selfBody)
-        if !shouldReserveFirstBurst,
-           let superMove = observation.selfProfile.moves.first(where: {
-            $0.effectiveResourceRules.family == .superMove &&
-                (state.moveUseCounts?[$0.id, default: 0] ?? 0) == 0 &&
-                observation.selfBody.gameplayEnergy.current >=
-                    $0.effectiveResourceRules.startCost &&
-                ($0.authoredProjectiles.isEmpty
-                    ? meleeBoxesOverlap(
-                        move: $0,
-                        selfBody: observation.selfBody,
-                        target: target,
-                        targetProfile: targetProfile)
-                    : distance <= ($0.authoredProjectiles
-                        .map(\.effectiveTravelDistance).max() ?? 0))
-        }) {
-            state.pendingInputs = CombatCommandSynthesizer.frames(
-                for: superMove.command, facing: observation.selfBody.facing)
-            state.moveUseCounts?[superMove.id, default: 0] += 1
-            var history = state.actionHistory ?? ActionHistory()
-            history.record(id: superMove.id, family: .superMove)
-            state.actionHistory = history
-            state.lastOutput = CombatCPUOutputCheckpoint(
-                intent: .attack, targetID: target.actorID,
-                moveID: superMove.id, utilityScore: 1_000, usedSearch: false)
-            return issue(state.pendingInputs.removeFirst(), from: state.lastOutput)
-        }
-
-        if observation.selfBody.powerUpFrames == 0,
+        if attackReady,
+           observation.selfBody.powerUpFrames == 0,
            observation.selfBody.gameplayEnergy.current >= 240,
            observation.selfBody.gameplayEnergy.current <
                observation.selfBody.gameplayEnergy.maximum,
-           !(state.actionHistory ?? ActionHistory()).entries.contains(where: {
-               $0.family == .powerUp
-           }),
+           distance >= 260,
+           target.phase != .active,
+           state.rng.chance(percent: 12),
            let powerUp = observation.selfProfile.moves.first(where: {
                $0.systemControl == .powerUp &&
                    observation.selfBody.gameplayEnergy.current >=
@@ -180,6 +145,7 @@ public struct ClassicCombatCPU: Sendable {
             history.record(id: powerUp.id, family: .powerUp)
             state.actionHistory = history
             state.moveUseCounts?[powerUp.id, default: 0] += 1
+            scheduleAttackThrottle(after: powerUp, observation: observation)
             return issue(
                 FighterInputFrame(systemControls: [.powerUp]),
                 from: state.lastOutput)
@@ -199,33 +165,17 @@ public struct ClassicCombatCPU: Sendable {
                 targetID: target.actorID, slot: slot)
         }
 
-        var candidates = scoreMoves(
+        var candidates = attackReady ? scoreMoves(
             profile: observation.selfProfile,
             selfBody: observation.selfBody,
             target: target,
             targetProfile: targetProfile,
             environment: observation.environment,
             tactics: observation.tactics,
-            recentlyHit: observation.recentlyHit)
+            recentlyHit: observation.recentlyHit) : []
         if candidates.isEmpty {
             return approach(
                 selfBody: observation.selfBody, target: target, slot: slot)
-        }
-        let unseenCandidates = candidates.filter {
-            (state.moveUseCounts?[$0.move.id, default: 0] ?? 0) == 0
-        }
-        if !unseenCandidates.isEmpty {
-            candidates = observation.tactics.projectile > 1.25
-                ? unseenCandidates
-                : unseenCandidates.sorted { lhs, rhs in
-                let lhsCommitment = lhs.move.startupFrames + lhs.move.activeFrames +
-                    lhs.move.recoveryFrames
-                let rhsCommitment = rhs.move.startupFrames + rhs.move.activeFrames +
-                    rhs.move.recoveryFrames
-                return lhsCommitment == rhsCommitment
-                    ? lhs.score > rhs.score
-                    : lhsCommitment < rhsCommitment
-            }
         }
         candidates = Array(candidates.prefix(state.configuration.topK))
         let useSearch = state.configuration.searchIterations > 0 &&
@@ -262,6 +212,7 @@ public struct ClassicCombatCPU: Sendable {
             id: selected.move.id,
             family: selected.move.effectiveResourceRules.family)
         state.actionHistory = history
+        scheduleAttackThrottle(after: selected.move, observation: observation)
         state.lastOutput = CombatCPUOutputCheckpoint(
             intent: .attack, targetID: target.actorID, slot: slot,
             moveID: selected.move.id, utilityScore: selected.score,
@@ -414,16 +365,7 @@ public struct ClassicCombatCPU: Sendable {
             profile.moves.contains {
                 $0.effectiveResourceRules.family == .superMove
             }
-        let unseenResourceCost = profile.moves.filter {
-            $0.systemControl == nil &&
-                (state.moveUseCounts?[$0.id, default: 0] ?? 0) == 0 &&
-                $0.effectiveResourceRules.startCost > 0 &&
-                $0.effectiveResourceRules.family != .superMove
-        }.map { $0.effectiveResourceRules.startCost }.min()
-        let reservingForUnseen = unseenResourceCost.map {
-            selfBody.gameplayEnergy.current < $0
-        } ?? false
-        let reservingForBurst = shouldReserveFirstDefensiveBurst(
+        let reservingForBurst = shouldReserveDefensiveBurst(
             profile: profile, selfBody: selfBody)
         let scored: [ScoredMove] = profile.moves.filter {
             $0.systemControl == nil
@@ -432,8 +374,6 @@ public struct ClassicCombatCPU: Sendable {
                 $0.effectiveResourceRules.family == .superMove
         }.filter {
             !reservingForBurst || $0.effectiveResourceRules.startCost == 0
-        }.filter {
-            !reservingForUnseen || $0.effectiveResourceRules.startCost == 0
         }.map { move in
             let projectileReach = move.authoredProjectiles.map(\.effectiveTravelDistance).max()
             let reach = projectileReach ??
@@ -462,7 +402,8 @@ public struct ClassicCombatCPU: Sendable {
                 ? 55 * tactics.antiAir : 0
             let diversityBonus = state.recentMoves.contains(move.id) ? 0.0 : 55.0
             let lifetimeUses = state.moveUseCounts?[move.id, default: 0] ?? 0
-            let scarcityBonus = lifetimeUses == 0 ? 180.0 : 35.0 / Double(lifetimeUses + 1)
+            // Variety is a soft competitive prior, never a legality override.
+            let scarcityBonus = lifetimeUses == 0 ? 50.0 : 10.0 / Double(lifetimeUses + 1)
             let resource = move.effectiveResourceRules
             let energy = selfBody.gameplayEnergy
             let reservePressure = energy.current <= 60 ? 2.0 :
@@ -491,19 +432,41 @@ public struct ClassicCombatCPU: Sendable {
         let reachable: [ScoredMove] = scored.filter { candidate in
             guard selfBody.gameplayEnergy.current >=
                     candidate.move.effectiveResourceRules.startCost else { return false }
-            if candidate.move.projectile != nil {
+            if !candidate.move.authoredProjectiles.isEmpty {
                 let repeated = state.recentMoves.suffix(2).allSatisfy {
                     $0 == candidate.move.id
                 } && state.recentMoves.count >= 2
-                // Balanced fighters close distance after zoning instead of
-                // treating the only long-range option as the only legal plan.
-                // Dedicated zoners retain sustained projectile pressure.
-                let rotating = tactics.projectile <= 1.25 &&
-                    (state.actionHistory ?? ActionHistory()).entries.suffix(3)
-                        .contains { $0.family == .projectile }
+                let recentProjectileCount = (state.actionHistory ?? ActionHistory())
+                    .entries.suffix(4).filter { $0.family == .projectile }.count
                 let authoredReach = candidate.move.authoredProjectiles
                     .map(\.effectiveTravelDistance).max() ?? 0
-                return distance <= authoredReach && !repeated && !rotating
+                let desktopPracticalReach = min(
+                    authoredReach,
+                    max(480, min(900, environment.bounds.width * 0.28)))
+                let bodyContact = profile.pushRadius +
+                    (targetProfile?.pushRadius ?? profile.pushRadius)
+                let authoredMinimum = candidate.move.authoredProjectiles
+                    .compactMap(\.minimumRange).max()
+                let minimumRange = authoredMinimum ?? max(
+                    110,
+                    bodyContact + 45 + Double(candidate.move.startupFrames) * 3)
+                let verticalReach = candidate.move.authoredProjectiles.map {
+                    abs($0.spawnOffset.y) +
+                        abs($0.velocity.y) * Double($0.lifetimeFrames) + 100
+                }.max() ?? 100
+                let verticalDistance = abs(target.position.y - selfBody.position.y)
+                let ownedProjectiles = observation.worldCheckpoint?.projectiles?.values
+                    .filter { $0.ownerID == selfBody.actorID }.count ?? 0
+                let authoredLimit = candidate.move.authoredProjectiles
+                    .compactMap(\.maxConcurrentOwned).min()
+                let occupancyLimit = authoredLimit ?? (tactics.projectile > 1.25 ? 2 : 1)
+                let targetPinned = target.stunFrames >= candidate.move.startupFrames + 2
+                return distance <= desktopPracticalReach &&
+                    (distance >= minimumRange || targetPinned) &&
+                    verticalDistance <= verticalReach &&
+                    ownedProjectiles < occupancyLimit &&
+                    !repeated &&
+                    recentProjectileCount < (tactics.projectile > 1.25 ? 3 : 2)
             }
             return meleeBoxesOverlap(
                 move: candidate.move,
@@ -572,22 +535,50 @@ public struct ClassicCombatCPU: Sendable {
         }
     }
 
-    private func shouldReserveFirstDefensiveBurst(
+    private func shouldReserveDefensiveBurst(
         profile: CombatProfile,
         selfBody: CombatBodyState
     ) -> Bool {
-        let healthIsCritical = selfBody.hp * 100 <= profile.maxHP * 45
-        let hasDemonstratedSuper = profile.moves.contains {
-            $0.effectiveResourceRules.family == .superMove &&
-                (state.moveUseCounts?[$0.id, default: 0] ?? 0) > 0
-        }
-        return (healthIsCritical || hasDemonstratedSuper) &&
+        let healthIsCritical = selfBody.hp * 100 <= profile.maxHP * 35
+        let underComboPressure = selfBody.combo.hitCount >= 2
+        return (healthIsCritical || underComboPressure) &&
             profile.moves.contains {
                 $0.systemControl == .defensiveBurst &&
-                    (state.moveUseCounts?[$0.id, default: 0] ?? 0) == 0 &&
                     selfBody.gameplayEnergy.current >=
                         $0.effectiveResourceRules.startCost
             }
+    }
+
+    private func sustainedInput(_ input: FighterInputFrame) -> FighterInputFrame {
+        FighterInputFrame(
+            left: input.left,
+            right: input.right,
+            down: input.down)
+    }
+
+    private mutating func scheduleAttackThrottle(
+        after move: CombatMoveDefinition,
+        observation: CPUCombatObservation
+    ) {
+        let range: ClosedRange<Int>
+        switch move.effectiveResourceRules.family {
+        case .fastMelee: range = 8...14
+        case .heavyMelee: range = 12...22
+        case .throw: range = 14...24
+        case .projectile: range = 24...40
+        case .special: range = 20...36
+        case .superMove: range = 36...56
+        case .powerUp: range = 28...44
+        case .guardAction: range = 10...18
+        case .burst: range = 24...40
+        case .movement, .tag, .assist, .windowInteraction: range = 10...18
+        }
+        let spread = max(1, range.upperBound - range.lowerBound + 1)
+        let sampled = range.lowerBound + state.rng.index(spread)
+        let pacedGap = max(
+            1, Int((Double(sampled) / observation.pacingRate).rounded(.up)))
+        state.nextAttackFrame = observation.frame +
+            Int64(move.totalFrames + pacedGap)
     }
 
     private mutating func approach(
