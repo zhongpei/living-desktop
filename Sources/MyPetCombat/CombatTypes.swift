@@ -22,6 +22,21 @@ public enum CombatAttackHeight: String, Codable, Sendable {
     case high, mid, low, air, throwAttack
 }
 
+public enum CombatMoveUseState: String, Codable, Sendable {
+    case grounded, airborne, any
+
+    public func permits(_ locomotion: LocomotionState) -> Bool {
+        switch self {
+        case .grounded:
+            return locomotion == .grounded
+        case .airborne:
+            return locomotion == .airborne
+        case .any:
+            return locomotion == .grounded || locomotion == .airborne
+        }
+    }
+}
+
 public struct CollisionBox: Codable, Equatable, Sendable {
     public var rect: CombatRect
     public init(x1: Double, y1: Double, x2: Double, y2: Double) {
@@ -129,6 +144,9 @@ public struct CombatMoveDefinition: Codable, Equatable, Sendable {
     /// Optional mapped gameplay control. Character profiles bind a logical
     /// control to a move; physical keys remain entirely outside content data.
     public var systemControl: CombatSystemControl?
+    /// Traditional fighting-game state restriction. Old content defaults to
+    /// grounded, except defensive burst which remains usable in air.
+    public var useState: CombatMoveUseState?
     /// Optional keeps schema-v1 profiles presentation-compatible.
     public var cancelWindows: [ActionFrameWindow]?
     public var cancelInto: [String]?
@@ -139,6 +157,7 @@ public struct CombatMoveDefinition: Codable, Equatable, Sendable {
                 projectiles: [ProjectileDefinition]? = nil,
                 resourceRules: MoveResourceRules? = nil,
                 systemControl: CombatSystemControl? = nil,
+                useState: CombatMoveUseState? = nil,
                 cancelWindows: [ActionFrameWindow]? = nil,
                 cancelInto: [String]? = nil) {
         self.id = id
@@ -152,6 +171,7 @@ public struct CombatMoveDefinition: Codable, Equatable, Sendable {
         self.projectiles = projectiles
         self.resourceRules = resourceRules
         self.systemControl = systemControl
+        self.useState = useState
         self.cancelWindows = cancelWindows
         self.cancelInto = cancelInto
     }
@@ -164,6 +184,11 @@ public struct CombatMoveDefinition: Codable, Equatable, Sendable {
         resourceRules ?? MoveResourceRules(
             family: authoredProjectiles.isEmpty ? .fastMelee : .projectile,
             startCost: authoredProjectiles.isEmpty ? 0 : 45)
+    }
+
+    public var effectiveUseState: CombatMoveUseState {
+        if let useState { return useState }
+        return systemControl == .defensiveBurst ? .any : .grounded
     }
 
     public var actionDefinition: ActionDefinition {
