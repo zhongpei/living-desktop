@@ -163,10 +163,15 @@ final class CombatSimulationTests: XCTestCase {
         runtime.activate(.autonomous, for: EntityID("a"))
         runtime.activate(.autonomous, for: EntityID("b"))
 
-        for _ in 0..<20 {
-            _ = runtime.advance(environment: makeScenario().desktop.combatEnvironment())
+        var moveStarts = 0
+        for _ in 0..<40 {
+            let events = runtime.advance(environment: makeScenario().desktop.combatEnvironment())
+            moveStarts += events.filter {
+                $0.kind == .moveStarted && $0.actorID == EntityID("a")
+            }.count
         }
 
+        XCTAssertGreaterThanOrEqual(moveStarts, 2)
         XCTAssertLessThanOrEqual(runtime.world.body(for: EntityID("b"))?.hp ?? 1000, 980)
     }
 
@@ -257,7 +262,7 @@ final class CombatSimulationTests: XCTestCase {
         runtime.activate(.autonomous, for: EntityID("b"))
 
         var events: [CombatEvent] = []
-        for _ in 0..<12 {
+        for _ in 0..<60 {
             events.append(contentsOf: runtime.advance(
                 environment: makeScenario().desktop.combatEnvironment()))
         }

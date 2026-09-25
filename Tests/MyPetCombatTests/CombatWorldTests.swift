@@ -442,13 +442,21 @@ final class CombatWorldTests: XCTestCase {
         XCTAssertTrue(beginSession(world))
         world.setInput(FighterInputFrame(buttons: [.x]), for: EntityID("a"))
         _ = world.step(environment: floor)
-        for _ in 0..<10 {
+        var sawKnockedOut = false
+        var sawDowned = false
+        for _ in 0..<60 {
             world.setInput(.neutral, for: EntityID("a"))
             _ = world.step(environment: floor)
-            if world.body(for: EntityID("b"))?.healthState == .active { break }
+            if let state = world.body(for: EntityID("b"))?.healthState {
+                sawKnockedOut = sawKnockedOut || state == .knockedOut
+                sawDowned = sawDowned || state == .downed
+                if state == .active && sawDowned { break }
+            }
         }
         let body = world.body(for: EntityID("b"))
         XCTAssertNotNil(body)
+        XCTAssertTrue(sawKnockedOut)
+        XCTAssertTrue(sawDowned)
         XCTAssertEqual(body?.healthState, .active)
         XCTAssertEqual(body?.hp, 300)
         XCTAssertGreaterThan(body?.invulnerabilityFrames ?? 0, 0)
@@ -549,17 +557,22 @@ final class CombatWorldTests: XCTestCase {
         XCTAssertTrue(beginSession(world))
         world.setInput(FighterInputFrame(buttons: [.x]), for: EntityID("a"))
         _ = world.step(environment: floor)
-        XCTAssertEqual(world.body(for: EntityID("b"))?.healthState, .downed)
+        XCTAssertEqual(world.body(for: EntityID("b"))?.healthState, .knockedOut)
 
         world.beginDrag(actorID: EntityID("b"), x: 500, y: 300)
         for _ in 0..<20 { _ = world.step(environment: floor) }
-        XCTAssertEqual(world.body(for: EntityID("b"))?.healthState, .downed)
+        XCTAssertEqual(world.body(for: EntityID("b"))?.healthState, .knockedOut)
 
         world.endDrag(actorID: EntityID("b"), wasClick: false)
+        var sawDowned = false
         for _ in 0..<180 {
             _ = world.step(environment: floor)
-            if world.body(for: EntityID("b"))?.healthState == .active { break }
+            if let state = world.body(for: EntityID("b"))?.healthState {
+                sawDowned = sawDowned || state == .downed
+                if state == .active { break }
+            }
         }
+        XCTAssertTrue(sawDowned)
         XCTAssertEqual(world.body(for: EntityID("b"))?.healthState, .active)
     }
 
