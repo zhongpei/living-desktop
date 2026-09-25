@@ -612,6 +612,8 @@ public final class CombatWorld {
             return
         }
 
+        let horizontalIntent: Double = input.right == input.left
+            ? 0 : (input.right ? 1 : -1)
         if body.locomotion == .grounded, input.up, input.down,
            let surface = environment.surface(id: body.currentSurfaceID),
            surface.kind != .floor {
@@ -619,12 +621,28 @@ public final class CombatWorld {
             body.surfaceFraction = nil
             body.locomotion = .airborne
             body.position.y += 2
+            body.velocity.x = horizontalIntent * profile.walkSpeed
             body.velocity.y = BodyWorld.gravityPerFrame
+            return
         } else if body.locomotion == .grounded && input.up {
             body.currentSurfaceID = nil
             body.surfaceFraction = nil
             body.locomotion = .airborne
+            body.velocity.x = horizontalIntent * profile.walkSpeed * 1.15
             body.velocity.y = profile.jumpVelocity
+            return
+        }
+
+        if body.locomotion == .airborne {
+            // Limited air steering keeps planned platform jumps viable without
+            // turning the fighter into free-flight movement.
+            if horizontalIntent != 0,
+               body.stunFrames == 0,
+               body.actionTimeline == nil {
+                let desired = horizontalIntent * profile.walkSpeed * 0.65
+                body.velocity.x += (desired - body.velocity.x) * 0.35
+            }
+            return
         }
 
         guard body.locomotion == .grounded else { return }
