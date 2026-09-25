@@ -815,7 +815,20 @@ final class PetController {
     private func combatVisualAction(for body: CombatBodyState?) -> String? {
         guard let body else { return nil }
         if let move = combatProfile.move(id: body.currentMoveID) {
-            return library.action(named: move.visualAction)
+            if let authored = library.action(named: move.visualAction) {
+                return authored
+            }
+            let fallbacks: [String]
+            switch move.effectiveResourceRules.family {
+            case .projectile: fallbacks = ["point", "wave", "attack"]
+            case .assist: fallbacks = ["attack", "wave"]
+            case .powerUp: fallbacks = ["happy", "combat_ready", "attack"]
+            default: fallbacks = ["attack", "strike", "happy"]
+            }
+            if let fallback = fallbacks.lazy.compactMap(library.action(named:)).first {
+                return fallback
+            }
+            return idlePrimary
         }
         switch body.healthState {
         case .knockedOut:
@@ -877,6 +890,10 @@ final class PetController {
             combatParticipation: combatHUD.map { String(describing: $0.participation) },
             combatPhase: combat?.phase.rawValue,
             healthState: combat?.healthState.rawValue,
+            actionFrame: combat?.actionTimeline?.frame,
+            actionTotalFrames: combat?.actionTimeline?.definition.durationFrames,
+            actionInstanceID: combat?.actionTimeline?.instanceID,
+            combatHitStopFrames: combat?.hitStopFrames,
             authoritativePlacement: combat.map {
                 $0.authority != .scripted ||
                 $0.healthState != .active ||
