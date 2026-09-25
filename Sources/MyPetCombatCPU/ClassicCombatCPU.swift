@@ -383,6 +383,8 @@ public struct ClassicCombatCPU: Sendable {
         let scored: [ScoredMove] = profile.moves.filter {
             $0.systemControl == nil
         }.filter {
+            $0.effectiveUseState.permits(selfBody.locomotion)
+        }.filter {
             !reservingForSuper || $0.effectiveResourceRules.startCost == 0 ||
                 $0.effectiveResourceRules.family == .superMove
         }.filter {
