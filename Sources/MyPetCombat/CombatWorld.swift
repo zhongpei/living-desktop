@@ -163,6 +163,9 @@ public final class CombatWorld {
     public var currentFeaturePolicy: CombatFeaturePolicy { featurePolicy }
 
     public func teamState(_ teamID: String) -> TeamCombatState? { teams[teamID] }
+    public func teamState(for actorID: EntityID) -> TeamCombatState? {
+        teams.values.first { $0.activeID == actorID || $0.benchID == actorID }
+    }
     public var escalationState: CombatEscalationState { escalation }
 
     public func register(actorID: EntityID, profile: CombatProfile = CombatProfile(),
