@@ -108,13 +108,17 @@ public struct GameplayCPUObservation: Sendable {
     public var windows: [GameplayWindowState]
     public var style: CharacterGameplayStyle
     public var windowPolicy: WindowInteractionPolicy
+    public var assistAvailable: Bool
+    public var tagAvailable: Bool
 
     public init(
         combat: CPUCombatObservation, formalRound: Bool = true,
         wasAttacked: Bool = false, userActive: Bool = false,
         windowIDs: [String] = [], windows: [GameplayWindowState] = [],
         style: CharacterGameplayStyle = .balanced,
-        windowPolicy: WindowInteractionPolicy = WindowInteractionPolicy()
+        windowPolicy: WindowInteractionPolicy = WindowInteractionPolicy(),
+        assistAvailable: Bool = false,
+        tagAvailable: Bool = false
     ) {
         self.combat = combat; self.formalRound = formalRound
         self.wasAttacked = wasAttacked; self.userActive = userActive
@@ -122,6 +126,8 @@ public struct GameplayCPUObservation: Sendable {
         self.windowIDs = Array(Set(windowIDs + windows.map(\.id))).sorted()
         self.style = style
         self.windowPolicy = windowPolicy
+        self.assistAvailable = assistAvailable
+        self.tagAvailable = tagAvailable
     }
 }
 
@@ -247,10 +253,10 @@ public struct ClassicGameplayCPU: Sendable {
             let hpRatio = Double(observation.combat.selfBody.hp) /
                 Double(max(1, observation.combat.selfProfile.maxHP))
             let teamReady = state.lastTeamActionFrame.map { frame - $0 >= 240 } ?? true
-            if teamReady, hpRatio < 0.35 {
+            if teamReady, observation.tagAvailable, hpRatio < 0.35 {
                 fighterInput.systemControls.insert(.tag)
                 state.lastTeamActionFrame = frame
-            } else if teamReady,
+            } else if teamReady, observation.assistAvailable,
                       observation.combat.opponents.contains(where: {
                           abs($0.position.x - observation.combat.selfBody.position.x) < 120
                       }) {
