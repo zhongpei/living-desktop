@@ -93,6 +93,7 @@ public struct ClassicCombatCPU: Sendable {
             reservations: observation.engagementReservations)
         state.targetID = target?.actorID
         guard let target else { return issue(.neutral, intent: .wait) }
+        let targetProfile = observation.opponentProfiles[target.actorID.raw]
 
         let distance = abs(target.position.x - observation.selfBody.position.x)
         if target.phase == .active,
@@ -130,7 +131,14 @@ public struct ClassicCombatCPU: Sendable {
                 (state.moveUseCounts?[$0.id, default: 0] ?? 0) == 0 &&
                 observation.selfBody.gameplayEnergy.current >=
                     $0.effectiveResourceRules.startCost &&
-                distance <= max(55, $0.hit.attackBoxes.map(\.rect.maxX).max() ?? 0) + 18
+                ($0.authoredProjectiles.isEmpty
+                    ? meleeBoxesOverlap(
+                        move: $0,
+                        selfBody: observation.selfBody,
+                        target: target,
+                        targetProfile: targetProfile)
+                    : distance <= ($0.authoredProjectiles
+                        .map(\.effectiveTravelDistance).max() ?? 0))
         }) {
             state.pendingInputs = CombatCommandSynthesizer.frames(
                 for: superMove.command, facing: observation.selfBody.facing)
@@ -168,7 +176,6 @@ public struct ClassicCombatCPU: Sendable {
                 from: state.lastOutput)
         }
 
-        let targetProfile = observation.opponentProfiles[target.actorID.raw]
         let slot = engagementSlot(
             selfBody: observation.selfBody, target: target,
             profile: observation.selfProfile,
@@ -315,12 +322,11 @@ public struct ClassicCombatCPU: Sendable {
         targetProfile: CombatProfile?,
         occupied: [EngagementSlot]
     ) -> EngagementSlot {
-        let authoredReach = profile.moves.compactMap { move in
-            move.hit.attackBoxes.map(\.rect.maxX).max()
-        }.max() ?? 70
         let bodyContact = profile.pushRadius +
             (targetProfile?.pushRadius ?? profile.pushRadius) + 4
-        let near = max(bodyContact, authoredReach)
+        // Movement closes to body-contact spacing. Attack reach may allow an
+        // earlier strike, but must never become a "stop walking" distance.
+        let near = max(48, bodyContact)
         let nearSides: [EngagementSide] = [.leftNear, .rightNear]
         let farSides: [EngagementSide] = [.leftFar, .rightFar]
         let used = Set(occupied.filter { $0.targetID == target.actorID }.map(\.side))
