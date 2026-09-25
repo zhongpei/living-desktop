@@ -74,6 +74,9 @@ struct GameFeatureSettings: Codable, Equatable {
     var energyEnabled = true
     var energyCostScale = 1.0
     var energyRecoveryScale = 1.0
+    /// Human-facing combat pacing. It changes autonomous decision spacing,
+    /// not the fixed 60 Hz collision/physics clock.
+    var combatPacingRate = 1.0
     var cpuDifficulty = CombatCPUDifficulty.normal
     var neutralNPC = NeutralEscalationPolicy.desktopBrawl
     var windowInteraction = WindowInteractionSettings()
@@ -84,8 +87,8 @@ struct GameFeatureSettings: Codable, Equatable {
         case enabled, automaticCombatEnabled, combatHUDEnabled, projectilesEnabled
         case teamsEnabled, freeTagEnabled, assistsEnabled, supersEnabled
         case powerUpEnabled, defensiveBurstEnabled, energyEnabled
-        case energyCostScale, energyRecoveryScale, cpuDifficulty, neutralNPC
-        case windowInteraction, controls, cadence
+        case energyCostScale, energyRecoveryScale, combatPacingRate
+        case cpuDifficulty, neutralNPC, windowInteraction, controls, cadence
     }
 
     init() {}
@@ -119,6 +122,8 @@ struct GameFeatureSettings: Codable, Equatable {
         energyEnabled = try c.decodeIfPresent(Bool.self, forKey: .energyEnabled) ?? true
         energyCostScale = max(0, try c.decodeIfPresent(Double.self, forKey: .energyCostScale) ?? 1)
         energyRecoveryScale = max(0, try c.decodeIfPresent(Double.self, forKey: .energyRecoveryScale) ?? 1)
+        combatPacingRate = min(2, max(0.25,
+            try c.decodeIfPresent(Double.self, forKey: .combatPacingRate) ?? 1))
         cpuDifficulty = try c.decodeIfPresent(CombatCPUDifficulty.self, forKey: .cpuDifficulty) ?? .normal
         neutralNPC = try c.decodeIfPresent(NeutralEscalationPolicy.self, forKey: .neutralNPC) ?? .desktopBrawl
         windowInteraction = try c.decodeIfPresent(
