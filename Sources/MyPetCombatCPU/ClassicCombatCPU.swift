@@ -39,6 +39,11 @@ public struct ClassicCombatCPU: Sendable {
 
     public mutating func advance(_ observation: CPUCombatObservation) -> CombatCPUOutput {
         record(opponents: observation.opponents, frame: observation.frame)
+        if observation.recentlyHit {
+            // Being hit cancels neutral attack throttle so recovery can produce
+            // a real reversal/punish instead of waiting behind a cosmetic cooldown.
+            state.nextAttackFrame = observation.frame
+        }
 
         guard observation.selfBody.healthState == .active,
               observation.selfBody.locomotion != .dragged,
@@ -123,7 +128,9 @@ public struct ClassicCombatCPU: Sendable {
             return issue(sustainedInput(state.lastIssuedInput), from: state.lastOutput)
         }
         state.lastDecisionFrame = observation.frame
-        let attackReady = observation.frame >= (state.nextAttackFrame ?? .min)
+        let punishWindow = target.phase == .recovery || target.stunFrames > 0
+        let attackReady = observation.frame >= (state.nextAttackFrame ?? .min) ||
+            punishWindow || observation.recentlyHit
 
         if attackReady,
            observation.selfBody.powerUpFrames == 0,
