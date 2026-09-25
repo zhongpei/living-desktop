@@ -97,7 +97,11 @@ public struct ClassicCombatCPU: Sendable {
 
         let distance = abs(target.position.x - observation.selfBody.position.x)
         if target.phase == .active,
-           distance <= 70 + 45 * observation.tactics.defense {
+           activeAttackThreatens(
+                attacker: target,
+                attackerProfile: targetProfile,
+                defender: observation.selfBody,
+                defenderProfile: observation.selfProfile) {
             let back = target.position.x >= observation.selfBody.position.x
                 ? FighterInputFrame(left: true)
                 : FighterInputFrame(right: true)
@@ -108,15 +112,20 @@ public struct ClassicCombatCPU: Sendable {
             // A fighting-game CPU should not queue a new move on the first
             // actionable frame after startup/active/recovery. Keep a short,
             // deterministic neutral beat so attacks read as separate actions.
-            let minimumPostActionSpacing = 8
+            let minimumPostActionSpacing = max(
+                8, Int((18.0 / observation.pacingRate).rounded(.up)))
+            let decisionInterval = max(
+                1, Int((Double(state.configuration.decisionIntervalFrames) /
+                    observation.pacingRate).rounded(.up)))
             state.lastDecisionFrame = observation.frame + Int64(max(
-                0, minimumPostActionSpacing -
-                    state.configuration.decisionIntervalFrames))
+                0, minimumPostActionSpacing - decisionInterval))
             return issue(.neutral, intent: .wait, targetID: target.actorID)
         }
+        let decisionInterval = max(
+            1, Int((Double(state.configuration.decisionIntervalFrames) /
+                observation.pacingRate).rounded(.up)))
         let decisionDue = state.lastDecisionFrame == .min ||
-            observation.frame - state.lastDecisionFrame >=
-            Int64(state.configuration.decisionIntervalFrames)
+            observation.frame - state.lastDecisionFrame >= Int64(decisionInterval)
         guard decisionDue else {
             return issue(.neutral, from: state.lastOutput)
         }
@@ -196,7 +205,8 @@ public struct ClassicCombatCPU: Sendable {
             target: target,
             targetProfile: targetProfile,
             environment: observation.environment,
-            tactics: observation.tactics)
+            tactics: observation.tactics,
+            recentlyHit: observation.recentlyHit)
         if candidates.isEmpty {
             return approach(
                 selfBody: observation.selfBody, target: target, slot: slot)
@@ -392,7 +402,8 @@ public struct ClassicCombatCPU: Sendable {
         target: CombatBodyState,
         targetProfile: CombatProfile?,
         environment: BodyEnvironment,
-        tactics: CombatTactics
+        tactics: CombatTactics,
+        recentlyHit: Bool
     ) -> [ScoredMove] {
         let distance = abs(target.position.x - selfBody.position.x)
         let surface = environment.surface(id: selfBody.currentSurfaceID)
@@ -459,9 +470,20 @@ public struct ClassicCombatCPU: Sendable {
             let energyPenalty = Double(resource.startCost) * reservePressure
             let historyPenalty = (state.actionHistory ?? ActionHistory())
                 .repetitionPenalty(id: move.id, family: resource.family)
+            let counterBonus: Double
+            if recentlyHit && target.phase != .active {
+                switch resource.family {
+                case .fastMelee: counterBonus = 120
+                case .throw: counterBonus = 95
+                case .special: counterBonus = 55
+                default: counterBonus = 0
+                }
+            } else {
+                counterBonus = 0
+            }
             let score = Double(expectedDamage) * tactics.aggression +
                 hitChance * 60 + vulnerabilityBonus + throwBonus + projectileBonus +
-                antiAirBonus + diversityBonus + scarcityBonus -
+                antiAirBonus + diversityBonus + scarcityBonus + counterBonus -
                 exposure * max(0.25, 2 - tactics.defense) - terrainRisk -
                 Double(repetition * 55) - energyPenalty - historyPenalty
             return ScoredMove(move: move, score: score)
@@ -491,6 +513,33 @@ public struct ClassicCombatCPU: Sendable {
         }
         return reachable.sorted {
             $0.score == $1.score ? $0.move.id < $1.move.id : $0.score > $1.score
+        }
+    }
+
+    private func activeAttackThreatens(
+        attacker: CombatBodyState,
+        attackerProfile: CombatProfile?,
+        defender: CombatBodyState,
+        defenderProfile: CombatProfile
+    ) -> Bool {
+        guard let attackerProfile,
+              let move = attackerProfile.move(id: attacker.currentMoveID) else {
+            return false
+        }
+        let attacks = move.hit.attackBoxes.map {
+            $0.placed(
+                at: attacker.position,
+                facing: attacker.facing,
+                scale: attacker.visualScale)
+        }
+        let hurts = defenderProfile.hurtBoxes.map {
+            $0.placed(
+                at: defender.position,
+                facing: defender.facing,
+                scale: defender.visualScale)
+        }
+        return attacks.contains { attack in
+            hurts.contains(where: attack.overlaps)
         }
     }
 
