@@ -557,6 +557,10 @@ public final class CombatRuntime {
                     formalRound: world.session.map {
                         $0.state == .active && $0.roundRules != .desktop
                     } ?? false,
+                    engagedCombat: world.session.map {
+                        $0.state == .active &&
+                            $0.participantIDs.contains(body.actorID)
+                    } ?? false,
                     wasAttacked: body.stunFrames > 0,
                     userActive: platformContext.userActive,
                     windows: windowStates,
