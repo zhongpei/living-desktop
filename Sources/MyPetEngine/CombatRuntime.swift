@@ -768,7 +768,8 @@ public final class CombatRuntime {
     ) {
         guard world.currentFeaturePolicy.teamsEnabled else { return }
         var candidates = world.snapshot().bodies.filter { candidate in
-            candidate.actorID != actorID && candidate.actorID != targetID &&
+            guard case .rosterParticipant = candidate.participation else { return false }
+            return candidate.actorID != actorID && candidate.actorID != targetID &&
                 candidate.healthState == .active &&
                 candidate.rosterRole != .bench &&
                 world.isCombatReady(candidate.actorID) &&
