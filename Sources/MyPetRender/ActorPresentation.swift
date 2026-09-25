@@ -342,7 +342,9 @@ public final class ActorPresentation {
         case "asleep": return appearance.sleep
         case "airborne": return abs(pose.horizontalSpeed) > 200
             ? appearance.run : appearance.airborne
-        case "walking": return appearance.walk
+        case "walking":
+            return abs(pose.horizontalSpeed) >= 120
+                ? appearance.run : appearance.walk
         default:
             if let action = pose.action { return action }
             let movement = [appearance.walk, appearance.run, appearance.sleep]
