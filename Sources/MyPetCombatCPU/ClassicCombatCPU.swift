@@ -27,7 +27,8 @@ public struct ClassicCombatCPU: Sendable {
             lastDecisionFrame: .min,
             lastOutput: CombatCPUOutputCheckpoint(), recentMoves: [],
             lastIssuedInput: .neutral, surfaceGraph: nil, actionHistory: ActionHistory(),
-            moveUseCounts: [:], nextAttackFrame: nil)
+            moveUseCounts: [:], nextAttackFrame: nil,
+            lastCounteredHitFrame: nil)
     }
 
     public init(checkpoint: ClassicCombatCPUCheckpoint) {
@@ -39,11 +40,6 @@ public struct ClassicCombatCPU: Sendable {
 
     public mutating func advance(_ observation: CPUCombatObservation) -> CombatCPUOutput {
         record(opponents: observation.opponents, frame: observation.frame)
-        if observation.recentlyHit {
-            // Being hit cancels neutral attack throttle so recovery can produce
-            // a real reversal/punish instead of waiting behind a cosmetic cooldown.
-            state.nextAttackFrame = observation.frame
-        }
 
         guard observation.selfBody.healthState == .active,
               observation.selfBody.locomotion != .dragged,
@@ -52,6 +48,9 @@ public struct ClassicCombatCPU: Sendable {
             return issue(.neutral, intent: .wait)
         }
 
+        let counterOpportunity = observation.recentHitFrame.map {
+            $0 != state.lastCounteredHitFrame
+        } ?? false
         let burstPressure = observation.selfBody.combo.hitCount >= 2 ||
             observation.selfBody.hp * 100 <= observation.selfProfile.maxHP * 30
         if burstPressure,
@@ -70,6 +69,9 @@ public struct ClassicCombatCPU: Sendable {
             var history = state.actionHistory ?? ActionHistory()
             history.record(id: burst.id, family: .burst)
             state.actionHistory = history
+            if counterOpportunity {
+                state.lastCounteredHitFrame = observation.recentHitFrame
+            }
             state.lastOutput = CombatCPUOutputCheckpoint(
                 intent: .attack, targetID: state.targetID,
                 moveID: burst.id, utilityScore: 1_000, usedSearch: false)
@@ -130,9 +132,10 @@ public struct ClassicCombatCPU: Sendable {
         state.lastDecisionFrame = observation.frame
         let punishWindow = target.phase == .recovery || target.stunFrames > 0
         let attackReady = observation.frame >= (state.nextAttackFrame ?? .min) ||
-            punishWindow || observation.recentlyHit
+            punishWindow || counterOpportunity
 
         if attackReady,
+           !counterOpportunity,
            observation.selfBody.powerUpFrames == 0,
            observation.selfBody.gameplayEnergy.current >= 240,
            observation.selfBody.gameplayEnergy.current <
@@ -179,7 +182,7 @@ public struct ClassicCombatCPU: Sendable {
             targetProfile: targetProfile,
             environment: observation.environment,
             tactics: observation.tactics,
-            recentlyHit: observation.recentlyHit) : []
+            recentlyHit: counterOpportunity) : []
         if candidates.isEmpty {
             return approach(
                 selfBody: observation.selfBody, target: target, slot: slot)
@@ -220,6 +223,9 @@ public struct ClassicCombatCPU: Sendable {
             family: selected.move.effectiveResourceRules.family)
         state.actionHistory = history
         scheduleAttackThrottle(after: selected.move, observation: observation)
+        if counterOpportunity {
+            state.lastCounteredHitFrame = observation.recentHitFrame
+        }
         state.lastOutput = CombatCPUOutputCheckpoint(
             intent: .attack, targetID: target.actorID, slot: slot,
             moveID: selected.move.id, utilityScore: selected.score,
