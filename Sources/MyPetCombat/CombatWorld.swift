@@ -163,6 +163,9 @@ public final class CombatWorld {
     public var currentFeaturePolicy: CombatFeaturePolicy { featurePolicy }
 
     public func teamState(_ teamID: String) -> TeamCombatState? { teams[teamID] }
+    public func teamState(for actorID: EntityID) -> TeamCombatState? {
+        teams.values.first { $0.activeID == actorID || $0.benchID == actorID }
+    }
     public var escalationState: CombatEscalationState { escalation }
 
     public func register(actorID: EntityID, profile: CombatProfile = CombatProfile(),
@@ -573,6 +576,7 @@ public final class CombatWorld {
             let candidates = profile.moves.filter { candidate in
                 allowed.contains(candidate.id) &&
                     featurePolicy.permits(candidate) &&
+                    candidate.effectiveUseState.permits(body.locomotion) &&
                     ((candidate.systemControl.map(buffer.isSystemControlPress) ?? false) ||
                      (candidate.systemControl == nil && CommandMatcher.matches(
                         candidate.command, buffer: buffer, facing: body.facing))) &&
@@ -594,6 +598,7 @@ public final class CombatWorld {
 
         let matchingMoves = profile.moves.enumerated().filter {
             featurePolicy.permits($0.element) &&
+                $0.element.effectiveUseState.permits(body.locomotion) &&
                 (($0.element.systemControl.map(buffer.isSystemControlPress) ?? false) ||
                 ($0.element.systemControl == nil && CommandMatcher.matches(
                     $0.element.command, buffer: buffer, facing: body.facing))) &&
@@ -609,6 +614,8 @@ public final class CombatWorld {
             return
         }
 
+        let horizontalIntent: Double = input.right == input.left
+            ? 0 : (input.right ? 1 : -1)
         if body.locomotion == .grounded, input.up, input.down,
            let surface = environment.surface(id: body.currentSurfaceID),
            surface.kind != .floor {
@@ -616,22 +623,56 @@ public final class CombatWorld {
             body.surfaceFraction = nil
             body.locomotion = .airborne
             body.position.y += 2
+            body.velocity.x = horizontalIntent * profile.walkSpeed
             body.velocity.y = BodyWorld.gravityPerFrame
+            return
         } else if body.locomotion == .grounded && input.up {
             body.currentSurfaceID = nil
             body.surfaceFraction = nil
             body.locomotion = .airborne
+            body.velocity.x = horizontalIntent * profile.walkSpeed * 1.15
             body.velocity.y = profile.jumpVelocity
+            return
+        }
+
+        if body.locomotion == .airborne {
+            // Limited air steering keeps planned platform jumps viable without
+            // turning the fighter into free-flight movement.
+            if horizontalIntent != 0,
+               body.stunFrames == 0,
+               body.actionTimeline == nil {
+                let desired = horizontalIntent * profile.walkSpeed * 0.65
+                body.velocity.x += (desired - body.velocity.x) * 0.35
+            }
+            return
         }
 
         guard body.locomotion == .grounded else { return }
         if input.left != input.right {
             let direction = input.right ? 1.0 : -1.0
-            body.velocity.x = direction * profile.walkSpeed
+            let distantChase = body.authority == .autonomous &&
+                input.forward(facing: body.facing) &&
+                (nearestOpponentHorizontalDistance(from: body) ?? 0) >= 320
+            let speed = profile.walkSpeed *
+                (distantChase ? profile.effectiveRunSpeedMultiplier : 1)
+            body.velocity.x = direction * speed
             body.facing = direction > 0 ? .right : .left
         } else {
             body.velocity.x = 0
         }
+    }
+
+    private func nearestOpponentHorizontalDistance(
+        from body: CombatBodyState
+    ) -> Double? {
+        snapshot().bodies.filter {
+            $0.actorID != body.actorID &&
+                $0.healthState == .active &&
+                $0.rosterRole != .bench &&
+                permitsContact(body.actorID, $0.actorID)
+        }.map {
+            abs($0.position.x - body.position.x)
+        }.min()
     }
 
     @discardableResult
@@ -641,7 +682,8 @@ public final class CombatWorld {
         events: inout [CombatEvent]
     ) -> Bool {
         let resource = move.effectiveResourceRules
-        guard featurePolicy.permits(move) else { return false }
+        guard featurePolicy.permits(move),
+              move.effectiveUseState.permits(body.locomotion) else { return false }
         let cost = featurePolicy.scaledCost(resource.startCost)
         var energy = body.gameplayEnergy
         guard energy.spend(cost, frame: frame) else { return false }

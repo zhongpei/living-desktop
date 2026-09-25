@@ -14,6 +14,11 @@ public struct ProjectileDefinition: Codable, Equatable, Sendable {
     /// schema-v1 lifetime-only content; schema-v2 combat content should author
     /// this explicitly so one desktop projectile cannot cross every display.
     public var maxTravelDistance: Double?
+    /// Optional AI range floor. Manual input may still perform the move at any
+    /// legal state; autonomous zoning uses this to avoid point-blank spam.
+    public var minimumRange: Double?
+    /// Optional per-owner occupancy used by autonomous move selection.
+    public var maxConcurrentOwned: Int?
     public var collisionMask: CollisionMask
     public var hit: CombatHitDefinition
     public var visualResourceID: String
@@ -26,6 +31,8 @@ public struct ProjectileDefinition: Codable, Equatable, Sendable {
         velocity: Vec2,
         lifetimeFrames: Int,
         maxTravelDistance: Double? = nil,
+        minimumRange: Double? = nil,
+        maxConcurrentOwned: Int? = nil,
         collisionMask: CollisionMask = [.hit, .hurt],
         hit: CombatHitDefinition,
         visualResourceID: String,
@@ -37,6 +44,8 @@ public struct ProjectileDefinition: Codable, Equatable, Sendable {
         self.velocity = velocity
         self.lifetimeFrames = max(1, lifetimeFrames)
         self.maxTravelDistance = maxTravelDistance.map { max(0, $0) }
+        self.minimumRange = minimumRange.map { max(0, $0) }
+        self.maxConcurrentOwned = maxConcurrentOwned.map { max(1, $0) }
         self.collisionMask = collisionMask
         self.hit = hit
         self.visualResourceID = visualResourceID

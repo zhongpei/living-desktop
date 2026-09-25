@@ -76,6 +76,7 @@ public final class ActorPresentation {
     private var transition: (plan: CastTransitionPlan, startedAt: Double)?
     private var delayedCombatHP: Int?
     private var combatOffscreenDirection: CombatHUDSnapshot.OffscreenDirection?
+    private var lastCombatActionInstanceID: Int64?
     public private(set) var projectedFrame: LayoutRect?
     public var voicePlaybackEnabled = true {
         didSet { if !voicePlaybackEnabled { stopVoice() } }
@@ -138,8 +139,12 @@ public final class ActorPresentation {
         if let pose { place(pose: pose, now: ProcessInfo.processInfo.systemUptime) }
         let clip = selectedClip(for: pose, now: now)
         let previous = animator.clipName
-        let restart = effects.contains { $0.actorID == actorID }
+        let combatInstanceChanged = pose?.actionInstanceID.map {
+            $0 != lastCombatActionInstanceID
+        } ?? false
+        let restart = effects.contains { $0.actorID == actorID } || combatInstanceChanged
         animator.play(clip, restart: restart)
+        lastCombatActionInstanceID = pose?.actionInstanceID
         if previous != animator.clipName || restart {
             stopVoice()
             if voicePlaybackEnabled, animator.clipName == clip,
@@ -160,7 +165,17 @@ public final class ActorPresentation {
             appearance.leftAuthoredClips.contains(animator.clipName)
                 ? $0.facingRight : !$0.facingRight
         } ?? false
-        let (image, _) = animator.tick(dt: dt)
+        let image: CGImage?
+        if let pose,
+           let actionFrame = pose.actionFrame,
+           let totalFrames = pose.actionTotalFrames,
+           pose.combatPhase != nil {
+            image = animator.sample(
+                frame: actionFrame,
+                totalFrames: max(1, totalFrames)).image
+        } else {
+            image = animator.tick(dt: dt).image
+        }
         if let frame = projectedFrame {
             let combatHUD = pose.flatMap { pose -> CombatHUDSnapshot? in
                 guard pose.combatRole != nil else {
@@ -312,12 +327,24 @@ public final class ActorPresentation {
     private func selectedClip(for pose: BodyPose?, now: Double) -> String {
         guard let pose else { return appearance.idle }
         switch pose.motion {
-        case "asleep": return appearance.sleep
         case "dragged": return appearance.drag
         case "tossed": return appearance.airborne
+        default: break
+        }
+        // Combat state owns presentation while the combat authority owns the
+        // body. This keeps knockdown and airborne attacks from being replaced
+        // by generic locomotion clips.
+        if pose.combatPhase != nil || pose.healthState != nil,
+           let action = pose.action {
+            return action
+        }
+        switch pose.motion {
+        case "asleep": return appearance.sleep
         case "airborne": return abs(pose.horizontalSpeed) > 200
             ? appearance.run : appearance.airborne
-        case "walking": return appearance.walk
+        case "walking":
+            return abs(pose.horizontalSpeed) >= 120
+                ? appearance.run : appearance.walk
         default:
             if let action = pose.action { return action }
             let movement = [appearance.walk, appearance.run, appearance.sleep]

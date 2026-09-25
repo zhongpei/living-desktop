@@ -60,6 +60,24 @@ public final class SpriteAnimator {
         return (frames[frameIndex], true)
     }
 
+    /// Deterministic combat sampling. Logic owns the clock; renderer maps the
+    /// current ActionTimeline frame onto the authored image sequence.
+    public func sample(frame: Int, totalFrames: Int) -> (image: CGImage?, changed: Bool) {
+        guard !frames.isEmpty else { return (nil, false) }
+        let logicalLast = max(0, totalFrames - 1)
+        let clampedFrame = min(logicalLast, max(0, frame))
+        let progress = logicalLast == 0 ? 1 :
+            Double(clampedFrame) / Double(logicalLast)
+        let nextIndex = min(
+            frames.count - 1,
+            max(0, Int((progress * Double(frames.count - 1)).rounded(.down))))
+        let changed = nextIndex != frameIndex
+        frameIndex = nextIndex
+        holdAccumulator = 0
+        finished = !looping && clampedFrame >= logicalLast
+        return (frames[frameIndex], changed)
+    }
+
     public var currentImage: CGImage? {
         frames.isEmpty ? nil : frames[frameIndex]
     }

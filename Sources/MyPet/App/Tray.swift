@@ -13,6 +13,7 @@ final class Tray: NSObject {
     var onInputPluginToggle: ((String) -> Void)?
     var onPointerInputToggle: (() -> Void)?
     var onPointerInputRateChange: ((Int) -> Void)?
+    var onCombatPacingRateChange: ((Double) -> Void)?
     /// 角色组／角色选择变化；AppDelegate 负责持久化并把选择交给世界运行时。
     var onCastSelectionChange: ((CastSelection) -> Void)?
     /// 邀请一个候选角色出场；是否允许、是否已满由 CastRuntime 决定。
@@ -214,6 +215,7 @@ final class Tray: NSObject {
         static let combatHUD = NSUserInterfaceItemIdentifier("game.combat-hud")
         static let neutralNPC = NSUserInterfaceItemIdentifier("game.neutral-npc")
         static let automaticCadence = NSUserInterfaceItemIdentifier("game.automatic-cadence")
+        static let combatPacing = NSUserInterfaceItemIdentifier("game.combat-pacing")
     }
 
     func rebuild() {
@@ -450,6 +452,22 @@ final class Tray: NSObject {
                                       on: settings.gameFeatures.automaticCombatEnabled))
         submenu.addItem(checkmarkItem(.combatHUD, id: MenuID.combatHUD,
                                       on: settings.gameFeatures.combatHUDEnabled))
+        let pacing = NSMenuItem(title: "战斗节奏", action: nil, keyEquivalent: "")
+        pacing.identifier = MenuID.combatPacing
+        let pacingMenu = NSMenu(title: "战斗节奏")
+        for rate in [0.5, 0.75, 1.0, 1.25, 1.5] {
+            let item = NSMenuItem(
+                title: String(format: "%.2f×", rate),
+                action: #selector(setCombatPacingRate(_:)), keyEquivalent: "")
+            item.target = self
+            item.identifier = NSUserInterfaceItemIdentifier(
+                "game.combat-pacing.\(String(format: "%.2f", rate))")
+            item.representedObject = rate
+            item.state = abs(settings.gameFeatures.combatPacingRate - rate) < 0.001 ? .on : .off
+            pacingMenu.addItem(item)
+        }
+        pacing.submenu = pacingMenu
+        submenu.addItem(pacing)
         submenu.addItem(checkmarkItem(.neutralNPC, id: MenuID.neutralNPC,
                                       on: settings.gameFeatures.neutralNPC.enabled))
         submenu.addItem(checkmarkItem(.automaticCadence, id: MenuID.automaticCadence,
@@ -677,6 +695,11 @@ final class Tray: NSObject {
         onPointerInputRateChange?(hz)
     }
 
+    @objc private func setCombatPacingRate(_ sender: NSMenuItem) {
+        guard let rate = sender.representedObject as? Double else { return }
+        onCombatPacingRateChange?(rate)
+    }
+
     /// 辅助功能授权引导弹窗。
     func showAccessibilityPrompt() {
         let alert = NSAlert()
@@ -750,6 +773,10 @@ extension Tray: NSMenuDelegate {
                     } else if item.identifier?.rawValue.hasPrefix("pointer-input.hz.") == true,
                               let hz = item.representedObject as? Int {
                         item.state = settings.pointerInputHz == hz ? .on : .off
+                    } else if item.identifier?.rawValue.hasPrefix("game.combat-pacing.") == true,
+                              let rate = item.representedObject as? Double {
+                        item.state = abs(settings.gameFeatures.combatPacingRate - rate) < 0.001
+                            ? .on : .off
                     }
                     if let pluginID = item.representedObject as? String,
                        item.identifier?.rawValue.hasPrefix("input-plugin.") == true {

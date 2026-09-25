@@ -139,6 +139,7 @@ final class PetController {
     private var lastWindowTitleFingerprint: String?
     private let puller = WindowPuller()
     private let combatPlatformEffects = CombatPlatformEffects()
+    private let combatEffects = CombatEffectsPresentation()
     private var lastCombatWindowBounds: [CGWindowID: CGRect] = [:]
     /// 世界事件环（进 BrainContextSnapshot.recentEvents）。
     private var recentEvents: [(t: Double, text: String)] = []
@@ -591,6 +592,7 @@ final class PetController {
         goalBrainCoordinator.cancelPendingPlan()
         isDeparting = false
         presentation.stop()
+        combatEffects.stop()
         timer?.invalidate()
         timer = nil
         timerHz = nil
@@ -761,11 +763,15 @@ final class PetController {
         tickScenePerform()
         applyManualLocomotion()
         if !usesSharedCombatWorld {
-            consumeCombatEvents(combatCoordinator.advance(
+            let combatEvents = combatCoordinator.advance(
                 elapsedSeconds: dt,
                 environment: model.bodyEnvironmentSnapshot(),
                 platformContext: combatPlatformContext(),
-                beforeFrame: { [weak self] in self?.prepareBodySimulationFrame() }))
+                beforeFrame: { [weak self] in self?.prepareBodySimulationFrame() })
+            consumeCombatEvents(combatEvents)
+            combatEffects.apply(
+                snapshot: combatCoordinator.world.snapshot(),
+                events: combatEvents)
             consumeCombatPlatformEffect()
         }
         syncBodyProjection()
@@ -815,7 +821,20 @@ final class PetController {
     private func combatVisualAction(for body: CombatBodyState?) -> String? {
         guard let body else { return nil }
         if let move = combatProfile.move(id: body.currentMoveID) {
-            return library.action(named: move.visualAction)
+            if let authored = library.action(named: move.visualAction) {
+                return authored
+            }
+            let fallbacks: [String]
+            switch move.effectiveResourceRules.family {
+            case .projectile: fallbacks = ["point", "wave", "attack"]
+            case .assist: fallbacks = ["attack", "wave"]
+            case .powerUp: fallbacks = ["happy", "combat_ready", "attack"]
+            default: fallbacks = ["attack", "strike", "happy"]
+            }
+            if let fallback = fallbacks.lazy.compactMap(library.action(named:)).first {
+                return fallback
+            }
+            return idlePrimary
         }
         switch body.healthState {
         case .knockedOut:
@@ -877,6 +896,10 @@ final class PetController {
             combatParticipation: combatHUD.map { String(describing: $0.participation) },
             combatPhase: combat?.phase.rawValue,
             healthState: combat?.healthState.rawValue,
+            actionFrame: combat?.actionTimeline?.frame,
+            actionTotalFrames: combat?.actionTimeline?.definition.durationFrames,
+            actionInstanceID: combat?.actionTimeline?.instanceID,
+            combatHitStopFrames: combat?.hitStopFrames,
             authoritativePlacement: combat.map {
                 $0.authority != .scripted ||
                 $0.healthState != .active ||

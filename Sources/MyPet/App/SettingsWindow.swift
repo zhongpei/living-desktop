@@ -53,6 +53,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private var powerUpBox: NSButton!
     private var defensiveBurstBox: NSButton!
     private var cpuDifficultyPopup: NSPopUpButton!
+    private var combatPacingPopup: NSPopUpButton!
     private var controlScopePopup: NSPopUpButton!
     private var controlOverrideBox: NSButton!
     private var controlBindingPopups: [KeyboardControlKey: NSPopUpButton] = [:]
@@ -449,8 +450,22 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         cpuDifficultyPopup.addItems(withTitles: ["简单", "普通", "困难", "极难"])
         cpuDifficultyPopup.selectItem(at: ["easy", "normal", "hard", "veryHard"]
             .firstIndex(of: draft.gameFeatures.cpuDifficulty.rawValue) ?? 1)
+        combatPacingPopup = NSPopUpButton()
+        for rate in [0.5, 0.75, 1.0, 1.25, 1.5] {
+            let item = NSMenuItem(
+                title: String(format: "%.2f×", rate),
+                action: nil, keyEquivalent: "")
+            item.representedObject = rate
+            combatPacingPopup.menu?.addItem(item)
+        }
+        let currentRate = draft.gameFeatures.combatPacingRate
+        let rateIndex = [0.5, 0.75, 1.0, 1.25, 1.5].enumerated()
+            .min(by: { abs($0.element - currentRate) < abs($1.element - currentRate) })?.offset ?? 2
+        combatPacingPopup.selectItem(at: rateIndex)
         return scrollFormStack([
-            automaticCombatBox, combatHUDBox, row("CPU 难度", cpuDifficultyPopup, labelWidth: 90),
+            automaticCombatBox, combatHUDBox,
+            row("CPU 难度", cpuDifficultyPopup, labelWidth: 100),
+            row("战斗节奏", combatPacingPopup, labelWidth: 100),
             separator(), teamsBox, freeTagBox, assistsBox, projectilesBox,
             supersBox, powerUpBox, defensiveBurstBox,
             note("招式伤害、帧数据、碰撞框和射程由 CombatProfile 管理，不在普通设置中覆盖。"),
@@ -1169,6 +1184,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         draft.gameFeatures.defensiveBurstEnabled = defensiveBurstBox.state == .on
         let difficulties: [CombatCPUDifficulty] = [.easy, .normal, .hard, .veryHard]
         draft.gameFeatures.cpuDifficulty = difficulties[max(0, cpuDifficultyPopup.indexOfSelectedItem)]
+        draft.gameFeatures.combatPacingRate = min(2, max(0.25,
+            combatPacingPopup.selectedItem?.representedObject as? Double ?? 1))
         let previousNeutral = draft.gameFeatures.neutralNPC
         draft.gameFeatures.neutralNPC = NeutralEscalationPolicy(
             enabled: neutralNPCBox.state == .on,

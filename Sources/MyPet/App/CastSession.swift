@@ -26,6 +26,7 @@ final class CastSession: NSObject {
     /// One shared 60 Hz body/combat world for every visible cast member.
     private var combatCoordinator = DesktopCombatCoordinator()
     private let castOverlays = CastOverlayPresentation()
+    private let combatEffects = CombatEffectsPresentation()
     private var castTimer: Timer?
     private var castTimerHz: Int?
     private var cadenceState = RuntimeCadenceState()
@@ -146,6 +147,7 @@ final class CastSession: NSObject {
         castControllers.removeAll()
         castSceneGraph.removeAll()
         castOverlays.close()
+        combatEffects.stop()
         castDepartureDeadlines.removeAll()
         pointerReflex.reset()
         reportedMissingCastVisuals.removeAll()
@@ -211,6 +213,9 @@ final class CastSession: NSObject {
         syncCastControllers()
         let effects = runtime.runtime.drainPresentationEffects()
         let combatEvents = result?.combatEvents ?? []
+        combatEffects.apply(
+            snapshot: combatCoordinator.world.snapshot(),
+            events: combatEvents)
         for pet in castControllers.values { pet.syncBodyProjection() }
         for pet in castControllers.values { pet.consumeCombatEvents(combatEvents) }
         for pet in castControllers.values { pet.consumeCombatPlatformEffect() }

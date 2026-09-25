@@ -165,6 +165,26 @@ public final class ClipLibrary: SpriteClipSource {
             library.clips[key] = Clip(key: key, meta: meta, directory: clipDir)
         }
 
+        // Combat evidence may contain approved actions that an older manifest
+        // forgot to list. Discover real action directories so the renderer
+        // cannot silently drop a move that CombatWorld is executing.
+        let actionsRoot = dir.appendingPathComponent("actions", isDirectory: true)
+        let actionDirs = (try? FileManager.default.contentsOfDirectory(
+            at: actionsRoot, includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles])) ?? []
+        for actionDir in actionDirs where actionDir.hasDirectoryPath {
+            let key = "actions/\(actionDir.lastPathComponent)"
+            guard library.clips[key] == nil else { continue }
+            let urls = frameURLs(in: actionDir)
+            guard !urls.isEmpty else { continue }
+            let meta = PetPackManifest.ClipMeta(
+                frames: urls.count, fps: 12,
+                facing: "right", playback: "once", voice: nil)
+            library.clips[key] = Clip(key: key, meta: meta, directory: actionDir)
+            library.warnings.append(
+                "clip \(key): 存在动作帧但 manifest 未登记，按 12fps/once 兼容加载")
+        }
+
         for motion in [BaseMotion.idle, .walk] where library.base(motion) == nil {
             throw PetPackError.missingBase(dir: dir, motion: motion)
         }

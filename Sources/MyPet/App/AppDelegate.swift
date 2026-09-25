@@ -534,6 +534,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             settings.pointerInputHz = hz
             self.applySettings(settings, pointerOnly: true)
         }
+        tray.onCombatPacingRateChange = { [weak self] rate in
+            guard let self, var settings = self.settings else { return }
+            settings.gameFeatures.combatPacingRate = min(2, max(0.25, rate))
+            // This setting is runtime-only and should not rebuild the cast.
+            self.applySettings(settings, pointerOnly: true)
+        }
         tray.onOpenSettings = { [weak self] in self?.showSettings() }
         tray.onOpenPromptManager = { [weak self] in self?.showPromptManager() }
         tray.onOpenContentManager = { [weak self] in self?.showContentManager() }
