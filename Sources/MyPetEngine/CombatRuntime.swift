@@ -146,6 +146,9 @@ public final class CombatRuntime {
     private var requestedCombatActors: Set<String>
     private var engagementTargets: [String: EntityID]
     private var committedEngagements: Set<String>
+    /// Runtime tuning, deliberately separate from the deterministic 60 Hz world clock.
+    private var combatPacingRate: Double = 1
+    private var lastReceivedHitFrames: [String: Int64] = [:]
 
     public init(cpuSeed: UInt64 = 0) {
         self.world = CombatWorld()
@@ -268,6 +271,7 @@ public final class CombatRuntime {
         gameplayStyles.removeValue(forKey: actorID.raw)
         requestedCombatActors.remove(actorID.raw)
         engagementTargets.removeValue(forKey: actorID.raw)
+        lastReceivedHitFrames.removeValue(forKey: actorID.raw)
         committedEngagements = Set(committedEngagements.filter { key in
             !key.split(separator: "|").contains { String($0) == actorID.raw }
         })
@@ -406,6 +410,10 @@ public final class CombatRuntime {
         world.setEscalationPolicy(policy)
     }
 
+    public func setCombatPacingRate(_ rate: Double) {
+        combatPacingRate = min(2, max(0.25, rate))
+    }
+
     public func setFeaturePolicy(_ policy: CombatFeaturePolicy) {
         world.setFeaturePolicy(policy)
     }
@@ -493,7 +501,11 @@ public final class CombatRuntime {
                         key == body.actorID.raw ? nil : value.reservedSlot
                     },
                     tactics: combatTactics(
-                        gameplayStyles[body.actorID.raw] ?? .balanced))
+                        gameplayStyles[body.actorID.raw] ?? .balanced),
+                    pacingRate: combatPacingRate,
+                    recentlyHit: lastReceivedHitFrames[body.actorID.raw].map {
+                        world.frame - $0 <= 60
+                    } ?? false)
                 let suppliedWindows = Dictionary(
                     platformContext.windows.map { ($0.id, $0) },
                     uniquingKeysWith: { first, _ in first })
@@ -512,7 +524,9 @@ public final class CombatRuntime {
                 }
                 let output = cpu.advance(GameplayCPUObservation(
                     combat: combatObservation,
-                    formalRound: world.session?.state == .active,
+                    formalRound: world.session.map {
+                        $0.state == .active && $0.roundRules != .desktop
+                    } ?? false,
                     wasAttacked: body.stunFrames > 0,
                     userActive: platformContext.userActive,
                     windows: windowStates,
@@ -539,6 +553,13 @@ public final class CombatRuntime {
             applyResolvedInput(for: body.actorID)
         }
         let events = world.step(environment: environment)
+        for event in events
+        where (event.kind == .hit || event.kind == .blocked), let targetID = event.targetID {
+            lastReceivedHitFrames[targetID.raw] = event.frame
+        }
+        lastReceivedHitFrames = lastReceivedHitFrames.filter {
+            world.frame - $0.value <= 120
+        }
         if events.contains(where: { $0.kind == .roundEnded }) {
             releaseNonManualCombatControls()
         }
