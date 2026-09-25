@@ -1,4 +1,5 @@
 import AppKit
+import MyPet2D
 import MyPetCombat
 import MyPetRender
 
@@ -80,9 +81,11 @@ final class CombatEffectsPresentation {
                 expiresAt: now + (event.kind == .assistEntered ? 0.45 : 0.20))
         }
 
-        for (key, impact) in impacts where impact.expiresAt <= now {
-            impact.panel.orderOut(nil)
-            impacts.removeValue(forKey: key)
+        let expired = impacts.compactMap { key, impact in
+            impact.expiresAt <= now ? key : nil
+        }
+        for key in expired {
+            impacts.removeValue(forKey: key)?.panel.orderOut(nil)
         }
     }
 
