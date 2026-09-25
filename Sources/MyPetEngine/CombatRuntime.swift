@@ -35,6 +35,8 @@ public struct CombatRuntimeCheckpoint: Codable, Equatable, Sendable {
     public var requestedCombatActors: Set<String>?
     public var engagementTargets: [String: EntityID]?
     public var committedEngagements: Set<String>?
+    public var combatPacingRate: Double?
+    public var lastReceivedHitFrames: [String: Int64]?
 
     public init(
         world: CombatWorldCheckpoint,
@@ -48,7 +50,9 @@ public struct CombatRuntimeCheckpoint: Codable, Equatable, Sendable {
         gameplayStyles: [String: CharacterGameplayStyle]? = nil,
         requestedCombatActors: Set<String>? = nil,
         engagementTargets: [String: EntityID]? = nil,
-        committedEngagements: Set<String>? = nil
+        committedEngagements: Set<String>? = nil,
+        combatPacingRate: Double? = nil,
+        lastReceivedHitFrames: [String: Int64]? = nil
     ) {
         self.world = world
         self.controls = controls
@@ -62,6 +66,8 @@ public struct CombatRuntimeCheckpoint: Codable, Equatable, Sendable {
         self.requestedCombatActors = requestedCombatActors
         self.engagementTargets = engagementTargets
         self.committedEngagements = committedEngagements
+        self.combatPacingRate = combatPacingRate
+        self.lastReceivedHitFrames = lastReceivedHitFrames
     }
 }
 
@@ -80,6 +86,8 @@ public struct CombatRuntimeDigest: Codable, Equatable, Sendable {
     public var requestedCombatActors: Set<String>?
     public var engagementTargets: [String: EntityID]?
     public var committedEngagements: Set<String>?
+    public var combatPacingRate: Double?
+    public var lastReceivedHitFrames: [String: Int64]?
 
     public init(
         world: CombatWorldCheckpoint,
@@ -93,7 +101,9 @@ public struct CombatRuntimeDigest: Codable, Equatable, Sendable {
         gameplayStyles: [String: CharacterGameplayStyle]? = nil,
         requestedCombatActors: Set<String>? = nil,
         engagementTargets: [String: EntityID]? = nil,
-        committedEngagements: Set<String>? = nil
+        committedEngagements: Set<String>? = nil,
+        combatPacingRate: Double? = nil,
+        lastReceivedHitFrames: [String: Int64]? = nil
     ) {
         self.world = world
         self.controls = controls
@@ -107,6 +117,8 @@ public struct CombatRuntimeDigest: Codable, Equatable, Sendable {
         self.requestedCombatActors = requestedCombatActors
         self.engagementTargets = engagementTargets
         self.committedEngagements = committedEngagements
+        self.combatPacingRate = combatPacingRate
+        self.lastReceivedHitFrames = lastReceivedHitFrames
     }
 }
 
@@ -182,6 +194,8 @@ public final class CombatRuntime {
         self.requestedCombatActors = checkpoint.requestedCombatActors ?? []
         self.engagementTargets = checkpoint.engagementTargets ?? [:]
         self.committedEngagements = checkpoint.committedEngagements ?? []
+        self.combatPacingRate = min(2, max(0.25, checkpoint.combatPacingRate ?? 1))
+        self.lastReceivedHitFrames = checkpoint.lastReceivedHitFrames ?? [:]
     }
 
     public var digest: CombatRuntimeDigest {
@@ -195,7 +209,9 @@ public final class CombatRuntime {
             gameplayStyles: gameplayStyles,
             requestedCombatActors: requestedCombatActors,
             engagementTargets: engagementTargets,
-            committedEngagements: committedEngagements)
+            committedEngagements: committedEngagements,
+            combatPacingRate: combatPacingRate,
+            lastReceivedHitFrames: lastReceivedHitFrames)
     }
 
     public func checkpoint() -> CombatRuntimeCheckpoint {
@@ -209,7 +225,9 @@ public final class CombatRuntime {
             gameplayStyles: gameplayStyles,
             requestedCombatActors: requestedCombatActors,
             engagementTargets: engagementTargets,
-            committedEngagements: committedEngagements)
+            committedEngagements: committedEngagements,
+            combatPacingRate: combatPacingRate,
+            lastReceivedHitFrames: lastReceivedHitFrames)
     }
 
     public func restore(_ checkpoint: CombatRuntimeCheckpoint) {
@@ -228,6 +246,8 @@ public final class CombatRuntime {
         requestedCombatActors = checkpoint.requestedCombatActors ?? []
         engagementTargets = checkpoint.engagementTargets ?? [:]
         committedEngagements = checkpoint.committedEngagements ?? []
+        combatPacingRate = min(2, max(0.25, checkpoint.combatPacingRate ?? 1))
+        lastReceivedHitFrames = checkpoint.lastReceivedHitFrames ?? [:]
     }
 
     public func register(
@@ -589,6 +609,7 @@ public final class CombatRuntime {
         requestedCombatActors.removeAll()
         engagementTargets.removeAll()
         committedEngagements.removeAll()
+        lastReceivedHitFrames.removeAll()
     }
 
     private func policyAdjustedProfile(_ profile: CombatProfile) -> CombatProfile {
