@@ -182,6 +182,9 @@ public struct CombatMoveDefinition: Codable, Equatable, Sendable {
 public struct CombatProfile: Codable, Equatable, Sendable {
     public var maxHP: Int
     public var walkSpeed: Double
+    /// Autonomous distant chase multiplier. This is the traditional run/dash
+    /// layer above normal walk speed; nil uses the desktop combat default.
+    public var runSpeedMultiplier: Double?
     public var jumpVelocity: Double
     public var pushRadius: Double
     public var hurtBoxes: [CollisionBox]
@@ -191,7 +194,8 @@ public struct CombatProfile: Codable, Equatable, Sendable {
     public var revivedHPFraction: Double
     public var reviveInvulnerabilityFrames: Int
 
-    public init(maxHP: Int = 1000, walkSpeed: Double = 1.5, jumpVelocity: Double = -8.6,
+    public init(maxHP: Int = 1000, walkSpeed: Double = 1.5,
+                runSpeedMultiplier: Double? = nil, jumpVelocity: Double = -8.6,
                 pushRadius: Double = 24,
                 hurtBoxes: [CollisionBox] = [CollisionBox(x1: -24, y1: -92, x2: 24, y2: 0)],
                 moves: [CombatMoveDefinition] = CombatProfile.defaultMoves,
@@ -199,6 +203,7 @@ public struct CombatProfile: Codable, Equatable, Sendable {
                 revivedHPFraction: Double = 0.30, reviveInvulnerabilityFrames: Int = 120) {
         self.maxHP = max(1, maxHP)
         self.walkSpeed = max(0, walkSpeed)
+        self.runSpeedMultiplier = runSpeedMultiplier.map { min(3, max(1, $0)) }
         self.jumpVelocity = jumpVelocity
         self.pushRadius = max(1, pushRadius)
         self.hurtBoxes = hurtBoxes
@@ -207,6 +212,10 @@ public struct CombatProfile: Codable, Equatable, Sendable {
         self.getUpFrames = max(1, getUpFrames)
         self.revivedHPFraction = min(1, max(0.01, revivedHPFraction))
         self.reviveInvulnerabilityFrames = max(0, reviveInvulnerabilityFrames)
+    }
+
+    public var effectiveRunSpeedMultiplier: Double {
+        runSpeedMultiplier ?? 1.65
     }
 
     public static let defaultMoves: [CombatMoveDefinition] = [
