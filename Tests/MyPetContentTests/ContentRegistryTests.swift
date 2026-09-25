@@ -61,6 +61,27 @@ final class ContentRegistryTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: retired.path))
     }
 
+    func testSameRevisionConflictIsVisibleAndBuiltInRemainsActive() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mypet-registry-same-revision-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let builtIn = root.appendingPathComponent("builtin")
+        let support = root.appendingPathComponent("support")
+        try FileManager.default.createDirectory(at: builtIn, withIntermediateDirectories: true)
+        try package(at: builtIn.appendingPathComponent("plot.mypetpack"), groupID: "built_in")
+        let registry = try ContentRegistry(builtInDirectory: builtIn, appSupportDirectory: support)
+
+        let user = support.appendingPathComponent("packages/plot.mypetpack")
+        try package(at: user, groupID: "stale_user")
+        registry.refresh()
+
+        let records = registry.list().filter { $0.manifest?.id == "plot" }
+        XCTAssertEqual(records.filter { $0.source == .builtIn && $0.status == .enabled }.count, 1)
+        XCTAssertEqual(records.filter { $0.source == .user && $0.status == .corrupt }.count, 1)
+        XCTAssertTrue(records.contains { $0.reason?.contains("same-revision") == true })
+        XCTAssertNoThrow(try registry.resolve(kind: .story, id: "plot"))
+    }
+
     func testBatchImportKeepsSuccessfulPackagesWhenOneFails() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("mypet-batch-import-\(UUID().uuidString)")

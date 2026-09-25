@@ -32,9 +32,20 @@ Living Desktop 是运行在 macOS 桌面上的 AI 角色游戏。角色把真实
 兼容的资源包：
 
 ```bash
-MYPET_PETPACK=/path/to/petpack swift run
+# 开发模式必须显式确认这是未打包运行；发布/测试请使用下面的 .app 构建。
+MYPET_ALLOW_UNBUNDLED_RUN=1 MYPET_RESOURCES=/path/to/Resources swift run
 swift test
 ```
+
+私有仓库的完整桌面构建：
+
+```bash
+LIVING_DESKTOP_RESOURCES=/path/to/desktop-assets/Resources scripts/build-app.sh
+open dist/LivingDesktop.app
+```
+
+直接运行 `.build` 目录里的 `LivingDesktop` 裸二进制会被拒绝，以免缺少图标、Info.plist
+和角色资源却看起来像启动成功。
 
 需要隔离桌面 smoke 的设置时，可额外设置绝对路径 `MYPET_SETTINGS_PATH=/path/to/settings.json`；
 应用将只在该文件读写设置，不触碰日常 `MyPet/settings.json`。

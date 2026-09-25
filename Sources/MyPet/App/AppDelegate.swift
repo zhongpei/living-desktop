@@ -71,9 +71,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         wireTray(tray)
         tray.updatePets(library.map(\.id), current: settings.currentPet)
         tray.updateCastCatalog(castPacks, selection: settings.castSelection)
-        if settings.castSelection.isRuntimeEnabled, !castPacks.isEmpty {
+        let activeCastMembers = settings.castSelection.activeMembers(from: castPacks)
+        if settings.castSelection.isRuntimeEnabled,
+           !castPacks.isEmpty,
+           !activeCastMembers.isEmpty {
             startCastRuntime()
         } else if let selected {
+            if settings.castSelection.isRuntimeEnabled && activeCastMembers.isEmpty {
+                NSLog("MyPet: 角色组设置没有有效候选角色，回退到当前角色 %@", selected)
+            }
             activatePet(selected)
         }
     }

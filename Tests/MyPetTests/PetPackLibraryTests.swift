@@ -187,4 +187,12 @@ final class PetPackLibraryTests: XCTestCase {
         let bundle = try makeFakeAppBundle(in: root, withIcon: false)
         XCTAssertNil(Tray.trayIconURL(bundle: bundle, executablePath: "/nonexistent/MyPet"))
     }
+
+    func testUnbundledLaunchRequiresExplicitOptIn() {
+        XCTAssertTrue(AppLaunchGuard.isAppBundle(URL(fileURLWithPath: "/tmp/LivingDesktop.app")))
+        XCTAssertFalse(AppLaunchGuard.isAppBundle(URL(fileURLWithPath: "/tmp/LivingDesktop")))
+        XCTAssertFalse(AppLaunchGuard.allowsUnbundledRun(environment: [:]))
+        XCTAssertTrue(AppLaunchGuard.allowsUnbundledRun(
+            environment: ["MYPET_ALLOW_UNBUNDLED_RUN": "1"]))
+    }
 }

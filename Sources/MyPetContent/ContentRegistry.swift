@@ -65,9 +65,18 @@ public final class ContentRegistry {
                     let record = Record(manifest: manifest, source: source, status: status,
                                         url: url, reason: nil)
                     if let previous = candidates[key], let old = previous.manifest {
-                        if source == .user && previous.source == .builtIn &&
-                            manifest.revision > old.revision ||
-                            source == previous.source && manifest.revision > old.revision {
+                        let newer = manifest.revision > old.revision
+                        let canReplace = newer &&
+                            (source == previous.source ||
+                             (source == .user && previous.source == .builtIn))
+                        if manifest.revision == old.revision && manifest != old {
+                            broken.append(Record(
+                                manifest: manifest,
+                                source: source,
+                                status: .corrupt,
+                                url: url,
+                                reason: "same-revision package conflicts with another installed package"))
+                        } else if canReplace {
                             candidates[key] = record
                         }
                     } else {

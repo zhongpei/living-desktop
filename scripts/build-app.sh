@@ -29,6 +29,13 @@ if [ "$CONTENT_MODE" = bundled ] && [ ! -d "$RESOURCE_ROOT/petpack" ]; then
     echo "error: 发布构建需要角色资源；请设置 LIVING_DESKTOP_RESOURCES" >&2
     exit 1
 fi
+for required_file in AppIcon.icns tray-cat.png; do
+    if [ ! -f "$RESOURCE_ROOT/$required_file" ]; then
+        echo "error: 发布构建缺少 $RESOURCE_ROOT/$required_file" >&2
+        echo "       请使用包含图标的 desktop-assets/Resources" >&2
+        exit 1
+    fi
+done
 
 VERSION="${1:-}"
 if [ -z "$VERSION" ]; then
@@ -60,13 +67,9 @@ chmod 0755 "$APP/Contents/MacOS/$APP_NAME"
 bash "$SCRIPT_DIR/build-metallib.sh"
 cp ".build/mlx.metallib" "$APP/Contents/MacOS/mlx.metallib"
 
-# 应用图标与菜单栏托盘图（scripts/make_icons.py 产出，随仓库入库）。
-if [ -f "$RESOURCE_ROOT/AppIcon.icns" ]; then
-    cp "$RESOURCE_ROOT/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
-fi
-if [ -f "$RESOURCE_ROOT/tray-cat.png" ]; then
-    cp "$RESOURCE_ROOT/tray-cat.png" "$APP/Contents/Resources/tray-cat.png"
-fi
+# 应用图标与菜单栏托盘图（发布构建必需，避免生成无图标的半成品）。
+cp "$RESOURCE_ROOT/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+cp "$RESOURCE_ROOT/tray-cat.png" "$APP/Contents/Resources/tray-cat.png"
 
 # 运行时目录全部按原结构入包。缺失目录由运行时既有降级路径处理。
 for resource_dir in categories effects gameplay relationships; do
@@ -137,6 +140,15 @@ codesign --force --deep --sign - --timestamp=none \
     --requirements "=designated => identifier \"$BUNDLE_ID\"" \
     "$APP"
 codesign --verify --deep --strict "$APP"
+
+test -x "$APP/Contents/MacOS/$APP_NAME"
+test -f "$APP/Contents/Info.plist"
+test -f "$APP/Contents/Resources/AppIcon.icns"
+test -f "$APP/Contents/Resources/tray-cat.png"
+if [ "$CONTENT_MODE" = bundled ]; then
+    test -d "$APP/Contents/Resources/packages"
+    test -d "$APP/Contents/Resources/petpack"
+fi
 
 echo
 echo "==> 完成：$APP"
