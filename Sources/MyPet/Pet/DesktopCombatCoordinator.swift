@@ -42,6 +42,7 @@ final class DesktopCombatCoordinator {
 
     func configure(_ settings: GameFeatureSettings) {
         combatRuntime.setFeaturePolicy(settings.combatPolicy)
+        combatRuntime.setCombatPacingRate(settings.combatPacingRate)
         combatRuntime.setEscalationPolicy(settings.neutralNPC)
         combatRuntime.setWindowInteractionPolicy(settings.windowInteraction.policy)
         for actor in registeredActors {
