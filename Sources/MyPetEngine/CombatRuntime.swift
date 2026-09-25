@@ -592,8 +592,9 @@ public final class CombatRuntime {
             applyResolvedInput(for: body.actorID)
         }
         let events = world.step(environment: environment)
-        for event in events
-        where (event.kind == .hit || event.kind == .blocked), let targetID = event.targetID {
+        for event in events {
+            guard event.kind == .hit || event.kind == .blocked,
+                  let targetID = event.targetID else { continue }
             lastReceivedHitFrames[targetID.raw] = event.frame
         }
         lastReceivedHitFrames = lastReceivedHitFrames.filter {

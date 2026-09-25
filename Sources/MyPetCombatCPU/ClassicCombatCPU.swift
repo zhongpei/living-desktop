@@ -182,10 +182,19 @@ public struct ClassicCombatCPU: Sendable {
             targetProfile: targetProfile,
             environment: observation.environment,
             tactics: observation.tactics,
-            recentlyHit: counterOpportunity) : []
+            recentlyHit: counterOpportunity,
+            worldCheckpoint: observation.worldCheckpoint) : []
         if candidates.isEmpty {
             return approach(
                 selfBody: observation.selfBody, target: target, slot: slot)
+        }
+        let unseenCandidates = candidates.filter {
+            (state.moveUseCounts?[$0.move.id, default: 0] ?? 0) == 0
+        }
+        if !unseenCandidates.isEmpty {
+            candidates = unseenCandidates + candidates.filter {
+                (state.moveUseCounts?[$0.move.id, default: 0] ?? 0) > 0
+            }
         }
         candidates = Array(candidates.prefix(state.configuration.topK))
         let useSearch = state.configuration.searchIterations > 0 &&
@@ -367,7 +376,8 @@ public struct ClassicCombatCPU: Sendable {
         targetProfile: CombatProfile?,
         environment: BodyEnvironment,
         tactics: CombatTactics,
-        recentlyHit: Bool
+        recentlyHit: Bool,
+        worldCheckpoint: CombatWorldCheckpoint?
     ) -> [ScoredMove] {
         let distance = abs(target.position.x - selfBody.position.x)
         let surface = environment.surface(id: selfBody.currentSurfaceID)
@@ -458,19 +468,15 @@ public struct ClassicCombatCPU: Sendable {
                 let desktopPracticalReach = min(
                     authoredReach,
                     max(480, min(900, environment.bounds.width * 0.28)))
-                let bodyContact = profile.pushRadius +
-                    (targetProfile?.pushRadius ?? profile.pushRadius)
                 let authoredMinimum = candidate.move.authoredProjectiles
                     .compactMap(\.minimumRange).max()
-                let minimumRange = authoredMinimum ?? max(
-                    110,
-                    bodyContact + 45 + Double(candidate.move.startupFrames) * 3)
+                let minimumRange = authoredMinimum ?? 0
                 let verticalReach = candidate.move.authoredProjectiles.map {
                     abs($0.spawnOffset.y) +
                         abs($0.velocity.y) * Double($0.lifetimeFrames) + 100
                 }.max() ?? 100
                 let verticalDistance = abs(target.position.y - selfBody.position.y)
-                let ownedProjectiles = observation.worldCheckpoint?.projectiles?.values
+                let ownedProjectiles = worldCheckpoint?.projectiles?.values
                     .filter { $0.ownerID == selfBody.actorID }.count ?? 0
                 let authoredLimit = candidate.move.authoredProjectiles
                     .compactMap(\.maxConcurrentOwned).min()
@@ -502,7 +508,8 @@ public struct ClassicCombatCPU: Sendable {
     ) -> Bool {
         guard let attackerProfile,
               let move = attackerProfile.move(id: attacker.currentMoveID) else {
-            return false
+            let distance = abs(attacker.position.x - defender.position.x)
+            return distance <= 70 + 45 * 0.5
         }
         let attacks = move.hit.attackBoxes.map {
             $0.placed(
