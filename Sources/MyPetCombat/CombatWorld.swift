@@ -1158,7 +1158,21 @@ public final class CombatWorld {
             if defenderWasAlive && defender.hp == 0 {
                 defender.healthState = .knockedOut
                 defender.phase = .hitStun
-                if definition.knockbackY < 0 { defender.currentSurfaceID = nil }
+                // A zero-vertical-knockback finishing blow used to transition
+                // grounded -> downed in the same frame, so the fighter never
+                // visibly fell. Force a short knockdown arc; landing owns the
+                // transition to the persistent downed pose.
+                if defender.locomotion == .grounded {
+                    defender.currentSurfaceID = nil
+                    defender.surfaceFraction = nil
+                    defender.locomotion = .airborne
+                    if defender.velocity.y >= 0 {
+                        defender.velocity.y = -3.2
+                    }
+                } else if definition.knockbackY < 0 {
+                    defender.currentSurfaceID = nil
+                    defender.surfaceFraction = nil
+                }
                 events.append(CombatEvent(
                     frame: frame, kind: .knockedOut,
                     actorID: defender.actorID,

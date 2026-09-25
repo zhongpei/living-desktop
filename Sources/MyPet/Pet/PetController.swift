@@ -817,6 +817,25 @@ final class PetController {
         if let move = combatProfile.move(id: body.currentMoveID) {
             return library.action(named: move.visualAction)
         }
+        switch body.healthState {
+        case .knockedOut:
+            if let clip = library.action(named: "knockdown") { return clip }
+        case .downed:
+            if let clip = library.action(named: "downed") ??
+                library.action(named: "knockdown") { return clip }
+        case .gettingUp:
+            if let clip = library.action(named: "get_up") { return clip }
+        case .active:
+            if body.phase == .hitStun,
+               let clip = library.action(named: "hit_react_light") {
+                return clip
+            }
+            if body.phase == .blockStun || body.phase == .guarding,
+               let clip = library.action(named: "guard_high") {
+                return clip
+            }
+        }
+
         let intent: ActionIntent?
         switch body.healthState {
         case .knockedOut, .downed: intent = .defeat

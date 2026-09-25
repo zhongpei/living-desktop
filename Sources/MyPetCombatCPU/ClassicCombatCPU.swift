@@ -93,6 +93,7 @@ public struct ClassicCombatCPU: Sendable {
             reservations: observation.engagementReservations)
         state.targetID = target?.actorID
         guard let target else { return issue(.neutral, intent: .wait) }
+        let targetProfile = observation.opponentProfiles[target.actorID.raw]
 
         let distance = abs(target.position.x - observation.selfBody.position.x)
         if target.phase == .active,
@@ -104,6 +105,13 @@ public struct ClassicCombatCPU: Sendable {
         }
 
         guard observation.selfBody.canAcceptAction else {
+            // A fighting-game CPU should not queue a new move on the first
+            // actionable frame after startup/active/recovery. Keep a short,
+            // deterministic neutral beat so attacks read as separate actions.
+            let minimumPostActionSpacing = 8
+            state.lastDecisionFrame = observation.frame + Int64(max(
+                0, minimumPostActionSpacing -
+                    state.configuration.decisionIntervalFrames))
             return issue(.neutral, intent: .wait, targetID: target.actorID)
         }
         let decisionDue = state.lastDecisionFrame == .min ||
@@ -123,7 +131,14 @@ public struct ClassicCombatCPU: Sendable {
                 (state.moveUseCounts?[$0.id, default: 0] ?? 0) == 0 &&
                 observation.selfBody.gameplayEnergy.current >=
                     $0.effectiveResourceRules.startCost &&
-                distance <= max(55, $0.hit.attackBoxes.map(\.rect.maxX).max() ?? 0) + 18
+                ($0.authoredProjectiles.isEmpty
+                    ? meleeBoxesOverlap(
+                        move: $0,
+                        selfBody: observation.selfBody,
+                        target: target,
+                        targetProfile: targetProfile)
+                    : distance <= ($0.authoredProjectiles
+                        .map(\.effectiveTravelDistance).max() ?? 0))
         }) {
             state.pendingInputs = CombatCommandSynthesizer.frames(
                 for: superMove.command, facing: observation.selfBody.facing)
@@ -164,6 +179,7 @@ public struct ClassicCombatCPU: Sendable {
         let slot = engagementSlot(
             selfBody: observation.selfBody, target: target,
             profile: observation.selfProfile,
+            targetProfile: targetProfile,
             occupied: observation.engagementReservations)
         state.slot = slot
         if let navigation = navigationInput(
@@ -178,6 +194,7 @@ public struct ClassicCombatCPU: Sendable {
             profile: observation.selfProfile,
             selfBody: observation.selfBody,
             target: target,
+            targetProfile: targetProfile,
             environment: observation.environment,
             tactics: observation.tactics)
         if candidates.isEmpty {
@@ -302,15 +319,25 @@ public struct ClassicCombatCPU: Sendable {
         selfBody: CombatBodyState,
         target: CombatBodyState,
         profile: CombatProfile,
+        targetProfile: CombatProfile?,
         occupied: [EngagementSlot]
     ) -> EngagementSlot {
-        let near = max(48, profile.moves.compactMap { move in
-            move.hit.attackBoxes.map(\.rect.maxX).max()
-        }.max() ?? 70)
-        let sides: [EngagementSide] = [.leftNear, .rightNear, .leftFar, .rightFar]
+        let bodyContact = profile.pushRadius +
+            (targetProfile?.pushRadius ?? profile.pushRadius) + 4
+        // Movement closes to body-contact spacing. Attack reach may allow an
+        // earlier strike, but must never become a "stop walking" distance.
+        let near = max(48, bodyContact)
+        let nearSides: [EngagementSide] = [.leftNear, .rightNear]
+        let farSides: [EngagementSide] = [.leftFar, .rightFar]
         let used = Set(occupied.filter { $0.targetID == target.actorID }.map(\.side))
-        let offset = stableIndex(selfBody.actorID.raw, count: sides.count)
-        let ordered = Array(sides[offset...] + sides[..<offset])
+        let nearOffset = stableIndex(selfBody.actorID.raw, count: nearSides.count)
+        let farOffset = stableIndex(selfBody.actorID.raw + ":far", count: farSides.count)
+        let orderedNear = Array(nearSides[nearOffset...] + nearSides[..<nearOffset])
+        let orderedFar = Array(farSides[farOffset...] + farSides[..<farOffset])
+        // Traditional brawlers reserve contact slots first. The old random
+        // rotation could assign a lone melee fighter a "far" slot, making it
+        // stop outside every HurtBox and swing forever.
+        let ordered = orderedNear + orderedFar
         let side = ordered.first { !used.contains($0) } ?? ordered[0]
         let multiplier = side == .leftFar || side == .rightFar ? 1.75 : 1.0
         let onLeft = side == .leftNear || side == .leftFar
@@ -363,6 +390,7 @@ public struct ClassicCombatCPU: Sendable {
         profile: CombatProfile,
         selfBody: CombatBodyState,
         target: CombatBodyState,
+        targetProfile: CombatProfile?,
         environment: BodyEnvironment,
         tactics: CombatTactics
     ) -> [ScoredMove] {
@@ -455,15 +483,43 @@ public struct ClassicCombatCPU: Sendable {
                     .map(\.effectiveTravelDistance).max() ?? 0
                 return distance <= authoredReach && !repeated && !rotating
             }
-            let reach = candidate.move.hit.attackBoxes.map { $0.rect.maxX }.max() ?? 0
-            // Leave only a small allowance for the opponent's inward HurtBox.
-            // A larger heuristic made both CPUs stop around 100 px apart and
-            // repeatedly swing just outside the real collision rectangles.
-            let threshold = Swift.max(55.0, reach + 18.0)
-            return distance <= threshold
+            return meleeBoxesOverlap(
+                move: candidate.move,
+                selfBody: selfBody,
+                target: target,
+                targetProfile: targetProfile)
         }
         return reachable.sorted {
             $0.score == $1.score ? $0.move.id < $1.move.id : $0.score > $1.score
+        }
+    }
+
+    private func meleeBoxesOverlap(
+        move: CombatMoveDefinition,
+        selfBody: CombatBodyState,
+        target: CombatBodyState,
+        targetProfile: CombatProfile?
+    ) -> Bool {
+        guard !move.hit.attackBoxes.isEmpty else { return false }
+        guard let targetProfile, !targetProfile.hurtBoxes.isEmpty else {
+            let distance = abs(target.position.x - selfBody.position.x)
+            let reach = move.hit.attackBoxes.map { $0.rect.maxX }.max() ?? 0
+            return distance <= Swift.max(55.0, reach + 18.0)
+        }
+        let attackRects = move.hit.attackBoxes.map {
+            $0.placed(
+                at: selfBody.position,
+                facing: selfBody.facing,
+                scale: selfBody.visualScale)
+        }
+        let hurtRects = targetProfile.hurtBoxes.map {
+            $0.placed(
+                at: target.position,
+                facing: target.facing,
+                scale: target.visualScale)
+        }
+        return attackRects.contains { attack in
+            hurtRects.contains(where: attack.overlaps)
         }
     }
 
