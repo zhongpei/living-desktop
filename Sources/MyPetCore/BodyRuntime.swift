@@ -65,6 +65,10 @@ public struct BodyPose: Codable, Equatable, Sendable {
     public var combatParticipation: String?
     public var combatPhase: String?
     public var healthState: String?
+    public var actionFrame: Int?
+    public var actionTotalFrames: Int?
+    public var actionInstanceID: Int64?
+    public var combatHitStopFrames: Int?
     /// When true, renderer must not apply secondary spatial layout; the body/combat
     /// coordinate is the exact visible coordinate used by collision.
     public var authoritativePlacement: Bool
@@ -88,6 +92,10 @@ public struct BodyPose: Codable, Equatable, Sendable {
         combatParticipation: String? = nil,
         combatPhase: String? = nil,
         healthState: String? = nil,
+        actionFrame: Int? = nil,
+        actionTotalFrames: Int? = nil,
+        actionInstanceID: Int64? = nil,
+        combatHitStopFrames: Int? = nil,
         authoritativePlacement: Bool = false,
         displayHeight: Double? = nil
     ) {
@@ -107,6 +115,10 @@ public struct BodyPose: Codable, Equatable, Sendable {
         self.combatParticipation = combatParticipation
         self.combatPhase = combatPhase
         self.healthState = healthState
+        self.actionFrame = actionFrame
+        self.actionTotalFrames = actionTotalFrames
+        self.actionInstanceID = actionInstanceID
+        self.combatHitStopFrames = combatHitStopFrames
         self.authoritativePlacement = authoritativePlacement
         self.displayHeight = displayHeight
     }
@@ -114,7 +126,8 @@ public struct BodyPose: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case actorID, x, yFeet, facingRight, motion, action, horizontalSpeed
         case hp, maxHP, energy, maxEnergy, combatRole, combatTeamID, combatParticipation
-        case combatPhase, healthState, authoritativePlacement, displayHeight
+        case combatPhase, healthState, actionFrame, actionTotalFrames
+        case actionInstanceID, combatHitStopFrames, authoritativePlacement, displayHeight
     }
 
     public init(from decoder: Decoder) throws {
@@ -136,6 +149,10 @@ public struct BodyPose: Codable, Equatable, Sendable {
             combatParticipation: try values.decodeIfPresent(String.self, forKey: .combatParticipation),
             combatPhase: try values.decodeIfPresent(String.self, forKey: .combatPhase),
             healthState: try values.decodeIfPresent(String.self, forKey: .healthState),
+            actionFrame: try values.decodeIfPresent(Int.self, forKey: .actionFrame),
+            actionTotalFrames: try values.decodeIfPresent(Int.self, forKey: .actionTotalFrames),
+            actionInstanceID: try values.decodeIfPresent(Int64.self, forKey: .actionInstanceID),
+            combatHitStopFrames: try values.decodeIfPresent(Int.self, forKey: .combatHitStopFrames),
             authoritativePlacement: try values.decodeIfPresent(Bool.self, forKey: .authoritativePlacement) ?? false,
             displayHeight: try values.decodeIfPresent(Double.self, forKey: .displayHeight))
     }
