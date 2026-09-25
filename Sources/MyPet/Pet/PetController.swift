@@ -139,6 +139,7 @@ final class PetController {
     private var lastWindowTitleFingerprint: String?
     private let puller = WindowPuller()
     private let combatPlatformEffects = CombatPlatformEffects()
+    private let combatEffects = CombatEffectsPresentation()
     private var lastCombatWindowBounds: [CGWindowID: CGRect] = [:]
     /// 世界事件环（进 BrainContextSnapshot.recentEvents）。
     private var recentEvents: [(t: Double, text: String)] = []
@@ -591,6 +592,7 @@ final class PetController {
         goalBrainCoordinator.cancelPendingPlan()
         isDeparting = false
         presentation.stop()
+        combatEffects.stop()
         timer?.invalidate()
         timer = nil
         timerHz = nil
@@ -761,11 +763,15 @@ final class PetController {
         tickScenePerform()
         applyManualLocomotion()
         if !usesSharedCombatWorld {
-            consumeCombatEvents(combatCoordinator.advance(
+            let combatEvents = combatCoordinator.advance(
                 elapsedSeconds: dt,
                 environment: model.bodyEnvironmentSnapshot(),
                 platformContext: combatPlatformContext(),
-                beforeFrame: { [weak self] in self?.prepareBodySimulationFrame() }))
+                beforeFrame: { [weak self] in self?.prepareBodySimulationFrame() })
+            consumeCombatEvents(combatEvents)
+            combatEffects.apply(
+                snapshot: combatCoordinator.world.snapshot(),
+                events: combatEvents)
             consumeCombatPlatformEffect()
         }
         syncBodyProjection()
