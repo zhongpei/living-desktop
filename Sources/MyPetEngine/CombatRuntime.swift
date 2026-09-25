@@ -525,7 +525,10 @@ public final class CombatRuntime {
                     pacingRate: combatPacingRate,
                     recentlyHit: lastReceivedHitFrames[body.actorID.raw].map {
                         world.frame - $0 <= 60
-                    } ?? false)
+                    } ?? false,
+                    recentHitFrame: lastReceivedHitFrames[body.actorID.raw].flatMap {
+                        world.frame - $0 <= 60 ? $0 : nil
+                    })
                 let suppliedWindows = Dictionary(
                     platformContext.windows.map { ($0.id, $0) },
                     uniquingKeysWith: { first, _ in first })
