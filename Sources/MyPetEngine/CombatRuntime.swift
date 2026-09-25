@@ -522,6 +522,16 @@ public final class CombatRuntime {
                         isPullable: true,
                         allowsDamageOverlay: true)
                 }
+                let team = world.teamState(for: body.actorID)
+                let benchReady = team.flatMap { state in
+                    world.body(for: state.benchID).map {
+                        $0.healthState == .active && $0.rosterRole == .bench
+                    }
+                } ?? false
+                let teamActionReady = team.map {
+                    $0.activeID == body.actorID &&
+                        $0.benchPhase == .standby && $0.cooldownFrames == 0 && benchReady
+                } ?? false
                 let output = cpu.advance(GameplayCPUObservation(
                     combat: combatObservation,
                     formalRound: world.session.map {
@@ -531,7 +541,9 @@ public final class CombatRuntime {
                     userActive: platformContext.userActive,
                     windows: windowStates,
                     style: gameplayStyles[body.actorID.raw] ?? .balanced,
-                    windowPolicy: windowInteractionPolicy))
+                    windowPolicy: windowInteractionPolicy,
+                    assistAvailable: world.currentFeaturePolicy.assistsEnabled && teamActionReady,
+                    tagAvailable: world.currentFeaturePolicy.freeTagEnabled && teamActionReady))
                 gameplayCPUs[body.actorID.raw] = cpu
                 gameplayDecisions[body.actorID.raw] = output.decision
                 publishPlatformIntent(
@@ -707,6 +719,7 @@ public final class CombatRuntime {
               !sameTeam(actor, target) else {
             return false
         }
+        autoConfigureEngagementTeams(actorID: actorID, targetID: targetID)
         requestedCombatActors.insert(actorID.raw)
         requestedCombatActors.insert(targetID.raw)
         engagementTargets[actorID.raw] = targetID
@@ -718,6 +731,46 @@ public final class CombatRuntime {
         return world.session?.state == .active &&
             world.session?.participantIDs.contains(actorID) == true &&
             world.session?.participantIDs.contains(targetID) == true
+    }
+
+    private func autoConfigureEngagementTeams(
+        actorID: EntityID,
+        targetID: EntityID
+    ) {
+        guard world.currentFeaturePolicy.teamsEnabled else { return }
+        var candidates = world.snapshot().bodies.filter { candidate in
+            candidate.actorID != actorID && candidate.actorID != targetID &&
+                candidate.healthState == .active &&
+                candidate.rosterRole != .bench &&
+                world.isCombatReady(candidate.actorID) &&
+                world.teamState(for: candidate.actorID) == nil &&
+                !requestedCombatActors.contains(candidate.actorID.raw)
+        }
+        func nearestHelper(to principal: EntityID) -> CombatBodyState? {
+            guard let principalBody = world.body(for: principal) else { return nil }
+            return candidates.min { lhs, rhs in
+                let ld = hypot(
+                    lhs.position.x - principalBody.position.x,
+                    lhs.position.y - principalBody.position.y)
+                let rd = hypot(
+                    rhs.position.x - principalBody.position.x,
+                    rhs.position.y - principalBody.position.y)
+                return ld == rd ? lhs.actorID.raw < rhs.actorID.raw : ld < rd
+            }
+        }
+        if world.teamState(for: actorID) == nil,
+           let helper = nearestHelper(to: actorID) {
+            world.configureTeam(
+                teamID: "runtime-team:\(actorID.raw)",
+                activeID: actorID, benchID: helper.actorID)
+            candidates.removeAll { $0.actorID == helper.actorID }
+        }
+        if world.teamState(for: targetID) == nil,
+           let helper = nearestHelper(to: targetID) {
+            world.configureTeam(
+                teamID: "runtime-team:\(targetID.raw)",
+                activeID: targetID, benchID: helper.actorID)
+        }
     }
 
     private func isCommitted(_ actorID: EntityID) -> Bool {
@@ -843,7 +896,7 @@ public final class CombatRuntime {
             ids.insert(actorID)
             ids.insert(targetID)
         }
-        return ids.sorted { $0.raw < $1.raw }
+        return world.expandedParticipants(for: Array(ids))
     }
 
     /// A desktop control session names its controlled side, not every bystander.
