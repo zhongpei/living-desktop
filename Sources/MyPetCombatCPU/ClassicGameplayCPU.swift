@@ -102,6 +102,7 @@ public struct SurfaceVisit: Codable, Equatable, Sendable {
 public struct GameplayCPUObservation: Sendable {
     public var combat: CPUCombatObservation
     public var formalRound: Bool
+    public var engagedCombat: Bool
     public var wasAttacked: Bool
     public var userActive: Bool
     public var windowIDs: [String]
@@ -113,6 +114,7 @@ public struct GameplayCPUObservation: Sendable {
 
     public init(
         combat: CPUCombatObservation, formalRound: Bool = true,
+        engagedCombat: Bool = false,
         wasAttacked: Bool = false, userActive: Bool = false,
         windowIDs: [String] = [], windows: [GameplayWindowState] = [],
         style: CharacterGameplayStyle = .balanced,
@@ -121,6 +123,7 @@ public struct GameplayCPUObservation: Sendable {
         tagAvailable: Bool = false
     ) {
         self.combat = combat; self.formalRound = formalRound
+        self.engagedCombat = engagedCombat
         self.wasAttacked = wasAttacked; self.userActive = userActive
         self.windows = windows.sorted { $0.id < $1.id }
         self.windowIDs = Array(Set(windowIDs + windows.map(\.id))).sorted()
@@ -223,6 +226,15 @@ public struct ClassicGameplayCPU: Sendable {
         if observation.formalRound {
             state.activity = .fight
             reason = .formalRound
+        } else if observation.engagedCombat {
+            // Desktop combat is still competitive combat. It differs from a
+            // formal timed round, but must not wander into life activities
+            // while an engagement is active.
+            state.activity = .fight
+            state.commitmentUntilFrame = max(
+                state.commitmentUntilFrame,
+                frame + Int64(30 + stableOffset(frame: frame, range: 61)))
+            reason = observation.wasAttacked ? .attacked : .committed
         } else if mayReconsider {
             state.activity = utilities.max {
                 $0.value == $1.value ? $0.key.rawValue > $1.key.rawValue : $0.value < $1.value
