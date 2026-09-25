@@ -576,6 +576,7 @@ public final class CombatWorld {
             let candidates = profile.moves.filter { candidate in
                 allowed.contains(candidate.id) &&
                     featurePolicy.permits(candidate) &&
+                    candidate.effectiveUseState.permits(body.locomotion) &&
                     ((candidate.systemControl.map(buffer.isSystemControlPress) ?? false) ||
                      (candidate.systemControl == nil && CommandMatcher.matches(
                         candidate.command, buffer: buffer, facing: body.facing))) &&
@@ -597,6 +598,7 @@ public final class CombatWorld {
 
         let matchingMoves = profile.moves.enumerated().filter {
             featurePolicy.permits($0.element) &&
+                $0.element.effectiveUseState.permits(body.locomotion) &&
                 (($0.element.systemControl.map(buffer.isSystemControlPress) ?? false) ||
                 ($0.element.systemControl == nil && CommandMatcher.matches(
                     $0.element.command, buffer: buffer, facing: body.facing))) &&
@@ -680,7 +682,8 @@ public final class CombatWorld {
         events: inout [CombatEvent]
     ) -> Bool {
         let resource = move.effectiveResourceRules
-        guard featurePolicy.permits(move) else { return false }
+        guard featurePolicy.permits(move),
+              move.effectiveUseState.permits(body.locomotion) else { return false }
         let cost = featurePolicy.scaledCost(resource.startCost)
         var energy = body.gameplayEnergy
         guard energy.spend(cost, frame: frame) else { return false }
