@@ -198,7 +198,8 @@ enum ActionCatalog {
         MenuItem(.stretch, "伸展", "Stretch"),
         MenuItem(.yawn, "打哈欠", "Yawn"),
         MenuItem(.taunt, "嘲讽", "Taunt"),
-        MenuItem(.combatReady, "战斗准备", "Combat Ready"),
+        MenuItem(.combatReady, "战斗准备", "Combat Ready",
+                 aliases: ["战斗", "格斗", "开打"]),
         MenuItem(.attack, "攻击", "Attack"),
         MenuItem(.defend, "防御", "Defend"),
         MenuItem(.dodge, "闪避", "Dodge"),
@@ -372,6 +373,20 @@ enum ActionCatalog {
 
     static func candidates(for intent: ActionIntent) -> [String] {
         mapping[intent] ?? []
+    }
+
+    /// These are user requests to enter the combat interaction, not merely
+    /// authored presentation clips.  The desktop adapter must hand them to
+    /// CombatRuntime before it queues a visual action; otherwise a visible
+    /// “攻击/战斗准备” button only plays an animation and never creates an
+    /// engagement.
+    static func startsCombat(_ intent: ActionIntent) -> Bool {
+        switch intent {
+        case .taunt, .combatReady, .attack:
+            return true
+        default:
+            return false
+        }
     }
 
     static func resolve<S: Sequence>(_ intent: ActionIntent, available: S) -> String?

@@ -206,18 +206,30 @@ final class PetController {
             recipes: SceneCatalog.semanticRecipes,
             assetCatalog: AssetCatalog(exactActions: Set(library.actionNames)))
         self.usesSharedGameplayKernel = injectedRuntime != nil
+        // Standalone activation supplies the catalog definition instead of a
+        // cast member, so use its declared capabilities as the same source of
+        // truth used by CastSession.
+        let effectiveCapabilities = Set(capabilities ?? characterDefinition?.capabilities ?? [])
         let combatLoad = CombatProfileLoader.inspect(
             from: library.packURL,
-            capabilities: Set(capabilities ?? []))
+            capabilities: effectiveCapabilities)
         self.combatProfile = combatLoad.profile ?? CombatProfile(moves: [])
         // Version 1 and incomplete version 2 profiles remain presentation-only.
         // Only validated v2 evidence may open a damage-producing CombatSession.
         self.combatEnabled = combatLoad.readiness == .realCombatReady
+        if !combatEnabled {
+            NSLog(
+                "MyPet combat: %@ not ready (%@) capabilities=%@ pack=%@",
+                self.runtimeActorID.raw,
+                combatLoad.diagnostics.map { $0.code }.joined(separator: ","),
+                effectiveCapabilities.sorted().joined(separator: ","),
+                library.packURL?.path ?? "<none>")
+        }
         self.combatCoordinator = injectedCombatCoordinator ?? DesktopCombatCoordinator()
         self.combatCoordinator.configure(settings.gameFeatures)
         self.usesSharedCombatWorld = injectedCombatCoordinator != nil
         self.characterDefinition = characterDefinition
-        self.declaredCapabilities = capabilities.map(Set.init)
+        self.declaredCapabilities = capabilities.map(Set.init) ?? effectiveCapabilities
         self.speechDirector = speechDirector ?? SpeechDirector()
         self.needle = needle ?? NeedleBrain()
         self.localBrain = localBrain ?? LocalBrain()
@@ -253,7 +265,7 @@ final class PetController {
             startAt: spawnPoint,
             entityID: runtimeActorID,
             bodyWorld: self.combatCoordinator.bodyWorld)
-        model.spawn(onFloorAt: spawnPoint)
+        model.spawn(onFloorAt: spawnPoint, honorRequestedX: injectedRuntime != nil)
         self.actions = PetBodyDriver(model: model, library: library)
         self.combatCoordinator.register(
             actorID: runtimeActorID,
@@ -2310,6 +2322,13 @@ final class PetController {
            !declaredCapabilities.contains(required) {
             return
         }
+        if ActionCatalog.startsCombat(intent) {
+            beginAutonomousCombat(reason: "menu:\(intent.rawValue)")
+            return
+        }
+        if intent == .retreat {
+            combatCoordinator.endAutonomousCombat(actorID: runtimeActorID)
+        }
         cancelGoalAndScene(reason: "user action")
         let clip = intent == .rest ? nil :
             (ActionCatalog.resolve(intent, available: library.actionNames)
@@ -2346,12 +2365,24 @@ final class PetController {
                     enabled: ActionCatalog.resolve(
                         item.intent,
                         available: Set(library.actionNames)) != nil)
-            }
+        }
         primary.append(RenderActionItem(id: "__manual_control__", label: "接管控制", enabled: true))
         if combatEnabled && settings.gameFeatures.enabled && settings.gameFeatures.automaticCombatEnabled {
-            primary.append(RenderActionItem(id: "__autonomous_combat__", label: "自主格斗", enabled: true))
+            primary.append(RenderActionItem(id: "__autonomous_combat__", label: "发起战斗", enabled: true))
         }
-        actionRing.show(at: cursor, primary: primary, extended: [])
+        let primaryIntents = Set(primary.compactMap { ActionIntent(rawValue: $0.id) })
+        let extended = ActionCatalog.extendedMenuItems
+            .filter(isAuthorizedMenuItem)
+            .filter { !primaryIntents.contains($0.intent) }
+            .map { item in
+                RenderActionItem(
+                    id: item.intent.rawValue,
+                    label: item.label,
+                    enabled: ActionCatalog.resolve(
+                        item.intent,
+                        available: Set(library.actionNames)) != nil)
+            }
+        actionRing.show(at: cursor, primary: primary, extended: extended)
     }
 
     private func isAuthorizedMenuItem(_ item: ActionCatalog.MenuItem) -> Bool {
@@ -2459,8 +2490,25 @@ final class PetController {
         model.stopWalk()
         actions.cancelPerformance()
         cancelGoalAndScene(reason: "autonomous combat")
-        combatCoordinator.beginAutonomousCombat(actorID: runtimeActorID)
-        pushRecentEvent("autonomous combat started: \(reason)")
+        if combatCoordinator.beginAutonomousCombat(actorID: runtimeActorID) {
+            let status = combatCoordinator.engagementStatus(actorID: runtimeActorID)
+            NSLog(
+                "MyPet combat: actor=%@ accepted target=%@ phase=%@ session=%@ registered=%@ participants=%@",
+                runtimeActorID.raw,
+                status?.targetID?.raw ?? "<none>",
+                status?.phase.rawValue ?? "<none>",
+                combatCoordinator.hasActiveSession ? "active" : "seeking",
+                combatCoordinator.registeredActorIDs.map(\.raw).joined(separator: ","),
+                combatCoordinator.sessionParticipantIDs.map(\.raw).joined(separator: ","))
+            if let status,
+               status.targetID == nil {
+                pushRecentEvent("combat seeking: no opponent yet (\(reason))")
+            } else {
+                pushRecentEvent("combat seeking started: \(reason)")
+            }
+        } else {
+            pushRecentEvent("combat unavailable: actor is not combat ready")
+        }
     }
 
     private func applyManualLocomotion() {

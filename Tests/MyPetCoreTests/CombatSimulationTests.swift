@@ -170,6 +170,70 @@ final class CombatSimulationTests: XCTestCase {
         XCTAssertLessThanOrEqual(runtime.world.body(for: EntityID("b"))?.hp ?? 1000, 980)
     }
 
+    func testUserCombatRequestSeeksTargetThenActivatesBothFighters() {
+        let first = EntityID("first")
+        let second = EntityID("second")
+        let runtime = CombatRuntime()
+        runtime.register(actorID: first, profile: CombatProfile(), x: 180, yFeet: 700)
+        runtime.register(
+            actorID: second, profile: CombatProfile(), x: 760, yFeet: 700,
+            facing: .left)
+
+        XCTAssertTrue(runtime.requestAutonomousCombat(for: first))
+        XCTAssertNil(runtime.world.session)
+        XCTAssertEqual(runtime.engagementStatus(for: first)?.phase, .seeking)
+
+        let environment = makeScenario().desktop.combatEnvironment()
+        for _ in 0..<600 where runtime.world.session?.state != .active {
+            _ = runtime.advance(environment: environment)
+        }
+
+        XCTAssertEqual(runtime.world.session?.state, .active)
+        XCTAssertEqual(
+            runtime.world.session?.participantIDs,
+            [first, second].sorted { $0.raw < $1.raw })
+        XCTAssertTrue(runtime.isActive(.autonomous, for: first))
+        XCTAssertTrue(runtime.isActive(.autonomous, for: second))
+        XCTAssertEqual(runtime.engagementStatus(for: first)?.phase, .engaged)
+    }
+
+    func testDraggedContactStartsCombatForBothActors() {
+        let first = EntityID("first")
+        let second = EntityID("second")
+        let runtime = CombatRuntime()
+        runtime.register(actorID: first, profile: CombatProfile(), x: 400, yFeet: 700)
+        runtime.register(
+            actorID: second, profile: CombatProfile(), x: 450, yFeet: 700,
+            facing: .left)
+
+        runtime.beginDrag(actorID: first, x: 450, y: 700)
+        runtime.endDrag(actorID: first, wasClick: false)
+
+        XCTAssertTrue(runtime.requestDraggedEngagement(for: first))
+        XCTAssertEqual(runtime.world.session?.state, .active)
+        XCTAssertTrue(runtime.isActive(.autonomous, for: first))
+        XCTAssertTrue(runtime.isActive(.autonomous, for: second))
+    }
+
+    func testUserCombatRequestDoesNotPullInAThirdBystander() {
+        let first = EntityID("first")
+        let second = EntityID("second")
+        let bystander = EntityID("bystander")
+        let runtime = CombatRuntime()
+        runtime.register(actorID: first, profile: CombatProfile(), x: 400, yFeet: 700)
+        runtime.register(
+            actorID: second, profile: CombatProfile(), x: 445, yFeet: 700,
+            facing: .left)
+        runtime.register(actorID: bystander, profile: CombatProfile(), x: 500, yFeet: 700)
+
+        XCTAssertTrue(runtime.requestAutonomousCombat(for: first))
+        _ = runtime.advance(environment: makeScenario().desktop.combatEnvironment())
+
+        XCTAssertEqual(runtime.world.session?.state, .active)
+        XCTAssertEqual(runtime.world.session?.participantIDs, [first, second])
+        XCTAssertFalse(runtime.isActive(.autonomous, for: bystander))
+    }
+
     func testAutonomousAuthoritySurvivesKnockoutAndRecovery() {
         let finisher = CombatMoveDefinition(
             id: "finisher", command: .button(.x), startupFrames: 0,

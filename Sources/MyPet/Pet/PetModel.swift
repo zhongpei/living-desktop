@@ -153,9 +153,16 @@ final class PetModel {
     // ============ 指令（大脑 / 菜单 / 鼠标进来）============
 
     /// 出生：站上某点所在工作区的地板。
-    func spawn(onFloorAt p: CGPoint) {
+    func spawn(onFloorAt p: CGPoint, honorRequestedX: Bool = false) {
         let work = world.workBox(at: p)
-        x = work.left + work.width * 0.62
+        // CastSession supplies a deterministic per-member spawn point.  The
+        // old fixed 62% placement made every cast body share one physical x
+        // while the renderer showed them apart, so combat targeting and drag
+        // collision operated on a different world than the user saw.
+        x = honorRequestedX
+            ? PetMath.clamp(p.x, work.left + bodyRadius * 0.6,
+                            work.right - bodyRadius * 0.6)
+            : work.left + work.width * 0.62
         yFeet = work.bottom
         state = .grounded
         stance = (surface: .floor, y: work.bottom, left: work.left, right: work.right)

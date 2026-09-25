@@ -87,12 +87,25 @@ final class DesktopCombatCoordinator {
         combatRuntime.deactivate(.manual, for: actorID)
     }
 
-    func beginAutonomousCombat(actorID: EntityID) {
-        combatRuntime.activate(.autonomous, for: actorID)
+    @discardableResult
+    func beginAutonomousCombat(actorID: EntityID) -> Bool {
+        combatRuntime.requestAutonomousCombat(for: actorID)
     }
 
     func endAutonomousCombat(actorID: EntityID) {
         combatRuntime.deactivate(.autonomous, for: actorID)
+    }
+
+    func engagementStatus(actorID: EntityID) -> CombatEngagementStatus? {
+        combatRuntime.engagementStatus(for: actorID)
+    }
+
+    var registeredActorIDs: [EntityID] {
+        world.snapshot().bodies.map(\.actorID).sorted { $0.raw < $1.raw }
+    }
+
+    var sessionParticipantIDs: [EntityID] {
+        world.session?.participantIDs ?? []
     }
 
     func beginPointerDrag(actorID: EntityID) {
@@ -101,6 +114,7 @@ final class DesktopCombatCoordinator {
 
     func endPointerDrag(actorID: EntityID) {
         guard combatRuntime.isActive(.pointer, for: actorID) else { return }
+        _ = combatRuntime.endPointerDrag(actorID: actorID)
     }
 
     func advance(
@@ -123,10 +137,15 @@ final class DesktopCombatCoordinator {
     }
 
     func combatHUDBody(actorID: EntityID) -> CombatBodyState? {
-        guard world.session?.state == .active,
-              let body = world.body(for: actorID) else { return nil }
+        guard let body = world.body(for: actorID) else { return nil }
+        // Show the initiator's HP/energy while it is seeking a target as well
+        // as after the shared session is committed.  Without this, a valid
+        // request is visually indistinguishable from a dropped menu event.
+        guard world.session?.state == .active ||
+                combatRuntime.engagementStatus(for: actorID) != nil else { return nil }
         switch body.participation {
-        case .uninvolved, .withdrawing: return nil
+        case .uninvolved, .withdrawing:
+            return combatRuntime.engagementStatus(for: actorID) != nil ? body : nil
         case .alerted, .incidentalCombatant, .rosterParticipant: return body
         }
     }

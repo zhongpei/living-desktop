@@ -4,6 +4,22 @@ import MyPetCombat
 import XCTest
 
 final class CombatProfileLoaderTests: XCTestCase {
+    func testApprovedRepositoryCombatPacksPassDesktopReadinessGate() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // MyPetContentTests
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // desktop
+            .deletingLastPathComponent() // mypet
+
+        for characterID in ["lin_daiyu", "pan_jinlian", "wu_song"] {
+            let pack = repositoryRoot
+                .appendingPathComponent("desktop-assets/Resources/petpack/\(characterID)")
+            let result = CombatProfileLoader.inspect(from: pack, capabilities: ["combat"])
+            XCTAssertEqual(result.readiness, .realCombatReady, characterID)
+            XCTAssertTrue(result.diagnostics.isEmpty, "\(characterID): \(result.diagnostics)")
+        }
+    }
+
     func testMissingCombatFileKeepsLegacyPackPlayable() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

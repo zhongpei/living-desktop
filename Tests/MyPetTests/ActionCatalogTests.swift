@@ -16,6 +16,15 @@ final class ActionCatalogTests: XCTestCase {
         XCTAssertNil(ActionCatalog.requiredCapability(for: .idle))
     }
 
+    func testCombatEntryIntentsAreRuntimeRequests() {
+        XCTAssertTrue(ActionCatalog.startsCombat(.combatReady))
+        XCTAssertTrue(ActionCatalog.startsCombat(.attack))
+        XCTAssertTrue(ActionCatalog.startsCombat(.taunt))
+        XCTAssertFalse(ActionCatalog.startsCombat(.defend))
+        XCTAssertFalse(ActionCatalog.startsCombat(.victory))
+        XCTAssertEqual(ActionCatalog.menuIntent(for: "战斗"), .combatReady)
+    }
+
     func testSemanticMappingsKeepAStablePriorityOrder() {
         XCTAssertEqual(ActionCatalog.candidates(for: .greet),
                        ["greet", "greet_wave", "wave", "happy", "nod"])

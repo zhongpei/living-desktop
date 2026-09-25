@@ -114,6 +114,22 @@ public final class CombatWorld {
         }
     }
 
+    @discardableResult
+    public func addParticipants(_ participants: [EntityID]) -> Bool {
+        guard var active = session, active.state == .active else { return false }
+        let unique = Array(Set(active.participantIDs + participants)).sorted { $0.raw < $1.raw }
+        guard unique.count >= 2,
+              unique.allSatisfy({ rules[$0.raw] != nil }) else { return false }
+        active.participantIDs = unique
+        session = active
+        for actorID in unique where teamID(for: actorID) == nil {
+            guard var rule = rules[actorID.raw] else { continue }
+            rule.participation = .rosterParticipant(teamID: "solo:\(actorID.raw)")
+            rules[actorID.raw] = rule
+        }
+        return true
+    }
+
     public func configureTeam(
         teamID: String, activeID: EntityID, benchID: EntityID,
         rules teamRules: TeamCombatRules = .standard

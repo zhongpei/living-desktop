@@ -4,6 +4,21 @@ import MyPetCombat
 import MyPetCombatCPU
 import MyPetCore
 
+public enum CombatEngagementPhase: String, Codable, Equatable, Sendable {
+    case seeking
+    case engaged
+}
+
+public struct CombatEngagementStatus: Codable, Equatable, Sendable {
+    public var phase: CombatEngagementPhase
+    public var targetID: EntityID?
+
+    public init(phase: CombatEngagementPhase, targetID: EntityID? = nil) {
+        self.phase = phase
+        self.targetID = targetID
+    }
+}
+
 /// Serializable state for the complete 60 Hz combat path. Input arbitration
 /// is checkpointed together with the rules/body world so replay cannot resume
 /// with a different authority than the recorded run.
@@ -17,6 +32,9 @@ public struct CombatRuntimeCheckpoint: Codable, Equatable, Sendable {
     public var windowInteractionPolicy: WindowInteractionPolicy?
     public var cpuSeed: UInt64?
     public var gameplayStyles: [String: CharacterGameplayStyle]?
+    public var requestedCombatActors: Set<String>?
+    public var engagementTargets: [String: EntityID]?
+    public var committedEngagements: Set<String>?
 
     public init(
         world: CombatWorldCheckpoint,
@@ -27,7 +45,10 @@ public struct CombatRuntimeCheckpoint: Codable, Equatable, Sendable {
         platformAuthorizations: [String: WindowAuthorization]? = nil,
         windowInteractionPolicy: WindowInteractionPolicy? = nil,
         cpuSeed: UInt64? = nil,
-        gameplayStyles: [String: CharacterGameplayStyle]? = nil
+        gameplayStyles: [String: CharacterGameplayStyle]? = nil,
+        requestedCombatActors: Set<String>? = nil,
+        engagementTargets: [String: EntityID]? = nil,
+        committedEngagements: Set<String>? = nil
     ) {
         self.world = world
         self.controls = controls
@@ -38,6 +59,9 @@ public struct CombatRuntimeCheckpoint: Codable, Equatable, Sendable {
         self.windowInteractionPolicy = windowInteractionPolicy
         self.cpuSeed = cpuSeed
         self.gameplayStyles = gameplayStyles
+        self.requestedCombatActors = requestedCombatActors
+        self.engagementTargets = engagementTargets
+        self.committedEngagements = committedEngagements
     }
 }
 
@@ -53,6 +77,9 @@ public struct CombatRuntimeDigest: Codable, Equatable, Sendable {
     public var windowInteractionPolicy: WindowInteractionPolicy?
     public var cpuSeed: UInt64?
     public var gameplayStyles: [String: CharacterGameplayStyle]?
+    public var requestedCombatActors: Set<String>?
+    public var engagementTargets: [String: EntityID]?
+    public var committedEngagements: Set<String>?
 
     public init(
         world: CombatWorldCheckpoint,
@@ -63,7 +90,10 @@ public struct CombatRuntimeDigest: Codable, Equatable, Sendable {
         platformAuthorizations: [String: WindowAuthorization]? = nil,
         windowInteractionPolicy: WindowInteractionPolicy? = nil,
         cpuSeed: UInt64? = nil,
-        gameplayStyles: [String: CharacterGameplayStyle]? = nil
+        gameplayStyles: [String: CharacterGameplayStyle]? = nil,
+        requestedCombatActors: Set<String>? = nil,
+        engagementTargets: [String: EntityID]? = nil,
+        committedEngagements: Set<String>? = nil
     ) {
         self.world = world
         self.controls = controls
@@ -74,6 +104,9 @@ public struct CombatRuntimeDigest: Codable, Equatable, Sendable {
         self.windowInteractionPolicy = windowInteractionPolicy
         self.cpuSeed = cpuSeed
         self.gameplayStyles = gameplayStyles
+        self.requestedCombatActors = requestedCombatActors
+        self.engagementTargets = engagementTargets
+        self.committedEngagements = committedEngagements
     }
 }
 
@@ -110,6 +143,9 @@ public final class CombatRuntime {
     private var windowInteractionPolicy: WindowInteractionPolicy
     private var cpuSeed: UInt64
     private var gameplayStyles: [String: CharacterGameplayStyle]
+    private var requestedCombatActors: Set<String>
+    private var engagementTargets: [String: EntityID]
+    private var committedEngagements: Set<String>
 
     public init(cpuSeed: UInt64 = 0) {
         self.world = CombatWorld()
@@ -122,6 +158,9 @@ public final class CombatRuntime {
         self.windowInteractionPolicy = WindowInteractionPolicy()
         self.cpuSeed = cpuSeed
         self.gameplayStyles = [:]
+        self.requestedCombatActors = []
+        self.engagementTargets = [:]
+        self.committedEngagements = []
     }
 
     public init(checkpoint: CombatRuntimeCheckpoint) {
@@ -137,6 +176,9 @@ public final class CombatRuntime {
         self.windowInteractionPolicy = checkpoint.windowInteractionPolicy ?? WindowInteractionPolicy()
         self.cpuSeed = checkpoint.cpuSeed ?? 0
         self.gameplayStyles = checkpoint.gameplayStyles ?? [:]
+        self.requestedCombatActors = checkpoint.requestedCombatActors ?? []
+        self.engagementTargets = checkpoint.engagementTargets ?? [:]
+        self.committedEngagements = checkpoint.committedEngagements ?? []
     }
 
     public var digest: CombatRuntimeDigest {
@@ -147,7 +189,10 @@ public final class CombatRuntime {
             platformAuthorizations: platformAuthorizations,
             windowInteractionPolicy: windowInteractionPolicy,
             cpuSeed: cpuSeed,
-            gameplayStyles: gameplayStyles)
+            gameplayStyles: gameplayStyles,
+            requestedCombatActors: requestedCombatActors,
+            engagementTargets: engagementTargets,
+            committedEngagements: committedEngagements)
     }
 
     public func checkpoint() -> CombatRuntimeCheckpoint {
@@ -158,7 +203,10 @@ public final class CombatRuntime {
             platformAuthorizations: platformAuthorizations,
             windowInteractionPolicy: windowInteractionPolicy,
             cpuSeed: cpuSeed,
-            gameplayStyles: gameplayStyles)
+            gameplayStyles: gameplayStyles,
+            requestedCombatActors: requestedCombatActors,
+            engagementTargets: engagementTargets,
+            committedEngagements: committedEngagements)
     }
 
     public func restore(_ checkpoint: CombatRuntimeCheckpoint) {
@@ -174,6 +222,9 @@ public final class CombatRuntime {
         windowInteractionPolicy = checkpoint.windowInteractionPolicy ?? WindowInteractionPolicy()
         cpuSeed = checkpoint.cpuSeed ?? 0
         gameplayStyles = checkpoint.gameplayStyles ?? [:]
+        requestedCombatActors = checkpoint.requestedCombatActors ?? []
+        engagementTargets = checkpoint.engagementTargets ?? [:]
+        committedEngagements = checkpoint.committedEngagements ?? []
     }
 
     public func register(
@@ -215,6 +266,11 @@ public final class CombatRuntime {
         gameplayDecisions.removeValue(forKey: actorID.raw)
         cpuDifficulties.removeValue(forKey: actorID.raw)
         gameplayStyles.removeValue(forKey: actorID.raw)
+        requestedCombatActors.remove(actorID.raw)
+        engagementTargets.removeValue(forKey: actorID.raw)
+        committedEngagements = Set(committedEngagements.filter { key in
+            !key.split(separator: "|").contains { String($0) == actorID.raw }
+        })
         world.unregister(actorID: actorID)
         if !interruptedParticipants.isEmpty { releaseNonManualCombatControls() }
         refreshSession()
@@ -229,8 +285,60 @@ public final class CombatRuntime {
         refreshSession()
     }
 
+    /// User-facing combat entry. The actor gets an autonomous steering route,
+    /// but HP-changing combat is deferred until a target is reached.
+    @discardableResult
+    public func requestAutonomousCombat(for actorID: EntityID) -> Bool {
+        guard eligibleCombatant(actorID) else { return false }
+        requestedCombatActors.insert(actorID.raw)
+        controls.activate(.autonomous, for: actorID)
+        if let target = nearestTarget(for: actorID, requireContact: false) {
+            engagementTargets[actorID.raw] = target.actorID
+            if isInEngagementDistance(actorID, targetID: target.actorID) {
+                _ = commitEngagement(actorID: actorID, targetID: target.actorID)
+            }
+        }
+        refreshSession()
+        return true
+    }
+
+    @discardableResult
+    public func requestDraggedEngagement(for actorID: EntityID) -> Bool {
+        guard eligibleCombatant(actorID),
+              let target = nearestTarget(for: actorID, requireContact: true) else {
+            return false
+        }
+        return commitEngagement(actorID: actorID, targetID: target.actorID)
+    }
+
+    @discardableResult
+    public func endPointerDrag(actorID: EntityID) -> Bool {
+        controls.deactivate(.pointer, for: actorID)
+        applyResolvedInput(for: actorID)
+        return requestDraggedEngagement(for: actorID)
+    }
+
+    public func engagementStatus(for actorID: EntityID) -> CombatEngagementStatus? {
+        guard requestedCombatActors.contains(actorID.raw) else { return nil }
+        let target = engagementTargets[actorID.raw]
+        return CombatEngagementStatus(
+            phase: isCommitted(actorID) ? .engaged : .seeking,
+            targetID: target)
+    }
+
     public func deactivate(_ source: ControlSource, for actorID: EntityID) {
         controls.deactivate(source, for: actorID)
+        if source == .autonomous {
+            if isCommitted(actorID) {
+                // A runtime combat session is a shared engagement: the
+                // selected target is autonomous too, so stopping one fighter
+                // must release the whole non-manual round.
+                releaseNonManualCombatControls()
+            } else {
+                requestedCombatActors.remove(actorID.raw)
+                engagementTargets.removeValue(forKey: actorID.raw)
+            }
+        }
         applyResolvedInput(for: actorID)
         refreshSession()
     }
@@ -339,6 +447,7 @@ public final class CombatRuntime {
         environment: BodyEnvironment,
         platformContext: GameplayPlatformContext = .idle
     ) -> [CombatEvent] {
+        advancePendingEngagements()
         let snapshot = world.snapshot()
         for body in snapshot.bodies {
             if case .withdrawing = body.participation,
@@ -420,6 +529,13 @@ public final class CombatRuntime {
                     source: .autonomous,
                     for: body.actorID)
             }
+            if let seekInput = pendingEngagementInput(for: body.actorID) {
+                // The tactical CPU intentionally emits a fresh decision only
+                // every few frames. A user-requested seeker needs continuous
+                // locomotion until the engagement gate is reached; otherwise
+                // it crawls at the CPU decision cadence and can look stuck.
+                controls.setInput(seekInput, source: .autonomous, for: body.actorID)
+            }
             applyResolvedInput(for: body.actorID)
         }
         let events = world.step(environment: environment)
@@ -437,6 +553,9 @@ public final class CombatRuntime {
             controls.deactivate(.authored, for: actorID)
             applyResolvedInput(for: actorID)
         }
+        requestedCombatActors.removeAll()
+        engagementTargets.removeAll()
+        committedEngagements.removeAll()
     }
 
     private func policyAdjustedProfile(_ profile: CombatProfile) -> CombatProfile {
@@ -473,7 +592,127 @@ public final class CombatRuntime {
         return adjusted
     }
 
+    private func advancePendingEngagements() {
+        // Committing a pair adds the target to the requested set, so iterate a
+        // stable snapshot instead of mutating the collection being traversed.
+        for rawID in requestedCombatActors.sorted() {
+            let actorID = EntityID(rawID)
+            guard eligibleCombatant(actorID), controls.isActive(.autonomous, for: actorID)
+            else {
+                requestedCombatActors.remove(rawID)
+                engagementTargets.removeValue(forKey: rawID)
+                continue
+            }
+            if let targetID = engagementTargets[rawID],
+               !eligibleCombatant(targetID) {
+                engagementTargets[rawID] = nil
+            }
+            guard !isCommitted(actorID) else { continue }
+            guard let target = nearestTarget(for: actorID, requireContact: false) else {
+                engagementTargets[rawID] = nil
+                continue
+            }
+            engagementTargets[rawID] = target.actorID
+            if isInEngagementDistance(actorID, targetID: target.actorID) {
+                _ = commitEngagement(actorID: actorID, targetID: target.actorID)
+            }
+        }
+    }
+
+    private func eligibleCombatant(_ actorID: EntityID) -> Bool {
+        guard let body = world.body(for: actorID) else { return false }
+        return body.healthState == .active && body.rosterRole != .bench &&
+            world.isCombatReady(actorID) && body.locomotion != .sleeping
+    }
+
+    private func pendingEngagementInput(for actorID: EntityID) -> FighterInputFrame? {
+        guard requestedCombatActors.contains(actorID.raw), !isCommitted(actorID),
+              let targetID = engagementTargets[actorID.raw],
+              let actor = world.body(for: actorID), let target = world.body(for: targetID)
+        else { return nil }
+        let delta = target.position.x - actor.position.x
+        if abs(delta) <= 8 { return .neutral }
+        return delta > 0 ? FighterInputFrame(right: true) : FighterInputFrame(left: true)
+    }
+
+    private func nearestTarget(
+        for actorID: EntityID, requireContact: Bool
+    ) -> CombatBodyState? {
+        guard let actor = world.body(for: actorID) else { return nil }
+        return world.snapshot().bodies
+            .filter { candidate in
+                candidate.actorID != actorID && eligibleCombatant(candidate.actorID) &&
+                    !sameTeam(actor, candidate)
+            }
+            .filter { !requireContact || isInEngagementDistance(actorID, targetID: $0.actorID) }
+            .min { lhs, rhs in
+                let leftDistance = hypot(
+                    lhs.position.x - actor.position.x,
+                    lhs.position.y - actor.position.y)
+                let rightDistance = hypot(
+                    rhs.position.x - actor.position.x,
+                    rhs.position.y - actor.position.y)
+                return leftDistance == rightDistance
+                    ? lhs.actorID.raw < rhs.actorID.raw
+                    : leftDistance < rightDistance
+            }
+    }
+
+    private func isInEngagementDistance(_ actorID: EntityID, targetID: EntityID) -> Bool {
+        guard let actor = world.body(for: actorID), let target = world.body(for: targetID),
+              let actorProfile = world.profile(for: actorID),
+              let targetProfile = world.profile(for: targetID) else { return false }
+        // ClassicGameplayCPU deliberately keeps a short defensive buffer
+        // before committing to an exchange. The engagement gate must include
+        // that buffer or a seeker can hover forever without starting a round.
+        let horizontalLimit = max(
+            120, actorProfile.pushRadius + targetProfile.pushRadius + 24)
+        let verticalLimit = max(28, min(actorProfile.pushRadius, targetProfile.pushRadius) * 1.5)
+        return abs(actor.position.x - target.position.x) <= horizontalLimit &&
+            abs(actor.position.y - target.position.y) <= verticalLimit
+    }
+
+    private func sameTeam(_ left: CombatBodyState, _ right: CombatBodyState) -> Bool {
+        guard case .rosterParticipant(let leftTeam) = left.participation,
+              case .rosterParticipant(let rightTeam) = right.participation else { return false }
+        return leftTeam == rightTeam
+    }
+
+    @discardableResult
+    private func commitEngagement(actorID: EntityID, targetID: EntityID) -> Bool {
+        guard actorID != targetID, eligibleCombatant(actorID), eligibleCombatant(targetID),
+              let actor = world.body(for: actorID),
+              let target = world.body(for: targetID),
+              !sameTeam(actor, target) else {
+            return false
+        }
+        requestedCombatActors.insert(actorID.raw)
+        requestedCombatActors.insert(targetID.raw)
+        engagementTargets[actorID.raw] = targetID
+        engagementTargets[targetID.raw] = actorID
+        committedEngagements.insert(engagementKey(actorID, targetID))
+        controls.activate(.autonomous, for: actorID)
+        controls.activate(.autonomous, for: targetID)
+        refreshSession()
+        return world.session?.state == .active &&
+            world.session?.participantIDs.contains(actorID) == true &&
+            world.session?.participantIDs.contains(targetID) == true
+    }
+
+    private func isCommitted(_ actorID: EntityID) -> Bool {
+        guard let targetID = engagementTargets[actorID.raw] else { return false }
+        return committedEngagements.contains(engagementKey(actorID, targetID))
+    }
+
+    private func engagementKey(_ left: EntityID, _ right: EntityID) -> String {
+        [left.raw, right.raw].sorted().joined(separator: "|")
+    }
+
     private func isOpponent(_ candidate: CombatBodyState, of actor: CombatBodyState) -> Bool {
+        if engagementTargets[actor.actorID.raw] == candidate.actorID ||
+            engagementTargets[candidate.actorID.raw] == actor.actorID {
+            return true
+        }
         if case .incidentalCombatant(let offenderID) = actor.participation {
             return candidate.actorID == offenderID
         }
@@ -547,17 +786,43 @@ public final class CombatRuntime {
 
     private func refreshSession() {
         let requested = controls.hasAnyActive([.manual, .authored, .autonomous])
-        let controlled = controls.actorIDs(activeIn: [.manual, .authored, .autonomous])
-        let participants = runtimeParticipants(for: controlled)
-        if requested {
-            if participants.count >= 2,
-               (world.session?.state != .active ||
-                world.session?.participantIDs != participants) {
+        guard requested else {
+            if world.session?.state == .active, world.session?.id == "runtime" {
+                world.endSession(cancelled: false)
+            }
+            return
+        }
+
+        if !committedEngagements.isEmpty {
+            let participants = committedParticipantIDs()
+            guard participants.count >= 2 else { return }
+            if world.session?.state == .active, world.session?.id == "runtime" {
+                _ = world.addParticipants(participants)
+            } else {
                 _ = world.beginSession(id: "runtime", participants: participants)
             }
-        } else if world.session?.state == .active, world.session?.id == "runtime" {
-            world.endSession(cancelled: false)
+            return
         }
+
+        // User requests stay in the seek phase until a target is reached.
+        guard requestedCombatActors.isEmpty else { return }
+        let controlled = controls.actorIDs(activeIn: [.manual, .authored, .autonomous])
+        let participants = runtimeParticipants(for: controlled)
+        if participants.count >= 2,
+           (world.session?.state != .active || world.session?.participantIDs != participants) {
+            _ = world.beginSession(id: "runtime", participants: participants)
+        }
+    }
+
+    private func committedParticipantIDs() -> [EntityID] {
+        var ids = Set<EntityID>()
+        for actorRaw in requestedCombatActors {
+            let actorID = EntityID(actorRaw)
+            guard isCommitted(actorID), let targetID = engagementTargets[actorRaw] else { continue }
+            ids.insert(actorID)
+            ids.insert(targetID)
+        }
+        return ids.sorted { $0.raw < $1.raw }
     }
 
     /// A desktop control session names its controlled side, not every bystander.

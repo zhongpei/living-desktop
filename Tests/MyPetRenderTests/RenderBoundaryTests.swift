@@ -85,6 +85,39 @@ final class RenderBoundaryTests: XCTestCase {
         XCTAssertEqual(presentation.clipName, "idle")
     }
 
+    func testActiveCombatPosePublishesHPAndEnergyHUD() {
+        let actor = EntityID("fighter")
+        let renderer = NullRenderer()
+        let image = makeImage()
+        let presentation = ActorPresentation(
+            source: StubClipSource(clips: [
+                "idle": SpriteClip(frames: [image], fps: 5, looping: true),
+            ]),
+            initialFrame: CGRect(x: 0, y: 0, width: 80, height: 100),
+            appearance: ActorAppearance(
+                idle: "idle", walk: "idle", run: "idle", airborne: "idle",
+                drag: "idle", sleep: "idle", idlePool: ["idle"]),
+            actorID: actor,
+            coordinateSpace: StubCoordinateSpace(),
+            renderBackend: renderer)
+        let runtime = GameRuntime(bodyExecutionMode: .external)
+        _ = runtime.step(events: [GameEvent(
+            kind: .registerEntity, entity: EntityState(id: actor, kind: .actor))])
+        runtime.updateBodyPose(BodyPose(
+            actorID: actor, x: 300, yFeet: 590, facingRight: true,
+            motion: "grounded", hp: 700, maxHP: 1000,
+            energy: 120, maxEnergy: 300, combatRole: "active"))
+
+        presentation.apply(
+            snapshot: runtime.presentationSnapshot(), effects: [], dt: 0, now: 1)
+
+        XCTAssertEqual(renderer.lastSnapshot?.combatHUD?.hp, 700)
+        XCTAssertEqual(renderer.lastSnapshot?.combatHUD?.maxHP, 1000)
+        XCTAssertEqual(renderer.lastSnapshot?.combatHUD?.energy, 120)
+        XCTAssertEqual(renderer.lastSnapshot?.combatHUD?.maxEnergy, 300)
+        XCTAssertTrue(renderer.lastSnapshot?.combatHUD?.active == true)
+    }
+
     func testActorPresentationOwnsSafeCastAndDirectDragPlacement() {
         let image = makeImage()
         let actor = EntityID("pet")

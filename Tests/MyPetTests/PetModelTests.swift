@@ -101,6 +101,12 @@ final class PetModelTests: XCTestCase {
         XCTAssertFalse(model.walking)
     }
 
+    func testSpawnHonorsRequestedCastPosition() {
+        model.spawn(onFloorAt: CGPoint(x: 220, y: 800), honorRequestedX: true)
+        XCTAssertEqual(model.x, 220, accuracy: 0.001)
+        XCTAssertEqual(model.yFeet, 800, accuracy: 0.001)
+    }
+
     func testPetModelReadsPositionFromInjectedBodyWorld() {
         let bodyWorld = BodyWorld()
         let actorID = EntityID("shared-pet")
