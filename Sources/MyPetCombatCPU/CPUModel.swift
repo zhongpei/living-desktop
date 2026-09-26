@@ -66,6 +66,7 @@ public enum CombatNavigationReason: String, Codable, Sendable {
 
 public struct CombatNavigationPlan: Codable, Equatable, Sendable {
     public var targetSurfaceID: String
+    public var goalSurfaceID: String
     public var landingLeft: Double
     public var landingRight: Double
     public var jumpsRemaining: Int
@@ -74,6 +75,7 @@ public struct CombatNavigationPlan: Codable, Equatable, Sendable {
 
     public init(
         targetSurfaceID: String,
+        goalSurfaceID: String? = nil,
         landingLeft: Double,
         landingRight: Double,
         jumpsRemaining: Int,
@@ -81,6 +83,7 @@ public struct CombatNavigationPlan: Codable, Equatable, Sendable {
         commitUntilFrame: Int64
     ) {
         self.targetSurfaceID = targetSurfaceID
+        self.goalSurfaceID = goalSurfaceID ?? targetSurfaceID
         self.landingLeft = landingLeft
         self.landingRight = landingRight
         self.jumpsRemaining = max(0, jumpsRemaining)
