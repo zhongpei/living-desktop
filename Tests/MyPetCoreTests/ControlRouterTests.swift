@@ -29,6 +29,17 @@ final class ControlRouterTests: XCTestCase {
         XCTAssertEqual(router.resolve(for: actor)?.authority, .autonomous)
     }
 
+    func testResolvedSourceMatchesWinningAuthority() {
+        let actor = EntityID("fighter")
+        var router = ControlRouter()
+        router.activate(.autonomous, for: actor, input: FighterInputFrame(right: true))
+        XCTAssertEqual(router.resolvedSource(for: actor), .autonomous)
+        router.activate(.pointer, for: actor, input: .neutral)
+        XCTAssertEqual(router.resolvedSource(for: actor), .pointer)
+        router.deactivate(.pointer, for: actor)
+        XCTAssertEqual(router.resolvedSource(for: actor), .autonomous)
+    }
+
     func testRouterCheckpointRoundTripsWithoutChangingResolution() throws {
         let actor = EntityID("fighter")
         var router = ControlRouter()
