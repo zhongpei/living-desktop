@@ -413,6 +413,10 @@ public final class CombatRuntime {
         platformIntents.removeValue(forKey: actorID.raw)
         platformAuthorizations.removeValue(forKey: actorID.raw)
         gameplayDecisions.removeValue(forKey: actorID.raw)
+        gameplayCPUs[actorID.raw] = ClassicGameplayCPU(
+            actorID: actorID,
+            difficulty: cpuDifficulties[actorID.raw] ?? .normal,
+            seed: stableCPUSeed(actorID))
         let removed = world.removeParticipant(actorID)
         applyResolvedInput(for: actorID)
 
