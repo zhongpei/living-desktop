@@ -92,7 +92,9 @@ public struct ClassicCombatCPU: Sendable {
         let perceived = perceivedOpponents()
         let mobility = SurfaceMobility(
             walkSpeed: observation.selfProfile.walkSpeed,
-            jumpVelocity: observation.selfProfile.jumpVelocity)
+            runSpeedMultiplier: observation.selfProfile.effectiveRunSpeedMultiplier,
+            jumpVelocity: observation.selfProfile.jumpVelocity,
+            maximumJumpCount: observation.selfProfile.effectiveMaxJumpCount)
         let graphFingerprint = DynamicSurfaceGraph.fingerprint(
             environment: observation.environment, mobility: mobility)
         if state.surfaceGraph?.fingerprint != graphFingerprint {
@@ -106,9 +108,13 @@ public struct ClassicCombatCPU: Sendable {
             opponents: perceived,
             graph: graph,
             reservations: observation.engagementReservations)
+        let previousTargetID = state.targetID
         state.targetID = target?.actorID
         if state.slot?.targetID != state.targetID {
             state.slot = nil
+        }
+        if previousTargetID != state.targetID {
+            state.navigationPlan = nil
         }
         guard let target else {
             state.slot = nil
@@ -179,8 +185,10 @@ public struct ClassicCombatCPU: Sendable {
             occupied: observation.engagementReservations)
         state.slot = slot
         if let navigation = navigationInput(
-            selfBody: observation.selfBody, target: target, slot: slot,
-            graph: graph, environment: observation.environment) {
+            observation: observation,
+            target: target,
+            slot: slot,
+            graph: graph) {
             return issue(
                 navigation.input, intent: navigation.intent,
                 targetID: target.actorID, slot: slot)
@@ -352,36 +360,230 @@ public struct ClassicCombatCPU: Sendable {
         return Int(hash % UInt64(max(1, count)))
     }
 
-    private func navigationInput(
-        selfBody: CombatBodyState,
+    private mutating func navigationInput(
+        observation: CPUCombatObservation,
         target: CombatBodyState,
         slot: EngagementSlot,
-        graph: DynamicSurfaceGraph,
-        environment: BodyEnvironment
+        graph: DynamicSurfaceGraph
     ) -> (input: FighterInputFrame, intent: CombatCPUIntent)? {
-        guard let fromID = selfBody.currentSurfaceID,
-              let toID = target.currentSurfaceID,
-              fromID != toID,
-              let path = graph.path(from: fromID, to: toID),
-              let edge = path.edges.first else { return nil }
+        let selfBody = observation.selfBody
+        let frame = observation.frame
+
+        if let continuation = continueNavigationPlan(
+            selfBody: selfBody, graph: graph, frame: frame) {
+            return continuation
+        }
+
+        guard selfBody.locomotion == .grounded,
+              let fromID = selfBody.currentSurfaceID else { return nil }
+
+        // Pursuit across screens/platforms always wins over optional terrain
+        // tactics. A* may route through several window tops or monitor floors.
+        if let toID = target.currentSurfaceID, fromID != toID,
+           let path = graph.path(from: fromID, to: toID),
+           let edge = path.edges.first {
+            return beginTraversal(
+                edge: edge,
+                goalSurfaceID: toID,
+                reason: .chase,
+                selfBody: selfBody,
+                frame: frame)
+        }
+
+        // When both fighters share a surface, windows become competitive
+        // terrain rather than decoration. Only commit when they solve a real
+        // projectile/pressure problem.
+        if frame >= (state.tacticalNavigationCooldownUntil ?? .min),
+           let tactical = tacticalSurfacePlan(
+                observation: observation,
+                target: target,
+                graph: graph),
+           let edge = tactical.path.edges.first {
+            return beginTraversal(
+                edge: edge,
+                goalSurfaceID: tactical.surface.id,
+                reason: tactical.reason,
+                selfBody: selfBody,
+                frame: frame)
+        }
+
+        return nil
+    }
+
+    private mutating func continueNavigationPlan(
+        selfBody: CombatBodyState,
+        graph: DynamicSurfaceGraph,
+        frame: Int64
+    ) -> (input: FighterInputFrame, intent: CombatCPUIntent)? {
+        guard var plan = state.navigationPlan else { return nil }
+        guard graph.surface(id: plan.goalSurfaceID) != nil,
+              graph.surface(id: plan.targetSurfaceID) != nil,
+              frame <= plan.commitUntilFrame + 120 else {
+            state.navigationPlan = nil
+            return nil
+        }
+
+        if selfBody.locomotion == .airborne {
+            var input = directionalInput(
+                fromX: selfBody.position.x,
+                landingLeft: plan.landingLeft,
+                landingRight: plan.landingRight)
+            // Spend the next jump near the apex. Because sustainedInput strips
+            // Up, every extra jump is an actual press rather than a held key.
+            if plan.jumpsRemaining > 0, selfBody.velocity.y >= -0.25 {
+                input.up = true
+                plan.jumpsRemaining -= 1
+                state.navigationPlan = plan
+                return (input, .jump)
+            }
+            return (input, .navigate)
+        }
+
+        guard selfBody.locomotion == .grounded,
+              let currentID = selfBody.currentSurfaceID else { return nil }
+
+        if currentID == plan.targetSurfaceID {
+            if currentID == plan.goalSurfaceID {
+                if plan.reason != .chase {
+                    state.tacticalNavigationCooldownUntil = frame + 120
+                }
+                state.navigationPlan = nil
+                return nil
+            }
+            guard let path = graph.path(from: currentID, to: plan.goalSurfaceID),
+                  let edge = path.edges.first else {
+                state.navigationPlan = nil
+                return nil
+            }
+            return beginTraversal(
+                edge: edge,
+                goalSurfaceID: plan.goalSurfaceID,
+                reason: plan.reason,
+                selfBody: selfBody,
+                frame: frame)
+        }
+
+        // We landed on an intermediate/unplanned surface. Re-route from the
+        // actual authoritative support rather than forcing stale geometry.
+        guard let path = graph.path(from: currentID, to: plan.goalSurfaceID),
+              let edge = path.edges.first else {
+            state.navigationPlan = nil
+            return nil
+        }
+        return beginTraversal(
+            edge: edge,
+            goalSurfaceID: plan.goalSurfaceID,
+            reason: plan.reason,
+            selfBody: selfBody,
+            frame: frame)
+    }
+
+    private mutating func beginTraversal(
+        edge: SurfaceNavigationEdge,
+        goalSurfaceID: String,
+        reason: CombatNavigationReason,
+        selfBody: CombatBodyState,
+        frame: Int64
+    ) -> (input: FighterInputFrame, intent: CombatCPUIntent) {
+        state.navigationPlan = CombatNavigationPlan(
+            targetSurfaceID: edge.toSurfaceID,
+            goalSurfaceID: goalSurfaceID,
+            landingLeft: edge.landingLeft,
+            landingRight: edge.landingRight,
+            jumpsRemaining: max(0, edge.requiredJumpCount - 1),
+            reason: reason,
+            commitUntilFrame: frame + Int64(max(45, edge.expectedFrames + 45)))
+
         let dx = edge.launchX - selfBody.position.x
         if abs(dx) > 8 {
-            return (dx > 0 ? FighterInputFrame(right: true) : FighterInputFrame(left: true), .navigate)
+            return (
+                dx > 0 ? FighterInputFrame(right: true) : FighterInputFrame(left: true),
+                .navigate)
         }
+
+        let towardLanding = directionalInput(
+            fromX: selfBody.position.x,
+            landingLeft: edge.landingLeft,
+            landingRight: edge.landingRight)
         switch edge.action {
         case .jump:
-            return (FighterInputFrame(
-                left: edge.landingRight < selfBody.position.x,
-                right: edge.landingLeft > selfBody.position.x,
-                up: true), .jump)
+            var input = towardLanding
+            input.up = true
+            return (input, .jump)
         case .drop:
-            let toward = slot.anchorX >= selfBody.position.x
-            return (FighterInputFrame(
-                left: !toward, right: toward, up: true, down: true), .navigate)
+            var input = towardLanding
+            input.up = true
+            input.down = true
+            return (input, .navigate)
         case .walk:
-            return (slot.anchorX >= selfBody.position.x
-                ? FighterInputFrame(right: true)
-                : FighterInputFrame(left: true), .navigate)
+            return (towardLanding, .navigate)
+        }
+    }
+
+    private func directionalInput(
+        fromX: Double,
+        landingLeft: Double,
+        landingRight: Double
+    ) -> FighterInputFrame {
+        if landingRight < fromX { return FighterInputFrame(left: true) }
+        if landingLeft > fromX { return FighterInputFrame(right: true) }
+        return .neutral
+    }
+
+    private func tacticalSurfacePlan(
+        observation: CPUCombatObservation,
+        target: CombatBodyState,
+        graph: DynamicSurfaceGraph
+    ) -> (surface: Surface, path: SurfacePath, reason: CombatNavigationReason)? {
+        guard let fromID = observation.selfBody.currentSurfaceID else { return nil }
+        let distance = abs(target.position.x - observation.selfBody.position.x)
+        let projectileDanger = incomingProjectileThreat(
+            observation: observation, targetID: target.actorID)
+        let pressureDanger = distance < 150 &&
+            (target.phase == .startup || target.phase == .active ||
+             observation.recentlyHit)
+        guard projectileDanger || pressureDanger else { return nil }
+
+        var best: (surface: Surface, path: SurfacePath,
+                   reason: CombatNavigationReason, score: Double)?
+        for surface in graph.tacticalSurfaces
+        where surface.id != fromID && surface.id != target.currentSurfaceID {
+            guard let path = graph.path(from: fromID, to: surface.id),
+                  path.totalCost <= 180 else { continue }
+            let center = (surface.left + surface.right) * 0.5
+            let heightGain = max(0, observation.selfBody.position.y - surface.y)
+            let separation = abs(center - target.position.x)
+            let reason: CombatNavigationReason = projectileDanger
+                ? .projectileEvade : .pressureEscape
+            let score =
+                (projectileDanger ? 180.0 : 95.0) +
+                min(100, heightGain * 0.45) +
+                min(65, separation * 0.08) -
+                path.totalCost * 1.1
+            if best == nil || score > best!.score {
+                best = (surface, path, reason, score)
+            }
+        }
+        guard let best, best.score > 35 else { return nil }
+        return (best.surface, best.path, best.reason)
+    }
+
+    private func incomingProjectileThreat(
+        observation: CPUCombatObservation,
+        targetID: EntityID
+    ) -> Bool {
+        guard let projectiles = observation.worldCheckpoint?.projectiles?.values else {
+            return false
+        }
+        return projectiles.contains { projectile in
+            guard projectile.ownerID == targetID else { return false }
+            let dx = observation.selfBody.position.x - projectile.previousPosition.x
+            let movingToward = projectile.definition.velocity.x * dx > 0
+            let verticalBand = abs(
+                observation.selfBody.position.y - projectile.previousPosition.y) <= 120
+            let timeToCross = abs(dx) /
+                max(0.25, abs(projectile.definition.velocity.x))
+            return movingToward && verticalBand && timeToCross <= 55
         }
     }
 
