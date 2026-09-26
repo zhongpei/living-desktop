@@ -788,10 +788,10 @@ public final class CombatWorld {
 
         let rootMotion = timeline.rootMotionDelta
         if rootMotion.x != 0 {
-            body.position.x += rootMotion.x * body.facing.sign
+            body.position.x += rootMotion.x * body.visualScale * body.facing.sign
         }
         if rootMotion.y != 0, body.locomotion != .grounded {
-            body.position.y += rootMotion.y
+            body.position.y += rootMotion.y * body.visualScale
         }
 
         for definition in move.authoredProjectiles where timeline.frame == definition.spawnFrame {
