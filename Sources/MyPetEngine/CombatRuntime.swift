@@ -775,6 +775,10 @@ public final class CombatRuntime {
         guard changed || world.frame.isMultiple(of: 15) else { return }
 
         let targetID = target?.actorID.raw ?? combat?.targetID?.raw ?? "<none>"
+        let nav = gameplayCPUs[body.actorID.raw]?.checkpoint().combat.navigationPlan
+        let navText = nav.map {
+            "\($0.reason.rawValue):\($0.targetSurfaceID)->\($0.goalSurfaceID):j\($0.jumpsRemaining)"
+        } ?? "-"
         let dx = target.map { $0.position.x - body.position.x }
         let dy = target.map { $0.position.y - body.position.y }
         let distance = target.map {
@@ -782,7 +786,7 @@ public final class CombatRuntime {
         }
         RuntimeLogger.shared.debug(
             "combat.cpu",
-            "frame=\(world.frame) actor=\(body.actorID.raw) target=\(targetID) activity=\(output.activity.rawValue) intent=\(combat?.intent.rawValue ?? "-") move=\(combat?.moveID ?? "-") utility=\(String(format: "%.1f", combat?.utilityScore ?? 0)) requested=\(inputDescription(output.fighterInput)) final=\(inputDescription(resolved?.input ?? .neutral)) source=\(resolvedSource?.rawValue ?? "none") authority=\(resolved?.authority.rawValue ?? "scripted") x=\(String(format: "%.1f", body.position.x)) y=\(String(format: "%.1f", body.position.y)) targetX=\(target.map { String(format: "%.1f", $0.position.x) } ?? "-") targetY=\(target.map { String(format: "%.1f", $0.position.y) } ?? "-") dx=\(dx.map { String(format: "%.1f", $0) } ?? "-") dy=\(dy.map { String(format: "%.1f", $0) } ?? "-") distance=\(distance.map { String(format: "%.1f", $0) } ?? "-") vx=\(String(format: "%.2f", body.velocity.x)) vy=\(String(format: "%.2f", body.velocity.y)) targetVX=\(target.map { String(format: "%.2f", $0.velocity.x) } ?? "-") targetVY=\(target.map { String(format: "%.2f", $0.velocity.y) } ?? "-") facing=\(body.facing.rawValue) surface=\(body.currentSurfaceID ?? "-") targetSurface=\(target?.currentSurfaceID ?? "-") slot=\(combat?.slot?.side.rawValue ?? "-") anchor=\(combat?.slot.map { String(format: "%.1f", $0.anchorX) } ?? "-") phase=\(body.phase.rawValue) timeline=\(body.currentMoveID ?? "-")@\(timeline?.frame ?? -1)/\(timeline?.definition.durationFrames ?? -1)")
+            "frame=\(world.frame) actor=\(body.actorID.raw) target=\(targetID) activity=\(output.activity.rawValue) intent=\(combat?.intent.rawValue ?? "-") move=\(combat?.moveID ?? "-") utility=\(String(format: "%.1f", combat?.utilityScore ?? 0)) requested=\(inputDescription(output.fighterInput)) final=\(inputDescription(resolved?.input ?? .neutral)) source=\(resolvedSource?.rawValue ?? "none") authority=\(resolved?.authority.rawValue ?? "scripted") x=\(String(format: "%.1f", body.position.x)) y=\(String(format: "%.1f", body.position.y)) targetX=\(target.map { String(format: "%.1f", $0.position.x) } ?? "-") targetY=\(target.map { String(format: "%.1f", $0.position.y) } ?? "-") dx=\(dx.map { String(format: "%.1f", $0) } ?? "-") dy=\(dy.map { String(format: "%.1f", $0) } ?? "-") distance=\(distance.map { String(format: "%.1f", $0) } ?? "-") vx=\(String(format: "%.2f", body.velocity.x)) vy=\(String(format: "%.2f", body.velocity.y)) targetVX=\(target.map { String(format: "%.2f", $0.velocity.x) } ?? "-") targetVY=\(target.map { String(format: "%.2f", $0.velocity.y) } ?? "-") facing=\(body.facing.rawValue) surface=\(body.currentSurfaceID ?? "-") targetSurface=\(target?.currentSurfaceID ?? "-") slot=\(combat?.slot?.side.rawValue ?? "-") anchor=\(combat?.slot.map { String(format: "%.1f", $0.anchorX) } ?? "-") nav=\(navText) phase=\(body.phase.rawValue) timeline=\(body.currentMoveID ?? "-")@\(timeline?.frame ?? -1)/\(timeline?.definition.durationFrames ?? -1)")
     }
 
     private func inputDescription(_ input: FighterInputFrame) -> String {
