@@ -491,6 +491,8 @@ public struct ClassicCombatCPU: Sendable {
             goalSurfaceID: plan.goalSurfaceID,
             reason: plan.reason,
             selfBody: selfBody,
+            profile: profile,
+            graph: graph,
             frame: frame)
     }
 
