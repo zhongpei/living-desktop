@@ -29,6 +29,76 @@ final class ClassicCombatCPUTests: XCTestCase {
                 .path(from: "window-a", to: "window-b"))
     }
 
+    func testSurfaceGraphConnectsThreeOffsetMonitorFloorsWithMultiJumpLinks() throws {
+        let environment = BodyEnvironment(
+            bounds: Rect2D(x: 0, y: 0, width: 3000, height: 900),
+            surfaces: [
+                Surface(id: "screen-left", kind: .floor, left: 0, right: 1000, y: 700),
+                Surface(id: "screen-mid", kind: .floor, left: 1000, right: 2000, y: 600),
+                Surface(id: "screen-right", kind: .floor, left: 2000, right: 3000, y: 720),
+            ])
+        let graph = DynamicSurfaceGraph.build(
+            environment: environment,
+            mobility: SurfaceMobility(
+                walkSpeed: 1.62,
+                runSpeedMultiplier: 1.65,
+                jumpVelocity: -8.5,
+                maximumJumpCount: 3))
+
+        let path = try XCTUnwrap(graph.path(from: "screen-left", to: "screen-right"))
+        XCTAssertEqual(path.surfaceIDs, ["screen-left", "screen-mid", "screen-right"])
+        XCTAssertTrue(path.edges.allSatisfy { $0.action == .jump })
+        XCTAssertTrue(path.edges.allSatisfy {
+            $0.effectiveRequiredJumpCount >= 1 &&
+                $0.effectiveRequiredJumpCount <= 3
+        })
+    }
+
+    func testWindowTopIsTacticalTerrainButWindowBottomIsNot() {
+        let environment = BodyEnvironment(
+            bounds: Rect2D(x: 0, y: 0, width: 1200, height: 800),
+            surfaces: [
+                Surface(id: "floor", kind: .floor, left: 0, right: 1200, y: 700),
+                Surface(id: "window-top", kind: .windowTop, left: 250, right: 500, y: 540),
+                Surface(id: "window-bottom", kind: .windowBottom, left: 250, right: 500, y: 680),
+            ])
+        let graph = DynamicSurfaceGraph.build(
+            environment: environment,
+            mobility: SurfaceMobility(walkSpeed: 1.5, jumpVelocity: -8.6))
+
+        XCTAssertEqual(graph.tacticalSurfaces.map(\.id), ["window-top"])
+        XCTAssertNil(graph.surface(id: "window-bottom"))
+    }
+
+    func testCPUUsesReachableWindowTopToEscapeClosePressure() throws {
+        let profile = CombatProfile(moves: [])
+        var me = CombatBodyState(actorID: EntityID("me"), x: 300, yFeet: 700)
+        me.currentSurfaceID = "floor"
+        var enemy = CombatBodyState(
+            actorID: EntityID("enemy"), x: 390, yFeet: 700, facing: .left)
+        enemy.currentSurfaceID = "floor"
+        enemy.phase = .startup
+        let environment = BodyEnvironment(
+            bounds: Rect2D(x: 0, y: 0, width: 1200, height: 800),
+            surfaces: [
+                Surface(id: "floor", kind: .floor, left: 0, right: 1200, y: 700),
+                Surface(id: "window-top", kind: .windowTop, left: 260, right: 500, y: 560),
+            ])
+        var cpu = ClassicCombatCPU(actorID: me.actorID, difficulty: .normal, seed: 21)
+
+        let output = cpu.advance(CPUCombatObservation(
+            frame: 100,
+            selfBody: me,
+            opponents: [enemy],
+            selfProfile: profile,
+            opponentProfiles: ["enemy": profile],
+            environment: environment))
+
+        XCTAssertTrue(output.intent == .navigate || output.intent == .jump)
+        XCTAssertEqual(cpu.checkpoint().navigationPlan?.goalSurfaceID, "window-top")
+        XCTAssertEqual(cpu.checkpoint().navigationPlan?.reason, .pressureEscape)
+    }
+
     func testClassicCPUSelectsVulnerableReachableTargetAndReservesSlot() throws {
         let profile = testProfile()
         let me = CombatBodyState(actorID: EntityID("me"), x: 280, yFeet: 700)

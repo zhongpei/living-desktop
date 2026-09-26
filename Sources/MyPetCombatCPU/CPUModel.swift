@@ -60,6 +60,42 @@ public enum EngagementSide: String, Codable, Sendable {
     case leftNear, leftFar, rightNear, rightFar, upper
 }
 
+public enum CombatNavigationReason: String, Codable, Sendable {
+    case chase, projectileEvade, pressureEscape, highGround
+}
+
+public struct CombatNavigationPlan: Codable, Equatable, Sendable {
+    public var targetSurfaceID: String
+    public var goalSurfaceID: String
+    public var landingLeft: Double
+    public var landingRight: Double
+    public var jumpsRemaining: Int
+    public var reason: CombatNavigationReason
+    public var commitUntilFrame: Int64
+
+    public init(
+        targetSurfaceID: String,
+        goalSurfaceID: String? = nil,
+        landingLeft: Double,
+        landingRight: Double,
+        jumpsRemaining: Int,
+        reason: CombatNavigationReason,
+        commitUntilFrame: Int64
+    ) {
+        self.targetSurfaceID = targetSurfaceID
+        self.goalSurfaceID = goalSurfaceID ?? targetSurfaceID
+        self.landingLeft = landingLeft
+        self.landingRight = landingRight
+        self.jumpsRemaining = max(0, jumpsRemaining)
+        self.reason = reason
+        self.commitUntilFrame = commitUntilFrame
+    }
+
+    public var landingCenter: Double {
+        (landingLeft + landingRight) * 0.5
+    }
+}
+
 public struct EngagementSlot: Codable, Equatable, Sendable {
     public var targetID: EntityID
     public var side: EngagementSide
@@ -200,6 +236,9 @@ public struct ClassicCombatCPUCheckpoint: Codable, Equatable, Sendable {
     /// but a new offensive move may not be selected.
     var nextAttackFrame: Int64?
     var lastCounteredHitFrame: Int64?
+    var navigationPlan: CombatNavigationPlan? = nil
+    var tacticalNavigationCooldownUntil: Int64? = nil
+    var tacticalSurfaceHoldUntil: Int64? = nil
 }
 
 struct CombatCPUOutputCheckpoint: Codable, Equatable, Sendable {

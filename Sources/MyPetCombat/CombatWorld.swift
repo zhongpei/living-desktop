@@ -130,6 +130,63 @@ public final class CombatWorld {
         return true
     }
 
+    @discardableResult
+    public func removeParticipant(_ actorID: EntityID) -> Bool {
+        guard var active = session,
+              active.state == .active,
+              active.participantIDs.contains(actorID) else { return false }
+
+        active.participantIDs.removeAll { $0 == actorID }
+        session = active
+        inputs[actorID.raw] = .neutral
+        buffers[actorID.raw] = CombatInputBuffer()
+        projectiles = projectiles.filter { $0.value.ownerID != actorID }
+        bodyWorld.update(actorID) { body in
+            body.actionTimeline = nil
+            if body.locomotion == .grounded { body.velocity.x = 0 }
+        }
+
+        // A team link is combat-scoped. If one member explicitly leaves,
+        // dissolve that team and return both members to ordinary active roles.
+        let relatedTeams = teams.values.filter {
+            $0.activeID == actorID || $0.benchID == actorID
+        }
+        for team in relatedTeams {
+            teams[team.teamID] = nil
+            for memberID in [team.activeID, team.benchID] {
+                guard var rule = rules[memberID.raw] else { continue }
+                rule.rosterRole = .active
+                rule.participation = active.participantIDs.contains(memberID)
+                    ? .rosterParticipant(teamID: "solo:\(memberID.raw)")
+                    : .uninvolved
+                rules[memberID.raw] = rule
+                bodyWorld.setDefinition(BodyDefinition(
+                    entityID: memberID,
+                    pushRadius: profiles[memberID.raw]?.pushRadius ?? 24,
+                    visualScale: rule.visualScale,
+                    pushEnabled: rule.healthState == .active,
+                    simulationEnabled: true))
+            }
+        }
+
+        if var rule = rules[actorID.raw] {
+            var combo = rule.combo ?? ComboState()
+            combo.end(reason: .sessionEnded)
+            rule.combo = combo
+            rule.participation = .uninvolved
+            rule.rosterRole = .active
+            rule.phase = .neutral
+            rule.stunFrames = 0
+            rule.airJumpsUsed = 0
+            rules[actorID.raw] = rule
+        }
+
+        if active.participantIDs.count < 2 {
+            endSession(cancelled: false)
+        }
+        return true
+    }
+
     public func configureTeam(
         teamID: String, activeID: EntityID, benchID: EntityID,
         rules teamRules: TeamCombatRules = .standard
@@ -384,6 +441,15 @@ public final class CombatWorld {
         }
 
         bodyWorld.advance(environment)
+        // Touching any traversable surface replenishes the full jump chain.
+        for id in ids {
+            guard let physical = bodyWorld.state(for: EntityID(id)),
+                  physical.locomotion == .grounded,
+                  var rule = rules[id],
+                  (rule.airJumpsUsed ?? 0) != 0 else { continue }
+            rule.airJumpsUsed = 0
+            rules[id] = rule
+        }
         clampProjectilesToAuthoredRange()
         resolveHits(environment: environment, events: &events)
         expireProjectiles(environment: environment, events: &events)
@@ -631,6 +697,9 @@ public final class CombatWorld {
 
         let horizontalIntent: Double = input.right == input.left
             ? 0 : (input.right ? 1 : -1)
+        let inputFrames = buffer.framesNewestFirst
+        let upPressed = input.up &&
+            inputFrames.dropFirst().first?.up != true
         if body.locomotion == .grounded, input.up, input.down,
            let surface = environment.surface(id: body.currentSurfaceID),
            surface.kind != .floor {
@@ -645,12 +714,31 @@ public final class CombatWorld {
             body.currentSurfaceID = nil
             body.surfaceFraction = nil
             body.locomotion = .airborne
-            body.velocity.x = horizontalIntent * profile.walkSpeed * 1.15
+            body.airJumpsUsed = 1
+            let chaseJump = body.authority == .autonomous &&
+                input.forward(facing: body.facing) &&
+                (nearestOpponentHorizontalDistance(from: body) ?? 0) >= 260
+            let horizontalSpeed = profile.walkSpeed *
+                (chaseJump ? profile.effectiveRunSpeedMultiplier * 0.9 : 1.15)
+            body.velocity.x = horizontalIntent * horizontalSpeed
             body.velocity.y = profile.jumpVelocity
             return
         }
 
         if body.locomotion == .airborne {
+            if upPressed,
+               body.stunFrames == 0,
+               body.actionTimeline == nil,
+               body.airJumpsUsed < profile.effectiveMaxJumpCount {
+                body.airJumpsUsed += 1
+                body.velocity.y = profile.jumpVelocity
+                if horizontalIntent != 0 {
+                    let desired = horizontalIntent * profile.walkSpeed *
+                        profile.effectiveRunSpeedMultiplier * 0.9
+                    body.velocity.x += (desired - body.velocity.x) * 0.55
+                }
+                return
+            }
             // Limited air steering keeps planned platform jumps viable without
             // turning the fighter into free-flight movement.
             if horizontalIntent != 0,

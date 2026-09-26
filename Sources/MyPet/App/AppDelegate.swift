@@ -564,6 +564,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // This setting is runtime-only and should not rebuild the cast.
             self.applySettings(settings, pointerOnly: true)
         }
+        tray.onLeaveAllCombat = { [weak self] in
+            guard let self else { return }
+            if let session = self.castSession {
+                session.leaveAllCombat()
+            } else {
+                _ = self.controller?.leaveCombat()
+            }
+        }
         tray.onLogLevelChange = { [weak self] level in
             guard let self, var settings = self.settings else { return }
             settings.logLevel = level

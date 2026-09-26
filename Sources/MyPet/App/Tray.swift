@@ -14,6 +14,7 @@ final class Tray: NSObject {
     var onPointerInputToggle: (() -> Void)?
     var onPointerInputRateChange: ((Int) -> Void)?
     var onCombatPacingRateChange: ((Double) -> Void)?
+    var onLeaveAllCombat: (() -> Void)?
     var onLogLevelChange: ((RuntimeLogLevel) -> Void)?
     /// 角色组／角色选择变化；AppDelegate 负责持久化并把选择交给世界运行时。
     var onCastSelectionChange: ((CastSelection) -> Void)?
@@ -271,6 +272,14 @@ final class Tray: NSObject {
         propItem.submenu = propSubmenu
         propItem.isEnabled = !propList.isEmpty
         menu.addItem(propItem)
+
+        let leaveCombat = NSMenuItem(
+            title: "全部人员脱离战斗",
+            action: #selector(leaveAllCombat),
+            keyEquivalent: "")
+        leaveCombat.target = self
+        leaveCombat.identifier = NSUserInterfaceItemIdentifier("combat.leave-all")
+        menu.addItem(leaveCombat)
 
         menu.addItem(.separator())
 
@@ -716,6 +725,10 @@ final class Tray: NSObject {
     @objc private func setCombatPacingRate(_ sender: NSMenuItem) {
         guard let rate = sender.representedObject as? Double else { return }
         onCombatPacingRateChange?(rate)
+    }
+
+    @objc private func leaveAllCombat() {
+        onLeaveAllCombat?()
     }
 
     @objc private func setLogLevel(_ sender: NSMenuItem) {

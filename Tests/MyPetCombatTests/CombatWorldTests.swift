@@ -139,6 +139,60 @@ final class CombatWorldTests: XCTestCase {
         XCTAssertEqual(world.body(for: EntityID("a"))?.phase, .startup)
     }
 
+    func testAirJumpChainResetsAfterLanding() {
+        let profile = CombatProfile(
+            walkSpeed: 1.5,
+            jumpVelocity: -8.6,
+            maxJumpCount: 3,
+            moves: [])
+        let world = CombatWorld()
+        world.register(
+            actorID: EntityID("a"), profile: profile,
+            x: 400, yFeet: 700)
+        world.register(actorID: EntityID("b"), x: 900, yFeet: 700, facing: .left)
+        XCTAssertTrue(beginSession(world))
+
+        world.setInput(FighterInputFrame(up: true), for: EntityID("a"))
+        _ = world.step(environment: floor)
+        XCTAssertEqual(world.body(for: EntityID("a"))?.airJumpsUsed, 1)
+
+        world.setInput(.neutral, for: EntityID("a"))
+        _ = world.step(environment: floor)
+        world.setInput(FighterInputFrame(up: true), for: EntityID("a"))
+        _ = world.step(environment: floor)
+        XCTAssertEqual(world.body(for: EntityID("a"))?.airJumpsUsed, 2)
+        XCTAssertLessThan(world.body(for: EntityID("a"))?.velocity.y ?? 0, 0)
+
+        world.setInput(.neutral, for: EntityID("a"))
+        for _ in 0..<240 {
+            _ = world.step(environment: floor)
+            if world.body(for: EntityID("a"))?.locomotion == .grounded { break }
+        }
+        XCTAssertEqual(world.body(for: EntityID("a"))?.locomotion, .grounded)
+        XCTAssertEqual(world.body(for: EntityID("a"))?.airJumpsUsed, 0)
+    }
+
+    func testRemovingOneParticipantKeepsMultiFighterSessionAlive() {
+        let world = CombatWorld()
+        for (index, id) in ["a", "b", "c"].enumerated() {
+            world.register(
+                actorID: EntityID(id),
+                x: 300 + Double(index) * 100,
+                yFeet: 700)
+        }
+        XCTAssertTrue(beginSession(world, ["a", "b", "c"]))
+
+        XCTAssertTrue(world.removeParticipant(EntityID("b")))
+        XCTAssertEqual(world.session?.state, .active)
+        XCTAssertEqual(world.session?.participantIDs.map(\.raw), ["a", "c"])
+        XCTAssertEqual(
+            world.body(for: EntityID("b"))?.participation,
+            .uninvolved)
+
+        XCTAssertTrue(world.removeParticipant(EntityID("c")))
+        XCTAssertEqual(world.session?.state, .completed)
+    }
+
     func testHighAndLowGuardRequireMatchingStance() {
         func remainingHP(height: CombatAttackHeight, crouching: Bool) -> Int? {
             let move = CombatMoveDefinition(

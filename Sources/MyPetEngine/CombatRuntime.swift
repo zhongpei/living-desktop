@@ -397,6 +397,49 @@ public final class CombatRuntime {
             targetID: target)
     }
 
+    @discardableResult
+    public func leaveCombat(_ actorID: EntityID) -> Bool {
+        let wasRequested = requestedCombatActors.contains(actorID.raw) ||
+            ownsCombatActivity(for: actorID)
+        controls.deactivate(.autonomous, for: actorID)
+        controls.deactivate(.authored, for: actorID)
+        controls.deactivate(.manual, for: actorID)
+        requestedCombatActors.remove(actorID.raw)
+        engagementTargets.removeValue(forKey: actorID.raw)
+        engagementTargets = engagementTargets.filter { $0.value != actorID }
+        committedEngagements = Set(committedEngagements.filter { key in
+            !key.split(separator: "|").contains { String($0) == actorID.raw }
+        })
+        platformIntents.removeValue(forKey: actorID.raw)
+        platformAuthorizations.removeValue(forKey: actorID.raw)
+        gameplayDecisions.removeValue(forKey: actorID.raw)
+        gameplayCPUs[actorID.raw] = ClassicGameplayCPU(
+            actorID: actorID,
+            difficulty: cpuDifficulties[actorID.raw] ?? .normal,
+            seed: stableCPUSeed(actorID))
+        let removed = world.removeParticipant(actorID)
+        applyResolvedInput(for: actorID)
+
+        if world.session?.state != .active {
+            releaseNonManualCombatControls()
+        } else {
+            refreshSession()
+        }
+        RuntimeLogger.shared.info(
+            "combat.session",
+            "actor=\(actorID.raw) leave requested=\(wasRequested) removed=\(removed) remaining=\(world.session?.participantIDs.map(\.raw).joined(separator: ",") ?? "<none>")")
+        return wasRequested || removed
+    }
+
+    public func leaveAllCombat() {
+        if world.session?.state == .active {
+            endSession(cancelled: false)
+        } else {
+            releaseNonManualCombatControls()
+            refreshSession()
+        }
+    }
+
     public func deactivate(_ source: ControlSource, for actorID: EntityID) {
         controls.deactivate(source, for: actorID)
         if source == .autonomous {
@@ -732,6 +775,10 @@ public final class CombatRuntime {
         guard changed || world.frame.isMultiple(of: 15) else { return }
 
         let targetID = target?.actorID.raw ?? combat?.targetID?.raw ?? "<none>"
+        let nav = gameplayCPUs[body.actorID.raw]?.navigationPlan
+        let navText = nav.map {
+            "\($0.reason.rawValue):\($0.targetSurfaceID)->\($0.goalSurfaceID):j\($0.jumpsRemaining)"
+        } ?? "-"
         let dx = target.map { $0.position.x - body.position.x }
         let dy = target.map { $0.position.y - body.position.y }
         let distance = target.map {
@@ -739,7 +786,7 @@ public final class CombatRuntime {
         }
         RuntimeLogger.shared.debug(
             "combat.cpu",
-            "frame=\(world.frame) actor=\(body.actorID.raw) target=\(targetID) activity=\(output.activity.rawValue) intent=\(combat?.intent.rawValue ?? "-") move=\(combat?.moveID ?? "-") utility=\(String(format: "%.1f", combat?.utilityScore ?? 0)) requested=\(inputDescription(output.fighterInput)) final=\(inputDescription(resolved?.input ?? .neutral)) source=\(resolvedSource?.rawValue ?? "none") authority=\(resolved?.authority.rawValue ?? "scripted") x=\(String(format: "%.1f", body.position.x)) y=\(String(format: "%.1f", body.position.y)) targetX=\(target.map { String(format: "%.1f", $0.position.x) } ?? "-") targetY=\(target.map { String(format: "%.1f", $0.position.y) } ?? "-") dx=\(dx.map { String(format: "%.1f", $0) } ?? "-") dy=\(dy.map { String(format: "%.1f", $0) } ?? "-") distance=\(distance.map { String(format: "%.1f", $0) } ?? "-") vx=\(String(format: "%.2f", body.velocity.x)) vy=\(String(format: "%.2f", body.velocity.y)) targetVX=\(target.map { String(format: "%.2f", $0.velocity.x) } ?? "-") targetVY=\(target.map { String(format: "%.2f", $0.velocity.y) } ?? "-") facing=\(body.facing.rawValue) surface=\(body.currentSurfaceID ?? "-") targetSurface=\(target?.currentSurfaceID ?? "-") slot=\(combat?.slot?.side.rawValue ?? "-") anchor=\(combat?.slot.map { String(format: "%.1f", $0.anchorX) } ?? "-") phase=\(body.phase.rawValue) timeline=\(body.currentMoveID ?? "-")@\(timeline?.frame ?? -1)/\(timeline?.definition.durationFrames ?? -1)")
+            "frame=\(world.frame) actor=\(body.actorID.raw) target=\(targetID) activity=\(output.activity.rawValue) intent=\(combat?.intent.rawValue ?? "-") move=\(combat?.moveID ?? "-") utility=\(String(format: "%.1f", combat?.utilityScore ?? 0)) requested=\(inputDescription(output.fighterInput)) final=\(inputDescription(resolved?.input ?? .neutral)) source=\(resolvedSource?.rawValue ?? "none") authority=\(resolved?.authority.rawValue ?? "scripted") x=\(String(format: "%.1f", body.position.x)) y=\(String(format: "%.1f", body.position.y)) targetX=\(target.map { String(format: "%.1f", $0.position.x) } ?? "-") targetY=\(target.map { String(format: "%.1f", $0.position.y) } ?? "-") dx=\(dx.map { String(format: "%.1f", $0) } ?? "-") dy=\(dy.map { String(format: "%.1f", $0) } ?? "-") distance=\(distance.map { String(format: "%.1f", $0) } ?? "-") vx=\(String(format: "%.2f", body.velocity.x)) vy=\(String(format: "%.2f", body.velocity.y)) targetVX=\(target.map { String(format: "%.2f", $0.velocity.x) } ?? "-") targetVY=\(target.map { String(format: "%.2f", $0.velocity.y) } ?? "-") facing=\(body.facing.rawValue) surface=\(body.currentSurfaceID ?? "-") targetSurface=\(target?.currentSurfaceID ?? "-") slot=\(combat?.slot?.side.rawValue ?? "-") anchor=\(combat?.slot.map { String(format: "%.1f", $0.anchorX) } ?? "-") nav=\(navText) phase=\(body.phase.rawValue) timeline=\(body.currentMoveID ?? "-")@\(timeline?.frame ?? -1)/\(timeline?.definition.durationFrames ?? -1)")
     }
 
     private func inputDescription(_ input: FighterInputFrame) -> String {

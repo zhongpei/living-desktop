@@ -58,11 +58,15 @@ public final class ActionRingPanel: NSPanel {
     public func show(
         at flippedCenter: CGPoint,
         primary: [RenderActionItem],
-        extended: [RenderActionItem]
+        extended: [RenderActionItem],
+        includeChat: Bool = true
     ) {
         dismissWorkItem?.cancel()
         installMonitors()
-        ringView.configure(primary: primary, extended: extended)
+        ringView.configure(
+            primary: primary,
+            extended: extended,
+            includeChat: includeChat)
         let work = coordinateSpace.flippedWorkArea(containing: flippedCenter)
         let x = max(work.minX, min(flippedCenter.x - frame.width / 2, work.maxX - frame.width))
         let top = max(work.minY, min(flippedCenter.y - frame.height / 2, work.maxY - frame.height))
@@ -133,7 +137,11 @@ private final class ActionRingView: NSView {
     var isMoreMenuVisible: Bool { moreMenuOpen }
     override var isFlipped: Bool { true }
 
-    func configure(primary: [RenderActionItem], extended: [RenderActionItem]) {
+    func configure(
+        primary: [RenderActionItem],
+        extended: [RenderActionItem],
+        includeChat: Bool
+    ) {
         subviews.forEach { $0.removeFromSuperview() }
         moreMenu = nil
         moreMenuOpen = false
@@ -149,13 +157,17 @@ private final class ActionRingView: NSView {
             button.action = #selector(actionPressed(_:))
             addSubview(button)
         }
-        let chat = makeButton("聊天", itemID: nil, index: primary.count, size: size, gap: gap, origin: origin)
-        chat.target = self
-        chat.action = #selector(chatPressed)
-        chat.setAccessibilityLabel("聊天")
-        addSubview(chat)
+        var nextIndex = primary.count
+        if includeChat {
+            let chat = makeButton("聊天", itemID: nil, index: nextIndex, size: size, gap: gap, origin: origin)
+            chat.target = self
+            chat.action = #selector(chatPressed)
+            chat.setAccessibilityLabel("聊天")
+            addSubview(chat)
+            nextIndex += 1
+        }
         if !extended.isEmpty {
-            let more = makeButton("更多", itemID: nil, index: primary.count + 1, size: size, gap: gap, origin: origin)
+            let more = makeButton("更多", itemID: nil, index: nextIndex, size: size, gap: gap, origin: origin)
             more.target = self
             more.action = #selector(morePressed(_:))
             addSubview(more)
