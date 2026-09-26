@@ -40,6 +40,7 @@ public struct ClassicCombatCPU: Sendable {
         guard let slot = state.slot, slot.targetID == state.targetID else { return nil }
         return slot
     }
+    public var navigationPlan: CombatNavigationPlan? { state.navigationPlan }
 
     public mutating func advance(_ observation: CPUCombatObservation) -> CombatCPUOutput {
         record(opponents: observation.opponents, frame: observation.frame)
