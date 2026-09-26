@@ -87,6 +87,10 @@ final class CastSession: NSObject {
         castRuntime?.expandCapacity(to: count)
     }
 
+    func leaveAllCombat() {
+        combatCoordinator.leaveAllCombat()
+    }
+
     @discardableResult
     func depart(memberID: String) -> Bool {
         castRuntime?.depart(memberID: memberID) ?? false
