@@ -36,6 +36,7 @@ final class PetBodyDriver {
     private var timelineFrameRemainder: Double = 0
     var performance: Performance? {
         guard let timeline = actionTimeline,
+              timeline.definition.domain != .combat,
               timeline.definition.locomotionPolicy == .stationary else { return nil }
         let endsAt = timeline.definition.durationFrames.map {
             actionStartedAt + Double($0) / Double(BodyWorld.framesPerSecond)
