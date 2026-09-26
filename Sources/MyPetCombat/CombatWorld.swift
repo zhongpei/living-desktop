@@ -384,6 +384,15 @@ public final class CombatWorld {
         }
 
         bodyWorld.advance(environment)
+        // Touching any traversable surface replenishes the full jump chain.
+        for id in ids {
+            guard let physical = bodyWorld.state(for: EntityID(id)),
+                  physical.locomotion == .grounded,
+                  var rule = rules[id],
+                  (rule.airJumpsUsed ?? 0) != 0 else { continue }
+            rule.airJumpsUsed = 0
+            rules[id] = rule
+        }
         clampProjectilesToAuthoredRange()
         resolveHits(environment: environment, events: &events)
         expireProjectiles(environment: environment, events: &events)
@@ -631,6 +640,9 @@ public final class CombatWorld {
 
         let horizontalIntent: Double = input.right == input.left
             ? 0 : (input.right ? 1 : -1)
+        let inputFrames = buffer.framesNewestFirst
+        let upPressed = input.up &&
+            inputFrames.dropFirst().first?.up != true
         if body.locomotion == .grounded, input.up, input.down,
            let surface = environment.surface(id: body.currentSurfaceID),
            surface.kind != .floor {
@@ -645,12 +657,31 @@ public final class CombatWorld {
             body.currentSurfaceID = nil
             body.surfaceFraction = nil
             body.locomotion = .airborne
-            body.velocity.x = horizontalIntent * profile.walkSpeed * 1.15
+            body.airJumpsUsed = 1
+            let chaseJump = body.authority == .autonomous &&
+                input.forward(facing: body.facing) &&
+                (nearestOpponentHorizontalDistance(from: body) ?? 0) >= 260
+            let horizontalSpeed = profile.walkSpeed *
+                (chaseJump ? profile.effectiveRunSpeedMultiplier * 0.9 : 1.15)
+            body.velocity.x = horizontalIntent * horizontalSpeed
             body.velocity.y = profile.jumpVelocity
             return
         }
 
         if body.locomotion == .airborne {
+            if upPressed,
+               body.stunFrames == 0,
+               body.actionTimeline == nil,
+               body.airJumpsUsed < profile.effectiveMaxJumpCount {
+                body.airJumpsUsed += 1
+                body.velocity.y = profile.jumpVelocity
+                if horizontalIntent != 0 {
+                    let desired = horizontalIntent * profile.walkSpeed *
+                        profile.effectiveRunSpeedMultiplier * 0.9
+                    body.velocity.x += (desired - body.velocity.x) * 0.55
+                }
+                return
+            }
             // Limited air steering keeps planned platform jumps viable without
             // turning the fighter into free-flight movement.
             if horizontalIntent != 0,
