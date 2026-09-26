@@ -217,6 +217,9 @@ public struct CombatProfile: Codable, Equatable, Sendable {
     /// layer above normal walk speed; nil uses the desktop combat default.
     public var runSpeedMultiplier: Double?
     public var jumpVelocity: Double
+    /// Total jumps available before touching a traversable surface again.
+    /// Nil keeps older content compatible with the desktop-combat default.
+    public var maxJumpCount: Int?
     public var pushRadius: Double
     public var hurtBoxes: [CollisionBox]
     public var moves: [CombatMoveDefinition]
@@ -227,6 +230,7 @@ public struct CombatProfile: Codable, Equatable, Sendable {
 
     public init(maxHP: Int = 1000, walkSpeed: Double = 1.5,
                 runSpeedMultiplier: Double? = nil, jumpVelocity: Double = -8.6,
+                maxJumpCount: Int? = nil,
                 pushRadius: Double = 24,
                 hurtBoxes: [CollisionBox] = [CollisionBox(x1: -24, y1: -92, x2: 24, y2: 0)],
                 moves: [CombatMoveDefinition] = CombatProfile.defaultMoves,
@@ -236,6 +240,7 @@ public struct CombatProfile: Codable, Equatable, Sendable {
         self.walkSpeed = max(0, walkSpeed)
         self.runSpeedMultiplier = runSpeedMultiplier.map { min(3, max(1, $0)) }
         self.jumpVelocity = jumpVelocity
+        self.maxJumpCount = maxJumpCount.map { min(6, max(1, $0)) }
         self.pushRadius = max(1, pushRadius)
         self.hurtBoxes = hurtBoxes
         self.moves = moves
@@ -247,6 +252,12 @@ public struct CombatProfile: Codable, Equatable, Sendable {
 
     public var effectiveRunSpeedMultiplier: Double {
         runSpeedMultiplier ?? 1.65
+    }
+
+    /// Desktop combat defaults to a triple jump so vertically offset monitor
+    /// floors and window terrain remain connected without teleporting.
+    public var effectiveMaxJumpCount: Int {
+        maxJumpCount ?? 3
     }
 
     public static let defaultMoves: [CombatMoveDefinition] = [
@@ -302,6 +313,7 @@ public struct CombatRuleState: Codable, Equatable, Sendable {
     public var lastRecoveryChoice: RecoveryChoice?
     public var rosterRole: CombatRosterRole?
     public var powerUpFrames: Int?
+    public var airJumpsUsed: Int?
 
     public init(actorID: EntityID, hp: Int = 1000, visualScale: Double = 1) {
         self.actorID = actorID
@@ -323,6 +335,7 @@ public struct CombatRuleState: Codable, Equatable, Sendable {
         self.lastRecoveryChoice = nil
         self.rosterRole = .active
         self.powerUpFrames = 0
+        self.airJumpsUsed = 0
     }
 
     public var canAcceptAction: Bool {
@@ -374,6 +387,10 @@ public struct CombatBodyState: Codable, Equatable, Sendable {
     public var currentMoveID: String? {
         body.actionTimeline?.definition.domain == .combat
             ? body.actionTimeline?.definition.actionID : nil
+    }
+    public var airJumpsUsed: Int {
+        get { rules.airJumpsUsed ?? 0 }
+        set { rules.airJumpsUsed = max(0, newValue) }
     }
     public var hitStopFrames: Int {
         get { rules.hitStopFrames }
