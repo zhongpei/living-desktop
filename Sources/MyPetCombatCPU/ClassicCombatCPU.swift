@@ -430,11 +430,16 @@ public struct ClassicCombatCPU: Sendable {
     ) -> (input: FighterInputFrame, intent: CombatCPUIntent)? {
         guard var plan = state.navigationPlan else { return nil }
         guard graph.surface(id: plan.goalSurfaceID) != nil,
-              graph.surface(id: plan.targetSurfaceID) != nil,
+              let liveTargetSurface = graph.surface(id: plan.targetSurfaceID),
               frame <= plan.commitUntilFrame + 120 else {
             state.navigationPlan = nil
             return nil
         }
+        // Window surfaces are dynamic. Follow the current authoritative bounds,
+        // not the rectangle captured when the jump started.
+        plan.landingLeft = liveTargetSurface.left
+        plan.landingRight = liveTargetSurface.right
+        state.navigationPlan = plan
 
         if selfBody.locomotion == .airborne {
             var input = directionalInput(
