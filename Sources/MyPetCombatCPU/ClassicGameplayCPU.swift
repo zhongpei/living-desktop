@@ -214,6 +214,7 @@ public struct ClassicGameplayCPU: Sendable {
     }
 
     public var reservedSlot: EngagementSlot? { combatCPU.reservedSlot }
+    public var navigationPlan: CombatNavigationPlan? { combatCPU.navigationPlan }
 
     public mutating func advance(_ observation: GameplayCPUObservation) -> GameplayCPUOutput {
         let frame = observation.combat.frame
