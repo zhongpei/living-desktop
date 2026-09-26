@@ -719,9 +719,14 @@ final class PetController {
 
         updateSleepState()
         let combatOwnsActivity = combatCoordinator.ownsCombatActivity(actorID: runtimeActorID)
+        actions.setCombatExclusive(combatOwnsActivity)
         if combatOwnsActivity && !semanticSuspendedByCombat {
             semanticSuspendedByCombat = true
-            actions.cancelPerformance()
+            cancelPointerResponse()
+            pendingMenuAction = nil
+            actionRing.dismiss()
+            actionRingOpen = false
+            if manualControlPanel.isVisible { manualControlPanel.finish() }
             cancelGoalAndScene(reason: "combat activity acquired")
         } else if !combatOwnsActivity && semanticSuspendedByCombat {
             semanticSuspendedByCombat = false
@@ -755,10 +760,15 @@ final class PetController {
             submitPendingMenuAction()
             drainCommittedRuntimeActions()
         }
-        advancePointerResponse()
-        tickSceneMove()
-        tickScenePerform()
-        applyManualLocomotion()
+        if !combatOwnsActivity {
+            advancePointerResponse()
+            tickSceneMove()
+            tickScenePerform()
+            applyManualLocomotion()
+        } else {
+            pointerRetreat = nil
+            pointerRecovery = nil
+        }
         if !usesSharedCombatWorld {
             let combatEvents = combatCoordinator.advance(
                 elapsedSeconds: dt,
@@ -1593,6 +1603,20 @@ final class PetController {
     /// 只消费 Engine 发出的一次性 BodyCommand。命令执行完毕后，生产身体
     /// 必须把结果送回同一事件入口；Kernel 不再用计时器冒充物理完成。
     private func drainCommittedRuntimeActions() {
+        if combatCoordinator.ownsCombatActivity(actorID: runtimeActorID) {
+            for id in pendingRuntimeActions.keys.sorted() {
+                if let command = gameplayRuntime.takeBodyCommand(behaviorID: id) {
+                    _ = gameplayRuntime.submitBodyResult(BodyResult(
+                        behaviorID: command.behaviorID,
+                        executionToken: command.executionToken,
+                        outcome: .cancelled))
+                } else {
+                    gameplayRuntime.cancelBodyBehavior(id)
+                }
+            }
+            pendingRuntimeActions.removeAll()
+            return
+        }
         for id in pendingRuntimeActions.keys.sorted() {
             guard let command = gameplayRuntime.takeBodyCommand(behaviorID: id),
                   let action = pendingRuntimeActions.removeValue(forKey: id) else { continue }
@@ -2356,7 +2380,8 @@ final class PetController {
 
     /// 右键操作环的一级动作：只接受语义动作，具体 clip 仍由当前角色包解析。
     func performMenuAction(_ intent: ActionIntent) {
-        guard !isStopped else { return }
+        guard !isStopped,
+              !combatCoordinator.ownsCombatActivity(actorID: runtimeActorID) else { return }
         if let declaredCapabilities,
            let required = ActionCatalog.requiredCapability(for: intent),
            !declaredCapabilities.contains(required) {
@@ -2380,6 +2405,10 @@ final class PetController {
     }
 
     private func submitPendingMenuAction() {
+        if combatCoordinator.ownsCombatActivity(actorID: runtimeActorID) {
+            pendingMenuAction = nil
+            return
+        }
         guard let pending = pendingMenuAction else { return }
         pendingMenuAction = nil
         let execution = semanticEngine.actionRuntime.executeUserDirect(
@@ -2389,7 +2418,8 @@ final class PetController {
     }
 
     private func openActionRing(at cursor: CGPoint) {
-        guard !isStopped, !isDeparting else { return }
+        guard !isStopped, !isDeparting,
+              !combatCoordinator.ownsCombatActivity(actorID: runtimeActorID) else { return }
         model.wake()
         model.stopWalk()
         actions.cancelPerformance()
@@ -2516,7 +2546,8 @@ final class PetController {
     }
 
     private func beginManualControl() {
-        guard !isStopped else { return }
+        guard !isStopped,
+              !combatCoordinator.ownsCombatActivity(actorID: runtimeActorID) else { return }
         cancelGoalAndScene(reason: "manual control")
         actions.cancelPerformance()
         model.wake()
@@ -2645,6 +2676,7 @@ final class PetController {
             confirmedContext: "用户刚切换到「\(window.owner)」，\(title)，系统判断活动类型为「\(window.activity)」。只对这次切换自然评论一句。",
             noveltyKey: "window:\(window.owner):\(window.windowTitle)")
         guard settings.foregroundFollow else { return }
+        guard !combatCoordinator.ownsCombatActivity(actorID: runtimeActorID) else { return }
         guard foregroundCooldown <= 0 else { return }
         guard model.state != .dragged, model.state != .tossed else { return }
         foregroundCooldown = 6
@@ -2700,8 +2732,9 @@ final class PetController {
             // a dragged character to yesterday's relationship layout.
             self.presentation.detachFromCastLayout()
             self.model.wake()
-            self.actions.cancelPerformance() // 用户触摸取消表演
-            self.actions.clearPendingUserActions() // 抓起 = 接管，排队的菜单指令作废
+            // Direct left-button drag is the one control allowed to interrupt
+            // an autonomous combat timeline.
+            self.actions.interruptForPointerDrag()
             self.cancelGoalAndScene(reason: "user grabbed")   // 用户接管：场景意图作废
             self.pullCursorStart = cursor
             self.model.beginDrag(at: cursor)
@@ -2732,14 +2765,18 @@ final class PetController {
                     actorID: self.runtimeActorID)
             }
             self.pullCursorStart = nil
-            if wasClick {
+            if wasClick,
+               !self.combatCoordinator.ownsCombatActivity(actorID: self.runtimeActorID) {
                 self.registerPat()
             } else if self.model.state == .tossed {
                 self.brainState.apply(event: .tossed, now: self.clock)
             }
         }
         presentation.onRightMouseDown = { [weak self] cursor in
-            self?.openActionRing(at: cursor)
+            guard let self,
+                  !self.combatCoordinator.ownsCombatActivity(actorID: self.runtimeActorID)
+            else { return }
+            self.openActionRing(at: cursor)
         }
     }
 
@@ -2781,6 +2818,7 @@ final class PetController {
 
     var pointerActor: PointerActor {
         let canReact = !isStopped && !isDeparting && !actionRingOpen
+            && !combatCoordinator.ownsCombatActivity(actorID: runtimeActorID)
             && clock >= pointerQuietUntil
             && semanticActiveSceneID == nil
             && (model.state == .grounded || model.state == .perched)
@@ -2892,7 +2930,8 @@ final class PetController {
     /// 全局菜单「召唤道具」（用户指令）：宠物变出指定道具——手上（拿着）或
     /// 面前（placed 落地，原地待着后自然淡出）。正做的场景让位。
     func summonProp(_ id: String, placed: Bool) {
-        guard settings.propsRuntimeEnabled, PropCatalog.def(id) != nil else { return }
+        guard settings.propsRuntimeEnabled, PropCatalog.def(id) != nil,
+              !combatCoordinator.ownsCombatActivity(actorID: runtimeActorID) else { return }
         model.wake()
         model.stopWalk()
         cancelGoalAndScene(reason: "user command")
