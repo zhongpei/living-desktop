@@ -775,7 +775,7 @@ public final class CombatRuntime {
         guard changed || world.frame.isMultiple(of: 15) else { return }
 
         let targetID = target?.actorID.raw ?? combat?.targetID?.raw ?? "<none>"
-        let nav = gameplayCPUs[body.actorID.raw]?.checkpoint().combat.navigationPlan
+        let nav = gameplayCPUs[body.actorID.raw]?.navigationPlan
         let navText = nav.map {
             "\($0.reason.rawValue):\($0.targetSurfaceID)->\($0.goalSurfaceID):j\($0.jumpsRemaining)"
         } ?? "-"
