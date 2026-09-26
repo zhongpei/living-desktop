@@ -57,6 +57,19 @@ final class PointerInputSettingsTests: XCTestCase {
             .submenu?.items.map(\.state), [.off, .off, .on])
     }
 
+    func testTrayExposesLeaveAllCombatShortcut() throws {
+        _ = NSApplication.shared
+        let tray = Tray(settings: Settings())
+        let item = try XCTUnwrap(
+            tray.attachedMenu?.items.first { $0.title == "全部人员脱离战斗" })
+        var invoked = false
+        tray.onLeaveAllCombat = { invoked = true }
+
+        NSApp.sendAction(try XCTUnwrap(item.action), to: item.target, from: item)
+
+        XCTAssertTrue(invoked)
+    }
+
     func testTrayBrainMenuOpensPromptManager() throws {
         _ = NSApplication.shared
         let tray = Tray(settings: Settings())
