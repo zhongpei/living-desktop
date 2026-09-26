@@ -370,8 +370,16 @@ public struct ClassicCombatCPU: Sendable {
         let frame = observation.frame
 
         if let continuation = continueNavigationPlan(
-            selfBody: selfBody, graph: graph, frame: frame) {
+            selfBody: selfBody,
+            profile: observation.selfProfile,
+            graph: graph,
+            frame: frame) {
             return continuation
+        }
+
+        if frame < (state.tacticalSurfaceHoldUntil ?? .min),
+           selfBody.currentSurfaceID != target.currentSurfaceID {
+            return (.neutral, .wait)
         }
 
         guard selfBody.locomotion == .grounded,
@@ -387,6 +395,8 @@ public struct ClassicCombatCPU: Sendable {
                 goalSurfaceID: toID,
                 reason: .chase,
                 selfBody: selfBody,
+                profile: observation.selfProfile,
+                graph: graph,
                 frame: frame)
         }
 
@@ -404,6 +414,8 @@ public struct ClassicCombatCPU: Sendable {
                 goalSurfaceID: tactical.surface.id,
                 reason: tactical.reason,
                 selfBody: selfBody,
+                profile: observation.selfProfile,
+                graph: graph,
                 frame: frame)
         }
 
@@ -412,6 +424,7 @@ public struct ClassicCombatCPU: Sendable {
 
     private mutating func continueNavigationPlan(
         selfBody: CombatBodyState,
+        profile: CombatProfile,
         graph: DynamicSurfaceGraph,
         frame: Int64
     ) -> (input: FighterInputFrame, intent: CombatCPUIntent)? {
@@ -445,7 +458,8 @@ public struct ClassicCombatCPU: Sendable {
         if currentID == plan.targetSurfaceID {
             if currentID == plan.goalSurfaceID {
                 if plan.reason != .chase {
-                    state.tacticalNavigationCooldownUntil = frame + 120
+                    state.tacticalNavigationCooldownUntil = frame + 180
+                    state.tacticalSurfaceHoldUntil = frame + 54
                 }
                 state.navigationPlan = nil
                 return nil
@@ -460,6 +474,8 @@ public struct ClassicCombatCPU: Sendable {
                 goalSurfaceID: plan.goalSurfaceID,
                 reason: plan.reason,
                 selfBody: selfBody,
+                profile: profile,
+                graph: graph,
                 frame: frame)
         }
 
@@ -483,6 +499,8 @@ public struct ClassicCombatCPU: Sendable {
         goalSurfaceID: String,
         reason: CombatNavigationReason,
         selfBody: CombatBodyState,
+        profile: CombatProfile,
+        graph: DynamicSurfaceGraph,
         frame: Int64
     ) -> (input: FighterInputFrame, intent: CombatCPUIntent) {
         state.navigationPlan = CombatNavigationPlan(
@@ -494,7 +512,9 @@ public struct ClassicCombatCPU: Sendable {
             reason: reason,
             commitUntilFrame: frame + Int64(max(45, edge.expectedFrames + 45)))
 
-        let dx = edge.launchX - selfBody.position.x
+        let safeLaunchX = effectiveLaunchX(
+            edge: edge, selfBody: selfBody, profile: profile, graph: graph)
+        let dx = safeLaunchX - selfBody.position.x
         if abs(dx) > 8 {
             return (
                 dx > 0 ? FighterInputFrame(right: true) : FighterInputFrame(left: true),
@@ -518,6 +538,25 @@ public struct ClassicCombatCPU: Sendable {
         case .walk:
             return (towardLanding, .navigate)
         }
+    }
+
+    private func effectiveLaunchX(
+        edge: SurfaceNavigationEdge,
+        selfBody: CombatBodyState,
+        profile: CombatProfile,
+        graph: DynamicSurfaceGraph
+    ) -> Double {
+        guard let from = graph.surface(id: edge.fromSurfaceID) else {
+            return edge.launchX
+        }
+        let margin = profile.pushRadius * selfBody.visualScale + 3
+        if edge.launchX >= from.right - 1 {
+            return max(from.left + margin, from.right - margin)
+        }
+        if edge.launchX <= from.left + 1 {
+            return min(from.right - margin, from.left + margin)
+        }
+        return min(from.right - margin, max(from.left + margin, edge.launchX))
     }
 
     private func directionalInput(
