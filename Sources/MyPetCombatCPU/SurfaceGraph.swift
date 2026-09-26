@@ -6,17 +6,24 @@ public struct SurfaceMobility: Codable, Equatable, Sendable {
     public var runSpeedMultiplier: Double
     public var jumpVelocity: Double
     public var maximumJumpCount: Int
+    /// Legacy source-compatibility knobs. Ballistic reach is authoritative.
+    public var maximumJumpGap: Double
+    public var maximumJumpRise: Double
 
     public init(
         walkSpeed: Double,
         runSpeedMultiplier: Double = 1.65,
         jumpVelocity: Double,
-        maximumJumpCount: Int = 3
+        maximumJumpCount: Int = 3,
+        maximumJumpGap: Double = 260,
+        maximumJumpRise: Double = 220
     ) {
         self.walkSpeed = max(0.1, walkSpeed)
         self.runSpeedMultiplier = min(3, max(1, runSpeedMultiplier))
         self.jumpVelocity = min(-0.1, jumpVelocity)
         self.maximumJumpCount = min(6, max(1, maximumJumpCount))
+        self.maximumJumpGap = max(0, maximumJumpGap)
+        self.maximumJumpRise = max(0, maximumJumpRise)
     }
 
     public var airborneHorizontalSpeed: Double {
