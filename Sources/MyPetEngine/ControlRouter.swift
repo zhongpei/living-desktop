@@ -83,6 +83,11 @@ public struct ControlRouter: Codable, Equatable, Sendable {
         }
         return nil
     }
+
+    public func resolvedSource(for actorID: EntityID) -> ControlSource? {
+        guard let actorSlots = slots[actorID.raw] else { return nil }
+        return Self.priority.first { actorSlots[$0] != nil }
+    }
 }
 
 private extension ControlSource {

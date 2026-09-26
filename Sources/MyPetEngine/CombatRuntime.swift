@@ -161,6 +161,8 @@ public final class CombatRuntime {
     /// Runtime tuning, deliberately separate from the deterministic 60 Hz world clock.
     private var combatPacingRate: Double = 1
     private var lastReceivedHitFrames: [String: Int64] = [:]
+    /// Diagnostics only; never checkpointed and never consulted by simulation.
+    private var cpuLogSignatures: [String: String] = [:]
 
     public init(cpuSeed: UInt64 = 0) {
         self.world = CombatWorld()
@@ -248,6 +250,7 @@ public final class CombatRuntime {
         committedEngagements = checkpoint.committedEngagements ?? []
         combatPacingRate = min(2, max(0.25, checkpoint.combatPacingRate ?? 1))
         lastReceivedHitFrames = checkpoint.lastReceivedHitFrames ?? [:]
+        cpuLogSignatures.removeAll()
     }
 
     public func register(
@@ -296,6 +299,7 @@ public final class CombatRuntime {
         requestedCombatActors.remove(actorID.raw)
         engagementTargets.removeValue(forKey: actorID.raw)
         lastReceivedHitFrames.removeValue(forKey: actorID.raw)
+        cpuLogSignatures.removeValue(forKey: actorID.raw)
         committedEngagements = Set(committedEngagements.filter { key in
             !key.split(separator: "|").contains { String($0) == actorID.raw }
         })
@@ -548,6 +552,8 @@ public final class CombatRuntime {
         })
         for body in snapshot.bodies {
             if body.rosterRole == .bench { continue }
+            var diagnosticOutput: GameplayCPUOutput?
+            var diagnosticTarget: CombatBodyState?
             if controls.resolve(for: body.actorID)?.authority == .autonomous {
                 let opponents = snapshot.bodies.filter {
                     $0.actorID != body.actorID && $0.healthState == .active &&
@@ -629,13 +635,23 @@ public final class CombatRuntime {
                     policyAdjustedInput(output.fighterInput),
                     source: .autonomous,
                     for: body.actorID)
+                diagnosticOutput = output
+                if let targetID = output.combatOutput?.targetID {
+                    diagnosticTarget = opponents.first { $0.actorID == targetID }
+                } else if let targetID = engagementTargets[body.actorID.raw] {
+                    diagnosticTarget = opponents.first { $0.actorID == targetID }
+                }
             }
             if let seekInput = pendingEngagementInput(for: body.actorID) {
-                // The tactical CPU intentionally emits a fresh decision only
-                // every few frames. A user-requested seeker needs continuous
-                // locomotion until the engagement gate is reached; otherwise
-                // it crawls at the CPU decision cadence and can look stuck.
                 controls.setInput(seekInput, source: .autonomous, for: body.actorID)
+            }
+            if let diagnosticOutput {
+                logCPUState(
+                    body: body,
+                    target: diagnosticTarget,
+                    output: diagnosticOutput,
+                    resolvedSource: controls.resolvedSource(for: body.actorID),
+                    resolved: controls.resolve(for: body.actorID))
             }
             applyResolvedInput(for: body.actorID)
         }
@@ -667,21 +683,74 @@ public final class CombatRuntime {
         engagementTargets.removeAll()
         committedEngagements.removeAll()
         lastReceivedHitFrames.removeAll()
+        cpuLogSignatures.removeAll()
     }
 
-    /// Combat must take over an authored route, otherwise ControlRouter's
+    /// Combat must take over every body-control source except Pointer. Direct
+    /// mouse drag is the single user override explicitly allowed during an
+    /// autonomous engagement.
     /// authored priority silently suppresses the autonomous CPU input.
     private func activateAutonomousCombatControl(
         for actorID: EntityID, input: FighterInputFrame = .neutral
     ) {
-        let replacedAuthored = controls.isActive(.authored, for: actorID)
+        var replaced: [String] = []
+        if controls.isActive(.authored, for: actorID) { replaced.append("authored") }
+        if controls.isActive(.manual, for: actorID) { replaced.append("manual") }
         controls.deactivate(.authored, for: actorID)
+        controls.deactivate(.manual, for: actorID)
+        // Pointer is deliberately preserved: a real mouse drag may always pick
+        // the fighter up and temporarily outrank autonomous combat.
         controls.activate(.autonomous, for: actorID, input: input)
-        if replacedAuthored {
+        if !replaced.isEmpty {
             RuntimeLogger.shared.debug(
                 "combat.control",
-                "actor=\(actorID.raw) takeover replaced source=authored with=autonomous")
+                "actor=\(actorID.raw) takeover replaced=\(replaced.joined(separator: ",")) with=autonomous pointer=preserved")
         }
+    }
+
+    private func logCPUState(
+        body: CombatBodyState,
+        target: CombatBodyState?,
+        output: GameplayCPUOutput,
+        resolvedSource: ControlSource?,
+        resolved: RoutedFighterInput?
+    ) {
+        guard RuntimeLogger.shared.isEnabled(.debug) else { return }
+        let combat = output.combatOutput
+        let timeline = body.actionTimeline
+        let signature = [
+            output.activity.rawValue,
+            combat?.intent.rawValue ?? "-",
+            combat?.moveID ?? "-",
+            inputDescription(output.fighterInput),
+            resolvedSource?.rawValue ?? "none",
+            body.phase.rawValue,
+            body.currentMoveID ?? "-"
+        ].joined(separator: "|")
+        let changed = cpuLogSignatures[body.actorID.raw] != signature
+        cpuLogSignatures[body.actorID.raw] = signature
+        guard changed || world.frame.isMultiple(of: 15) else { return }
+
+        let targetID = target?.actorID.raw ?? combat?.targetID?.raw ?? "<none>"
+        let dx = target.map { $0.position.x - body.position.x }
+        let dy = target.map { $0.position.y - body.position.y }
+        let distance = target.map {
+            hypot($0.position.x - body.position.x, $0.position.y - body.position.y)
+        }
+        RuntimeLogger.shared.debug(
+            "combat.cpu",
+            "frame=\(world.frame) actor=\(body.actorID.raw) target=\(targetID) activity=\(output.activity.rawValue) intent=\(combat?.intent.rawValue ?? "-") move=\(combat?.moveID ?? "-") utility=\(String(format: "%.1f", combat?.utilityScore ?? 0)) requested=\(inputDescription(output.fighterInput)) final=\(inputDescription(resolved?.input ?? .neutral)) source=\(resolvedSource?.rawValue ?? "none") authority=\(resolved?.authority.rawValue ?? "scripted") x=\(String(format: "%.1f", body.position.x)) y=\(String(format: "%.1f", body.position.y)) targetX=\(target.map { String(format: "%.1f", $0.position.x) } ?? "-") targetY=\(target.map { String(format: "%.1f", $0.position.y) } ?? "-") dx=\(dx.map { String(format: "%.1f", $0) } ?? "-") dy=\(dy.map { String(format: "%.1f", $0) } ?? "-") distance=\(distance.map { String(format: "%.1f", $0) } ?? "-") vx=\(String(format: "%.2f", body.velocity.x)) vy=\(String(format: "%.2f", body.velocity.y)) targetVX=\(target.map { String(format: "%.2f", $0.velocity.x) } ?? "-") targetVY=\(target.map { String(format: "%.2f", $0.velocity.y) } ?? "-") facing=\(body.facing.rawValue) surface=\(body.currentSurfaceID ?? "-") targetSurface=\(target?.currentSurfaceID ?? "-") slot=\(combat?.slot?.side.rawValue ?? "-") anchor=\(combat?.slot.map { String(format: "%.1f", $0.anchorX) } ?? "-") phase=\(body.phase.rawValue) timeline=\(body.currentMoveID ?? "-")@\(timeline?.frame ?? -1)/\(timeline?.definition.durationFrames ?? -1)")
+    }
+
+    private func inputDescription(_ input: FighterInputFrame) -> String {
+        var parts: [String] = []
+        if input.left { parts.append("L") }
+        if input.right { parts.append("R") }
+        if input.up { parts.append("U") }
+        if input.down { parts.append("D") }
+        parts.append(contentsOf: input.buttons.map(\.rawValue).sorted())
+        parts.append(contentsOf: input.systemControls.map(\.rawValue).sorted())
+        return parts.isEmpty ? "neutral" : parts.joined(separator: "+")
     }
 
     private func logCombatEvents(_ events: [CombatEvent]) {

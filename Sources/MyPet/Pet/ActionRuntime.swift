@@ -36,6 +36,7 @@ final class PetBodyDriver {
     private var timelineFrameRemainder: Double = 0
     var performance: Performance? {
         guard let timeline = actionTimeline,
+              timeline.definition.domain != .combat,
               timeline.definition.locomotionPolicy == .stationary else { return nil }
         let endsAt = timeline.definition.durationFrames.map {
             actionStartedAt + Double($0) / Double(BodyWorld.framesPerSecond)
@@ -54,6 +55,9 @@ final class PetBodyDriver {
     /// 用户抓起宠物即作废（clearPendingUserActions）。
     private(set) var pendingSummon: CGFloat?
     private(set) var pendingPerform: String?
+    /// Combat is an exclusive body owner. Life/story/menu/pointer-reflex verbs
+    /// are rejected while this is true; direct mouse drag bypasses this driver.
+    private(set) var combatExclusive = false
 
     init(model: PetModel, library: ClipLibrary) {
         self.model = model
@@ -64,9 +68,28 @@ final class PetBodyDriver {
         model.state == .grounded || model.state == .perched
     }
 
-    /// 注入一条指令。userInitiated = 用户/系统反射（菜单、前台跟随），
-    /// 与大脑指令同权——v1 不做优先级队列，身体反射永远更高。
+    /// Combat is the sole body owner except for direct pointer drag. Entering
+    /// combat also discards latent life commands so they cannot resurrect on
+    /// landing after the fight has already started.
+    func setCombatExclusive(_ enabled: Bool) {
+        guard combatExclusive != enabled else { return }
+        combatExclusive = enabled
+        guard enabled else {
+            lastTimelineTick = clock
+            timelineFrameRemainder = 0
+            return
+        }
+        pendingSummon = nil
+        pendingPerform = nil
+        strollTarget = nil
+        model.stopWalk()
+        pointerSafeCancelNonCombatAction()
+    }
+
+    /// 注入一条指令。Combat 独占身体时全部拒绝；真正的鼠标拖拽直接走
+    /// PetModel + ControlRouter.pointer，不经过这个入口。
     func inject(_ verb: Verb, userInitiated: Bool = false) {
+        guard !combatExclusive else { return }
         switch verb {
         case .moveTo(let target):
             guard canAct else {
@@ -151,6 +174,21 @@ final class PetBodyDriver {
     func tick(now: Double) {
         clock = now
 
+        // CombatWorld is the only owner of combat ActionTimeline. Advancing it
+        // here as well used to double-step startup/active/recovery and shrink
+        // real hit windows. Keep the life clock synchronized but never mutate
+        // a combat timeline.
+        if actionTimeline?.definition.domain == .combat {
+            lastTimelineTick = now
+            timelineFrameRemainder = 0
+            return
+        }
+        if combatExclusive {
+            lastTimelineTick = now
+            timelineFrameRemainder = 0
+            return
+        }
+
         // 排队的用户指令：一落地（重新可行动）立刻执行。
         if canAct {
             if let target = pendingSummon {
@@ -191,7 +229,24 @@ final class PetBodyDriver {
     /// once 型表演播完由控制器调用（运行时不持有动画器）；
     /// 用户触摸等反射也可直接调用来取消当前表演。
     func cancelPerformance() {
-        guard actionTimeline?.definition.locomotionPolicy == .stationary else { return }
+        guard let timeline = actionTimeline,
+              timeline.definition.domain != .combat,
+              timeline.definition.locomotionPolicy == .stationary else { return }
+        cancelAction()
+    }
+
+    /// The single non-combat escape hatch: a real mouse press is allowed to
+    /// pick a fighter up even in startup/active/recovery.
+    func interruptForPointerDrag() {
+        pendingSummon = nil
+        pendingPerform = nil
+        strollTarget = nil
+        model.stopWalk()
+        cancelAction()
+    }
+
+    private func pointerSafeCancelNonCombatAction() {
+        guard actionTimeline?.definition.domain != .combat else { return }
         cancelAction()
     }
 

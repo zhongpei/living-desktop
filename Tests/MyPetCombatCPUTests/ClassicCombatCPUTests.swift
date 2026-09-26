@@ -122,6 +122,37 @@ final class ClassicCombatCPUTests: XCTestCase {
         XCTAssertTrue(CommandMatcher.matches(special.command, buffer: buffer, facing: .right))
     }
 
+    func testCPUDoesNotStartMeleeThatWillWhiffAtFirstActiveFrame() {
+        let move = CombatMoveDefinition(
+            id: "slow-swing",
+            command: .button(.x),
+            startupFrames: 10,
+            activeFrames: 2,
+            recoveryFrames: 8,
+            hit: CombatHitDefinition(
+                damage: 60,
+                hitStopFrames: 0,
+                attackBoxes: [CollisionBox(x1: 18, y1: -80, x2: 78, y2: -20)]),
+            visualAction: "attack")
+        let profile = CombatProfile(moves: [move])
+        let me = CombatBodyState(actorID: EntityID("me"), x: 300, yFeet: 700)
+        var enemy = CombatBodyState(
+            actorID: EntityID("enemy"), x: 350, yFeet: 700, facing: .left)
+        enemy.velocity.x = 4
+        var cpu = ClassicCombatCPU(actorID: me.actorID, difficulty: .normal, seed: 5)
+
+        let output = cpu.advance(CPUCombatObservation(
+            frame: 0,
+            selfBody: me,
+            opponents: [enemy],
+            selfProfile: profile,
+            opponentProfiles: ["enemy": profile],
+            environment: floor))
+
+        XCTAssertNotEqual(output.intent, .attack)
+        XCTAssertNil(output.moveID)
+    }
+
     func testReferenceUCTParametersAndUnvisitedPriorityMatchFixedMctsAi23i() {
         XCTAssertEqual(MctsAi23iCompatibility.iterationLimit, 23)
         XCTAssertEqual(MctsAi23iCompatibility.explorationConstant, 3)

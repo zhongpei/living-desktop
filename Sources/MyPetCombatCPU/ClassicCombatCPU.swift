@@ -199,14 +199,8 @@ public struct ClassicCombatCPU: Sendable {
             return approach(
                 selfBody: observation.selfBody, target: target, slot: slot)
         }
-        let unseenCandidates = candidates.filter {
-            (state.moveUseCounts?[$0.move.id, default: 0] ?? 0) == 0
-        }
-        if !unseenCandidates.isEmpty {
-            candidates = unseenCandidates + candidates.filter {
-                (state.moveUseCounts?[$0.move.id, default: 0] ?? 0) > 0
-            }
-        }
+        // Variety stays a soft utility prior. Never reorder every unseen move
+        // ahead of a tactically better familiar move.
         candidates = Array(candidates.prefix(state.configuration.topK))
         let useSearch = state.configuration.searchIterations > 0 &&
             observation.worldCheckpoint != nil
@@ -425,7 +419,12 @@ public struct ClassicCombatCPU: Sendable {
             let projectileReach = move.authoredProjectiles.map(\.effectiveTravelDistance).max()
             let reach = projectileReach ??
                 max(1, move.hit.attackBoxes.map(\.rect.maxX).max() ?? 1)
-            let hitChance = max(0, min(1, 1 - abs(distance - reach * 0.75) / max(60, reach)))
+            let scoringDistance = move.authoredProjectiles.isEmpty
+                ? predictedDistanceAtFirstActive(
+                    move: move, selfBody: selfBody, target: target)
+                : distance
+            let hitChance = max(
+                0, min(1, 1 - abs(scoringDistance - reach * 0.75) / max(60, reach)))
             let repetition = state.recentMoves.filter { $0 == move.id }.count
             let repeatHits = move.hit.rehitFrames.map {
                 max(1, 1 + max(0, move.activeFrames - 1) / $0)
@@ -511,7 +510,7 @@ public struct ClassicCombatCPU: Sendable {
                     !repeated &&
                     recentProjectileCount < (tactics.projectile > 1.25 ? 3 : 2)
             }
-            return meleeBoxesOverlap(
+            return meleeWillOverlapAtFirstActive(
                 move: candidate.move,
                 selfBody: selfBody,
                 target: target,
@@ -550,32 +549,85 @@ public struct ClassicCombatCPU: Sendable {
         }
     }
 
-    private func meleeBoxesOverlap(
+    private func predictedDistanceAtFirstActive(
+        move: CombatMoveDefinition,
+        selfBody: CombatBodyState,
+        target: CombatBodyState
+    ) -> Double {
+        let prediction = predictedPositionsAtFirstActive(
+            move: move, selfBody: selfBody, target: target)
+        return hypot(
+            prediction.target.x - prediction.selfPosition.x,
+            prediction.target.y - prediction.selfPosition.y)
+    }
+
+    private func meleeWillOverlapAtFirstActive(
         move: CombatMoveDefinition,
         selfBody: CombatBodyState,
         target: CombatBodyState,
         targetProfile: CombatProfile?
     ) -> Bool {
         guard !move.hit.attackBoxes.isEmpty else { return false }
+        let prediction = predictedPositionsAtFirstActive(
+            move: move, selfBody: selfBody, target: target)
         guard let targetProfile, !targetProfile.hurtBoxes.isEmpty else {
-            let distance = abs(target.position.x - selfBody.position.x)
+            let distance = abs(prediction.target.x - prediction.selfPosition.x)
             let reach = move.hit.attackBoxes.map { $0.rect.maxX }.max() ?? 0
-            return distance <= Swift.max(55.0, reach + 18.0)
+            return distance <= Swift.max(
+                55.0,
+                reach * selfBody.visualScale + 18.0)
         }
         let attackRects = move.hit.attackBoxes.map {
             $0.placed(
-                at: selfBody.position,
+                at: prediction.selfPosition,
                 facing: selfBody.facing,
                 scale: selfBody.visualScale)
         }
         let hurtRects = targetProfile.hurtBoxes.map {
             $0.placed(
-                at: target.position,
+                at: prediction.target,
                 facing: target.facing,
                 scale: target.visualScale)
         }
         return attackRects.contains { attack in
             hurtRects.contains(where: attack.overlaps)
+        }
+    }
+
+    private func predictedPositionsAtFirstActive(
+        move: CombatMoveDefinition,
+        selfBody: CombatBodyState,
+        target: CombatBodyState
+    ) -> (selfPosition: Vec2, target: Vec2) {
+        // Command synthesis emits neutral/command frames before CombatWorld can
+        // actually start the move. Include that delay plus startup, otherwise a
+        // moving opponent is judged against a stale "right now" position.
+        let commandLead = max(
+            0,
+            CombatCommandSynthesizer.frames(
+                for: move.command, facing: selfBody.facing).count - 1)
+        let impactDelay = commandLead + move.startupFrames
+        let targetPosition = Vec2(
+            x: target.position.x + target.velocity.x * Double(impactDelay),
+            y: target.position.y + target.velocity.y * Double(impactDelay))
+        let root = rootMotionBeforeActive(move)
+        let selfPosition = Vec2(
+            x: selfBody.position.x +
+                root.x * selfBody.visualScale * selfBody.facing.sign,
+            y: selfBody.position.y +
+                (selfBody.locomotion == .grounded ? 0 : root.y * selfBody.visualScale))
+        return (selfPosition, targetPosition)
+    }
+
+    private func rootMotionBeforeActive(_ move: CombatMoveDefinition) -> Vec2 {
+        guard move.startupFrames > 0 else { return Vec2() }
+        return (move.rootMotion ?? []).reduce(into: Vec2()) { total, motion in
+            let start = max(0, motion.active.start)
+            let end = min(move.startupFrames - 1, motion.active.end)
+            guard end >= start else { return }
+            let frames = Double(end - start + 1)
+            total.x += motion.deltaPerFrame.x * frames
+            total.y += motion.deltaPerFrame.y * frames
         }
     }
 

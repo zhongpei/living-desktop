@@ -703,6 +703,13 @@ public final class CombatWorld {
         var energy = body.gameplayEnergy
         guard energy.spend(cost, frame: frame) else { return false }
         body.gameplayEnergy = energy
+        if body.locomotion == .grounded &&
+           move.actionDefinition.locomotionPolicy == .stationary {
+            // A combat move owns locomotion from this frame onward. Do not
+            // inherit the previous chase velocity; authored root motion below
+            // is the only movement while startup/active/recovery is running.
+            body.velocity.x = 0
+        }
         let instanceID = body.rules.actionSequence ?? 0
         body.rules.actionSequence = instanceID + 1
         body.actionTimeline = ActionTimeline(
@@ -713,6 +720,9 @@ public final class CombatWorld {
         events.append(CombatEvent(
             frame: frame, kind: .moveStarted,
             actorID: body.actorID, moveID: move.id))
+        RuntimeLogger.shared.debug(
+            "combat.move",
+            "frame=\(frame) kind=start actor=\(body.actorID.raw) move=\(move.id) x=\(String(format: "%.1f", body.position.x)) y=\(String(format: "%.1f", body.position.y)) nearestDX=\(nearestOpponentHorizontalDistance(from: body).map { String(format: "%.1f", $0) } ?? "-") startup=\(move.startupFrames) active=\(move.activeFrames) recovery=\(move.recoveryFrames) rootX=\(String(format: "%.1f", moveRootMotionXBeforeActive(move)))")
         if cost > 0 {
             events.append(CombatEvent(
                 frame: frame, kind: .energySpent, actorID: body.actorID,
@@ -725,6 +735,16 @@ public final class CombatWorld {
                 actorID: body.actorID, moveID: move.id, amount: 480))
         }
         return true
+    }
+
+    private func moveRootMotionXBeforeActive(_ move: CombatMoveDefinition) -> Double {
+        guard move.startupFrames > 0 else { return 0 }
+        return (move.rootMotion ?? []).reduce(0) { total, motion in
+            let start = max(0, motion.active.start)
+            let end = min(move.startupFrames - 1, motion.active.end)
+            guard end >= start else { return total }
+            return total + Double(end - start + 1) * motion.deltaPerFrame.x
+        }
     }
 
     private func commandSpecificity(_ command: CombatCommand) -> Int {
@@ -751,12 +771,29 @@ public final class CombatWorld {
         case .active: body.phase = .active
         case .recovery: body.phase = .recovery
         case .finished, .cancelled:
+            if timeline.phase == .finished,
+               body.hitTargets.isEmpty,
+               !move.hit.attackBoxes.isEmpty,
+               move.authoredProjectiles.isEmpty {
+                RuntimeLogger.shared.debug(
+                    "combat.move",
+                    "frame=\(frame) kind=whiff actor=\(body.actorID.raw) move=\(move.id) x=\(String(format: "%.1f", body.position.x)) nearestDX=\(nearestOpponentHorizontalDistance(from: body).map { String(format: "%.1f", $0) } ?? "-")")
+            }
             body.actionTimeline = nil
             body.hitTargets.removeAll()
             body.hitLedger.removeAll()
             body.phase = .neutral
             return
         }
+
+        let rootMotion = timeline.rootMotionDelta
+        if rootMotion.x != 0 {
+            body.position.x += rootMotion.x * body.visualScale * body.facing.sign
+        }
+        if rootMotion.y != 0, body.locomotion != .grounded {
+            body.position.y += rootMotion.y * body.visualScale
+        }
+
         for definition in move.authoredProjectiles where timeline.frame == definition.spawnFrame {
             spawnProjectile(
                 definition, move: move, timeline: timeline,
