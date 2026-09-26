@@ -397,6 +397,45 @@ public final class CombatRuntime {
             targetID: target)
     }
 
+    @discardableResult
+    public func leaveCombat(_ actorID: EntityID) -> Bool {
+        let wasRequested = requestedCombatActors.contains(actorID.raw) ||
+            ownsCombatActivity(for: actorID)
+        controls.deactivate(.autonomous, for: actorID)
+        controls.deactivate(.authored, for: actorID)
+        controls.deactivate(.manual, for: actorID)
+        requestedCombatActors.remove(actorID.raw)
+        engagementTargets.removeValue(forKey: actorID.raw)
+        engagementTargets = engagementTargets.filter { $0.value != actorID }
+        committedEngagements = Set(committedEngagements.filter { key in
+            !key.split(separator: "|").contains { String($0) == actorID.raw }
+        })
+        platformIntents.removeValue(forKey: actorID.raw)
+        platformAuthorizations.removeValue(forKey: actorID.raw)
+        gameplayDecisions.removeValue(forKey: actorID.raw)
+        let removed = world.removeParticipant(actorID)
+        applyResolvedInput(for: actorID)
+
+        if world.session?.state != .active {
+            releaseNonManualCombatControls()
+        } else {
+            refreshSession()
+        }
+        RuntimeLogger.shared.info(
+            "combat.session",
+            "actor=\(actorID.raw) leave requested=\(wasRequested) removed=\(removed) remaining=\(world.session?.participantIDs.map(\.raw).joined(separator: ",") ?? "<none>")")
+        return wasRequested || removed
+    }
+
+    public func leaveAllCombat() {
+        if world.session?.state == .active {
+            endSession(cancelled: false)
+        } else {
+            releaseNonManualCombatControls()
+            refreshSession()
+        }
+    }
+
     public func deactivate(_ source: ControlSource, for actorID: EntityID) {
         controls.deactivate(source, for: actorID)
         if source == .autonomous {
