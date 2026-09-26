@@ -1,6 +1,7 @@
 import CoreGraphics
 import XCTest
 import MyPetContent
+import MyPet2D
 
 @testable import MyPetApp
 
@@ -167,6 +168,54 @@ final class ActionRuntimeTests: XCTestCase {
         runtime.inject(.moveTo(1200), userInitiated: true)
         runtime.clearPendingUserActions()
         XCTAssertNil(runtime.pendingSummon, "抓起 = 接管，排队作废")
+    }
+
+    func testCombatExclusiveRejectsLifeVerbsAndDoesNotAdvanceCombatTimeline() {
+        model.setActionTimeline(ActionTimeline(
+            instanceID: 99,
+            definition: ActionDefinition(
+                actionID: "combat-test",
+                durationFrames: 30,
+                animationBinding: "actions/wave",
+                domain: .combat,
+                startupFrames: 8,
+                activeFrames: 4,
+                locomotionPolicy: .stationary)))
+        runtime.setCombatExclusive(true)
+
+        runtime.inject(.moveTo(1000), userInitiated: true)
+        runtime.inject(.perform("actions/wave"), userInitiated: true)
+        runtime.tick(now: 1)
+        runtime.tick(now: 2)
+
+        XCTAssertEqual(runtime.actionTimeline?.definition.domain, .combat)
+        XCTAssertEqual(runtime.actionTimeline?.frame, 0,
+                       "life driver must never double-step CombatWorld's timeline")
+        XCTAssertNil(runtime.strollTarget)
+        XCTAssertNil(runtime.pendingSummon)
+        XCTAssertNil(runtime.pendingPerform)
+    }
+
+    func testOnlyPointerDragCanInterruptCombatTimeline() {
+        model.setActionTimeline(ActionTimeline(
+            instanceID: 100,
+            definition: ActionDefinition(
+                actionID: "combat-test",
+                durationFrames: 30,
+                animationBinding: "actions/wave",
+                domain: .combat,
+                startupFrames: 8,
+                activeFrames: 4,
+                locomotionPolicy: .stationary)))
+        runtime.setCombatExclusive(true)
+
+        runtime.cancelPerformance()
+        XCTAssertNotNil(runtime.actionTimeline,
+                        "ordinary life cancellation must not cancel combat")
+
+        runtime.interruptForPointerDrag()
+        XCTAssertNil(runtime.actionTimeline,
+                     "direct mouse drag is the explicit combat override")
     }
 
     // ---- 工具 ----
