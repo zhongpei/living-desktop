@@ -107,6 +107,35 @@ final class CombatWorldTests: XCTestCase {
         XCTAssertEqual(world.session?.endedAtFrame, 0)
     }
 
+    func testAuthoredRootMotionAdvancesFighterBeforeFirstActiveFrame() {
+        let move = CombatMoveDefinition(
+            id: "step-in",
+            command: .button(.x),
+            startupFrames: 2,
+            activeFrames: 1,
+            recoveryFrames: 1,
+            hit: CombatHitDefinition(damage: 20, hitStopFrames: 0),
+            visualAction: "attack",
+            rootMotion: [ActionRootMotion(
+                active: ActionFrameWindow(start: 0, end: 1),
+                deltaPerFrame: Vec2(x: 2, y: 0))])
+        let world = CombatWorld()
+        world.register(
+            actorID: EntityID("a"),
+            profile: CombatProfile(moves: [move]),
+            x: 400, yFeet: 700)
+        world.register(actorID: EntityID("b"), x: 700, yFeet: 700, facing: .left)
+        XCTAssertTrue(beginSession(world))
+
+        world.setInput(FighterInputFrame(buttons: [.x]), for: EntityID("a"))
+        _ = world.step(environment: floor)
+        world.setInput(.neutral, for: EntityID("a"))
+        _ = world.step(environment: floor)
+
+        XCTAssertEqual(world.body(for: EntityID("a"))?.position.x, 404, accuracy: 1e-9)
+        XCTAssertEqual(world.body(for: EntityID("a"))?.phase, .startup)
+    }
+
     func testHighAndLowGuardRequireMatchingStance() {
         func remainingHP(height: CombatAttackHeight, crouching: Bool) -> Int? {
             let move = CombatMoveDefinition(
