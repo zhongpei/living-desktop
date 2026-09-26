@@ -147,6 +147,9 @@ public struct CombatMoveDefinition: Codable, Equatable, Sendable {
     /// Traditional fighting-game state restriction. Old content defaults to
     /// grounded, except defensive burst which remains usable in air.
     public var useState: CombatMoveUseState?
+    /// Authored local-space movement owned by the move timeline. Positive X
+    /// means forward and is mirrored by facing at runtime.
+    public var rootMotion: [ActionRootMotion]?
     /// Optional keeps schema-v1 profiles presentation-compatible.
     public var cancelWindows: [ActionFrameWindow]?
     public var cancelInto: [String]?
@@ -158,6 +161,7 @@ public struct CombatMoveDefinition: Codable, Equatable, Sendable {
                 resourceRules: MoveResourceRules? = nil,
                 systemControl: CombatSystemControl? = nil,
                 useState: CombatMoveUseState? = nil,
+                rootMotion: [ActionRootMotion]? = nil,
                 cancelWindows: [ActionFrameWindow]? = nil,
                 cancelInto: [String]? = nil) {
         self.id = id
@@ -172,6 +176,7 @@ public struct CombatMoveDefinition: Codable, Equatable, Sendable {
         self.resourceRules = resourceRules
         self.systemControl = systemControl
         self.useState = useState
+        self.rootMotion = rootMotion
         self.cancelWindows = cancelWindows
         self.cancelInto = cancelInto
     }
@@ -200,7 +205,8 @@ public struct CombatMoveDefinition: Codable, Equatable, Sendable {
             startupFrames: startupFrames,
             activeFrames: activeFrames,
             locomotionPolicy: .stationary,
-            cancelWindows: cancelWindows ?? [])
+            cancelWindows: cancelWindows ?? [],
+            rootMotion: rootMotion ?? [])
     }
 }
 
