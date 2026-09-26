@@ -490,7 +490,7 @@ public struct ClassicCombatCPU: Sendable {
             goalSurfaceID: goalSurfaceID,
             landingLeft: edge.landingLeft,
             landingRight: edge.landingRight,
-            jumpsRemaining: max(0, edge.requiredJumpCount - 1),
+            jumpsRemaining: max(0, edge.effectiveRequiredJumpCount - 1),
             reason: reason,
             commitUntilFrame: frame + Int64(max(45, edge.expectedFrames + 45)))
 
