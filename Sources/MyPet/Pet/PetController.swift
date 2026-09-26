@@ -162,8 +162,9 @@ final class PetController {
     private var pendingGoalTraceID: String?
     private var isStopped = false
     private var isDeparting = false
-    /// 操作环打开期间暂停自动决策和移动，避免用户选动作时角色被脑路抢走。
+    /// 普通操作环打开期间暂停生活决策。Combat escape ring 不暂停战斗。
     private var actionRingOpen = false
+    private var combatEscapeRingOpen = false
     private var clock: Double = 0
     private var pullCursorStart: CGPoint?
     /// 内置决策的随机源（可复现测试）。
@@ -701,6 +702,9 @@ final class PetController {
         if combatOwnsActivity && actionRingOpen {
             actionRing.dismiss()
             actionRingOpen = false
+        } else if !combatOwnsActivity && combatEscapeRingOpen {
+            actionRing.dismiss()
+            combatEscapeRingOpen = false
         }
 
         // 右键操作环是一个短暂的直接操控态。它不能 out-rank an active
@@ -2460,6 +2464,39 @@ final class PetController {
         actionRing.show(at: cursor, primary: primary, extended: extended)
     }
 
+    private func openCombatEscapeRing(at cursor: CGPoint) {
+        guard !isStopped, !isDeparting,
+              combatCoordinator.ownsCombatActivity(actorID: runtimeActorID) else { return }
+        actionRingOpen = false
+        combatEscapeRingOpen = true
+        actionRing.show(
+            at: cursor,
+            primary: [RenderActionItem(
+                id: "__leave_combat__",
+                label: "脱离战斗",
+                enabled: true)],
+            extended: [],
+            includeChat: false)
+    }
+
+    @discardableResult
+    func leaveCombat() -> Bool {
+        let left = combatCoordinator.leaveCombat(actorID: runtimeActorID)
+        if left {
+            combatEscapeRingOpen = false
+            actionRing.dismiss()
+            actions.setCombatExclusive(false)
+            semanticSuspendedByCombat = false
+            goalCooldown = 0
+            pushRecentEvent("left combat")
+        }
+        return left
+    }
+
+    private func leaveCombatFromUI() {
+        _ = leaveCombat()
+    }
+
     private func isAuthorizedMenuItem(_ item: ActionCatalog.MenuItem) -> Bool {
         // A cast manifest may still advertise combat while its visual pack is
         // missing combat.json. Do not expose a menu action that can only fail.
@@ -2715,9 +2752,14 @@ final class PetController {
     private func wireView() {
         actionRing.onDismiss = { [weak self] in
             self?.actionRingOpen = false
+            self?.combatEscapeRingOpen = false
         }
         actionRing.onAction = { [weak self] id in
             guard let self else { return }
+            if id == "__leave_combat__" {
+                self.leaveCombatFromUI()
+                return
+            }
             if id == "__manual_control__" { self.beginManualControl(); return }
             if id == "__autonomous_combat__" { self.beginAutonomousCombat(reason: "user"); return }
             guard let intent = ActionIntent(rawValue: id) else { return }
@@ -2732,6 +2774,7 @@ final class PetController {
             self.cancelPointerResponse()
             self.actionRing.dismiss()
             self.actionRingOpen = false
+            self.combatEscapeRingOpen = false
             // Direct user control temporarily owns the panel. The next Cast
             // tick may reapply the confirmed scene frame, but it must not pin
             // a dragged character to yesterday's relationship layout.
@@ -2778,10 +2821,12 @@ final class PetController {
             }
         }
         presentation.onRightMouseDown = { [weak self] cursor in
-            guard let self,
-                  !self.combatCoordinator.ownsCombatActivity(actorID: self.runtimeActorID)
-            else { return }
-            self.openActionRing(at: cursor)
+            guard let self else { return }
+            if self.combatCoordinator.ownsCombatActivity(actorID: self.runtimeActorID) {
+                self.openCombatEscapeRing(at: cursor)
+            } else {
+                self.openActionRing(at: cursor)
+            }
         }
     }
 
