@@ -132,7 +132,10 @@ final class CombatWorldTests: XCTestCase {
         world.setInput(.neutral, for: EntityID("a"))
         _ = world.step(environment: floor)
 
-        XCTAssertEqual(world.body(for: EntityID("a"))?.position.x, 404, accuracy: 1e-9)
+        XCTAssertEqual(
+            world.body(for: EntityID("a"))?.position.x ?? .nan,
+            404,
+            accuracy: 1e-9)
         XCTAssertEqual(world.body(for: EntityID("a"))?.phase, .startup)
     }
 
