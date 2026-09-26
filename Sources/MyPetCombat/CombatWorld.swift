@@ -130,6 +130,63 @@ public final class CombatWorld {
         return true
     }
 
+    @discardableResult
+    public func removeParticipant(_ actorID: EntityID) -> Bool {
+        guard var active = session,
+              active.state == .active,
+              active.participantIDs.contains(actorID) else { return false }
+
+        active.participantIDs.removeAll { $0 == actorID }
+        session = active
+        inputs[actorID.raw] = .neutral
+        buffers[actorID.raw] = CombatInputBuffer()
+        projectiles = projectiles.filter { $0.value.ownerID != actorID }
+        bodyWorld.update(actorID) { body in
+            body.actionTimeline = nil
+            if body.locomotion == .grounded { body.velocity.x = 0 }
+        }
+
+        // A team link is combat-scoped. If one member explicitly leaves,
+        // dissolve that team and return both members to ordinary active roles.
+        let relatedTeams = teams.values.filter {
+            $0.activeID == actorID || $0.benchID == actorID
+        }
+        for team in relatedTeams {
+            teams[team.teamID] = nil
+            for memberID in [team.activeID, team.benchID] {
+                guard var rule = rules[memberID.raw] else { continue }
+                rule.rosterRole = .active
+                rule.participation = active.participantIDs.contains(memberID)
+                    ? .rosterParticipant(teamID: "solo:\(memberID.raw)")
+                    : .uninvolved
+                rules[memberID.raw] = rule
+                bodyWorld.setDefinition(BodyDefinition(
+                    entityID: memberID,
+                    pushRadius: profiles[memberID.raw]?.pushRadius ?? 24,
+                    visualScale: rule.visualScale,
+                    pushEnabled: rule.healthState == .active,
+                    simulationEnabled: true))
+            }
+        }
+
+        if var rule = rules[actorID.raw] {
+            var combo = rule.combo ?? ComboState()
+            combo.end(reason: .sessionEnded)
+            rule.combo = combo
+            rule.participation = .uninvolved
+            rule.rosterRole = .active
+            rule.phase = .neutral
+            rule.stunFrames = 0
+            rule.airJumpsUsed = 0
+            rules[actorID.raw] = rule
+        }
+
+        if active.participantIDs.count < 2 {
+            endSession(cancelled: false)
+        }
+        return true
+    }
+
     public func configureTeam(
         teamID: String, activeID: EntityID, benchID: EntityID,
         rules teamRules: TeamCombatRules = .standard
