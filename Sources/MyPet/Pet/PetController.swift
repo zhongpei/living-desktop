@@ -219,12 +219,9 @@ final class PetController {
         // Only validated v2 evidence may open a damage-producing CombatSession.
         self.combatEnabled = combatLoad.readiness == .realCombatReady
         if !combatEnabled {
-            NSLog(
-                "MyPet combat: %@ not ready (%@) capabilities=%@ pack=%@",
-                self.runtimeActorID.raw,
-                combatLoad.diagnostics.map { $0.code }.joined(separator: ","),
-                effectiveCapabilities.sorted().joined(separator: ","),
-                library.packURL?.path ?? "<none>")
+            RuntimeLogger.shared.info(
+                "combat.register",
+                "actor=\(self.runtimeActorID.raw) not-ready diagnostics=\(combatLoad.diagnostics.map { $0.code }.joined(separator: ",")) capabilities=\(effectiveCapabilities.sorted().joined(separator: ",")) pack=\(library.packURL?.path ?? "<none>")")
         }
         self.combatCoordinator = injectedCombatCoordinator ?? DesktopCombatCoordinator()
         self.combatCoordinator.configure(settings.gameFeatures)
@@ -968,11 +965,12 @@ final class PetController {
             interval: validatedInterval(minimum: settings.goalBrainMinInterval,
                                          maximum: settings.goalBrainMaxInterval,
                                          fallback: 45...90))
-        NSLog("MyPet: 人物台词 = %@ · 目标决策 = %@ · 教师标签 = %@ · 行动脑 = %@",
-              settings.localBrainSpeechEnabled ? (LocalBrainModel.isInstalled ? "本地" : "本地缺模型") : "关闭",
-              settings.localBrainEnabled ? (LocalBrainModel.isInstalled ? "本地" : "本地缺模型") : "关闭",
-              settings.teacherBrainEnabled ? (teacherReady == nil ? "配置不完整" : "高阶教师脑") : "关闭",
-              settings.actionBrainEnabled ? (needle.isAvailable ? "Needle 3" : "缺模型") : "关闭")
+        RuntimeLogger.shared.info(
+            "brain",
+            "人物台词 = \(settings.localBrainSpeechEnabled ? (LocalBrainModel.isInstalled ? "本地" : "本地缺模型") : "关闭") · " +
+                "目标决策 = \(settings.localBrainEnabled ? (LocalBrainModel.isInstalled ? "本地" : "本地缺模型") : "关闭") · " +
+                "教师标签 = \(settings.teacherBrainEnabled ? (teacherReady == nil ? "配置不完整" : "高阶教师脑") : "关闭") · " +
+                "行动脑 = \(settings.actionBrainEnabled ? (needle.isAvailable ? "Needle 3" : "缺模型") : "关闭")")
     }
 
     private func validatedInterval(minimum: Double, maximum: Double,
@@ -2428,6 +2426,11 @@ final class PetController {
     }
 
     private func isAuthorizedMenuItem(_ item: ActionCatalog.MenuItem) -> Bool {
+        // A cast manifest may still advertise combat while its visual pack is
+        // missing combat.json. Do not expose a menu action that can only fail.
+        guard !ActionCatalog.startsCombat(item.intent) || combatEnabled else {
+            return false
+        }
         guard let declaredCapabilities,
               let required = ActionCatalog.requiredCapability(for: item.intent) else { return true }
         return declaredCapabilities.contains(required)
@@ -2524,32 +2527,45 @@ final class PetController {
             characterID: characterDefinition?.id ?? library.characterID)
     }
 
-    private func beginAutonomousCombat(reason: String) {
+    @discardableResult
+    func beginAutonomousCombat(reason: String, targetID: EntityID? = nil) -> Bool {
         guard settings.gameFeatures.enabled,
               settings.gameFeatures.automaticCombatEnabled,
-              combatEnabled, !isStopped else { return }
+              combatEnabled, !isStopped else {
+            pushRecentEvent("combat unavailable: actor is not combat ready")
+            RuntimeLogger.shared.info(
+                "combat.request",
+                "actor=\(runtimeActorID.raw) rejected reason=\(reason) enabled=\(settings.gameFeatures.enabled) automatic=\(settings.gameFeatures.automaticCombatEnabled) ready=\(combatEnabled) stopped=\(isStopped)")
+            return false
+        }
         manualInput = .neutral
         model.stopWalk()
         actions.cancelPerformance()
         cancelGoalAndScene(reason: "autonomous combat")
-        if combatCoordinator.beginAutonomousCombat(actorID: runtimeActorID) {
+        let accepted = if let targetID {
+            combatCoordinator.beginContactCombat(
+                actorID: runtimeActorID, targetID: targetID)
+        } else {
+            combatCoordinator.beginAutonomousCombat(actorID: runtimeActorID)
+        }
+        if accepted {
             let status = combatCoordinator.engagementStatus(actorID: runtimeActorID)
-            NSLog(
-                "MyPet combat: actor=%@ accepted target=%@ phase=%@ session=%@ registered=%@ participants=%@",
-                runtimeActorID.raw,
-                status?.targetID?.raw ?? "<none>",
-                status?.phase.rawValue ?? "<none>",
-                combatCoordinator.hasActiveSession ? "active" : "seeking",
-                combatCoordinator.registeredActorIDs.map(\.raw).joined(separator: ","),
-                combatCoordinator.sessionParticipantIDs.map(\.raw).joined(separator: ","))
+            RuntimeLogger.shared.info(
+                "combat.request",
+                "actor=\(runtimeActorID.raw) accepted target=\(status?.targetID?.raw ?? "<none>") phase=\(status?.phase.rawValue ?? "<none>") session=\(combatCoordinator.hasActiveSession ? "active" : "seeking") registered=\(combatCoordinator.registeredActorIDs.map(\.raw).joined(separator: ",")) participants=\(combatCoordinator.sessionParticipantIDs.map(\.raw).joined(separator: ","))")
             if let status,
                status.targetID == nil {
                 pushRecentEvent("combat seeking: no opponent yet (\(reason))")
             } else {
                 pushRecentEvent("combat seeking started: \(reason)")
             }
+            return true
         } else {
             pushRecentEvent("combat unavailable: actor is not combat ready")
+            RuntimeLogger.shared.info(
+                "combat.request",
+                "actor=\(runtimeActorID.raw) rejected reason=\(reason) target=\(targetID?.raw ?? "<nearest>") runtime=not-ready")
+            return false
         }
     }
 

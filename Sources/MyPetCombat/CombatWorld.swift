@@ -350,6 +350,21 @@ public final class CombatWorld {
             advanceStun(&body)
             orientTowardNearestOpponent(&body, snapshot: frameSnapshot)
             if body.healthState == .active && body.rosterRole != .bench {
+                if body.authority != .scripted,
+                   let timeline = body.actionTimeline,
+                   timeline.definition.domain != .combat {
+                    // Combat authority is a takeover boundary. A target can
+                    // still carry an indefinite semantic walk/presentation
+                    // timeline from the life loop; leaving it in place makes
+                    // acceptControl reject every CPU frame forever. Scripted
+                    // bodies keep their authored presentation timelines, and
+                    // combat timelines are never touched here.
+                    RuntimeLogger.shared.debug(
+                        "combat.control",
+                        "frame=\(frame) actor=\(body.actorID.raw) takeover cleared domain=\(timeline.definition.domain.rawValue) action=\(timeline.definition.actionID)")
+                    body.actionTimeline = nil
+                    if body.stunFrames == 0 { body.phase = .neutral }
+                }
                 acceptControl(
                     &body, profile: profile, input: input, buffer: buffer,
                     environment: environment, events: &events)
@@ -853,9 +868,18 @@ public final class CombatWorld {
                 abs($0.position.x - body.position.x) <
                 abs($1.position.x - body.position.x)
             }) else { return }
-        if abs(target.position.x - body.position.x) > 0.001 {
-            body.facing = target.position.x >= body.position.x ? .right : .left
-        }
+        let horizontalDistance = abs(target.position.x - body.position.x)
+        guard horizontalDistance > 0.001 else { return }
+
+        // At body contact, the push solver may move either fighter by a
+        // fraction of a pixel while preserving the same side. Re-facing from
+        // that noisy snapshot makes two neutral fighters turn every frame.
+        // Explicit player/CPU input still owns facing; this guard only adds
+        // hysteresis to the automatic neutral-orientation fallback.
+        let contactBand = (profiles[body.actorID.raw]?.pushRadius ?? 24) +
+            (profiles[target.actorID.raw]?.pushRadius ?? 24) + 4
+        guard horizontalDistance > contactBand else { return }
+        body.facing = target.position.x >= body.position.x ? .right : .left
     }
 
     private func save(_ body: CombatBodyState) {

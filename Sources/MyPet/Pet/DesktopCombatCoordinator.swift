@@ -93,6 +93,11 @@ final class DesktopCombatCoordinator {
         combatRuntime.requestAutonomousCombat(for: actorID)
     }
 
+    @discardableResult
+    func beginContactCombat(actorID: EntityID, targetID: EntityID) -> Bool {
+        combatRuntime.requestContactEngagement(for: actorID, targetID: targetID)
+    }
+
     func endAutonomousCombat(actorID: EntityID) {
         combatRuntime.deactivate(.autonomous, for: actorID)
     }

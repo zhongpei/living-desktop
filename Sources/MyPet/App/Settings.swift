@@ -304,6 +304,8 @@ struct Settings: Codable {
     var voicePlaybackEnabled = true
     /// 三档大脑统一脑路日志（brain_trace.jsonl）。只保存在本机。
     var brainTraceEnabled = true
+    /// 运行时诊断日志；默认调试，方便分析战斗接入和状态变化。
+    var logLevel: RuntimeLogLevel = .debug
 
     // ---- 玩法 ----
 
@@ -396,7 +398,7 @@ struct Settings: Codable {
         do {
             if enabled { try service.register() } else { try service.unregister() }
         } catch {
-            NSLog("MyPet: 登录项设置失败 %@", error.localizedDescription)
+            RuntimeLogger.shared.error("settings", "登录项设置失败 \(error.localizedDescription)")
         }
     }
 
@@ -420,7 +422,7 @@ struct Settings: Codable {
         case localBrainChatMaxTokens, localBrainChatSeed
         case localBrainTemperature, localBrainTopP, localBrainTopK, localBrainMaxTokens, localBrainSeed // legacy wire keys
         case goalBrainMinInterval, goalBrainMaxInterval
-        case speechEnabled, characterSpeechSettings, voicePlaybackEnabled, brainTraceEnabled
+        case speechEnabled, characterSpeechSettings, voicePlaybackEnabled, brainTraceEnabled, logLevel
         case slowBrainLogEnabled, teacherLogEnabled // legacy wire keys
         case gameFeatures, scenesEnabled, propsEnabled
         case sensesEnabled, ocrEnabled, inputPlugins, pointerInputEnabled, pointerInputHz
@@ -491,6 +493,7 @@ struct Settings: Codable {
         try c.encode(characterSpeechSettings, forKey: .characterSpeechSettings)
         try c.encode(voicePlaybackEnabled, forKey: .voicePlaybackEnabled)
         try c.encode(brainTraceEnabled, forKey: .brainTraceEnabled)
+        try c.encode(logLevel, forKey: .logLevel)
         try c.encode(gameFeatures, forKey: .gameFeatures)
         try c.encode(scenesEnabled, forKey: .scenesEnabled)
         try c.encode(propsEnabled, forKey: .propsEnabled)
@@ -576,6 +579,7 @@ struct Settings: Codable {
         brainTraceEnabled = try c.decodeIfPresent(Bool.self, forKey: .brainTraceEnabled)
             ?? c.decodeIfPresent(Bool.self, forKey: .slowBrainLogEnabled)
             ?? c.decodeIfPresent(Bool.self, forKey: .teacherLogEnabled) ?? true
+        logLevel = (try? c.decodeIfPresent(RuntimeLogLevel.self, forKey: .logLevel)) ?? .debug
         gameFeatures = try c.decodeIfPresent(GameFeatureSettings.self, forKey: .gameFeatures)
             ?? GameFeatureSettings()
         scenesEnabled = try c.decodeIfPresent(Bool.self, forKey: .scenesEnabled) ?? true

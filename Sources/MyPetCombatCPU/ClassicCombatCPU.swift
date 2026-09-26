@@ -36,7 +36,10 @@ public struct ClassicCombatCPU: Sendable {
     }
 
     public func checkpoint() -> ClassicCombatCPUCheckpoint { state }
-    public var reservedSlot: EngagementSlot? { state.slot }
+    public var reservedSlot: EngagementSlot? {
+        guard let slot = state.slot, slot.targetID == state.targetID else { return nil }
+        return slot
+    }
 
     public mutating func advance(_ observation: CPUCombatObservation) -> CombatCPUOutput {
         record(opponents: observation.opponents, frame: observation.frame)
@@ -45,6 +48,8 @@ public struct ClassicCombatCPU: Sendable {
               observation.selfBody.locomotion != .dragged,
               observation.selfBody.locomotion != .tossed else {
             state.pendingInputs.removeAll()
+            state.targetID = nil
+            state.slot = nil
             return issue(.neutral, intent: .wait)
         }
 
@@ -102,7 +107,13 @@ public struct ClassicCombatCPU: Sendable {
             graph: graph,
             reservations: observation.engagementReservations)
         state.targetID = target?.actorID
-        guard let target else { return issue(.neutral, intent: .wait) }
+        if state.slot?.targetID != state.targetID {
+            state.slot = nil
+        }
+        guard let target else {
+            state.slot = nil
+            return issue(.neutral, intent: .wait)
+        }
         let targetProfile = observation.opponentProfiles[target.actorID.raw]
 
         let distance = abs(target.position.x - observation.selfBody.position.x)
@@ -310,17 +321,28 @@ public struct ClassicCombatCPU: Sendable {
         // Movement closes to body-contact spacing. Attack reach may allow an
         // earlier strike, but must never become a "stop walking" distance.
         let near = max(48, bodyContact)
-        let nearSides: [EngagementSide] = [.leftNear, .rightNear]
-        let farSides: [EngagementSide] = [.leftFar, .rightFar]
+        let nearSides: [EngagementSide]
+        let farSides: [EngagementSide]
+        if selfBody.position.x < target.position.x {
+            nearSides = [.leftNear, .rightNear]
+            farSides = [.leftFar, .rightFar]
+        } else if selfBody.position.x > target.position.x {
+            nearSides = [.rightNear, .leftNear]
+            farSides = [.rightFar, .leftFar]
+        } else {
+            let nearOrder: [EngagementSide] = [.leftNear, .rightNear]
+            let farOrder: [EngagementSide] = [.leftFar, .rightFar]
+            let offset = stableIndex(selfBody.actorID.raw, count: nearOrder.count)
+            nearSides = Array(nearOrder[offset...] + nearOrder[..<offset])
+            let farOffset = stableIndex(selfBody.actorID.raw + ":far", count: farOrder.count)
+            farSides = Array(farOrder[farOffset...] + farOrder[..<farOffset])
+        }
         let used = Set(occupied.filter { $0.targetID == target.actorID }.map(\.side))
-        let nearOffset = stableIndex(selfBody.actorID.raw, count: nearSides.count)
-        let farOffset = stableIndex(selfBody.actorID.raw + ":far", count: farSides.count)
-        let orderedNear = Array(nearSides[nearOffset...] + nearSides[..<nearOffset])
-        let orderedFar = Array(farSides[farOffset...] + farSides[..<farOffset])
         // Traditional brawlers reserve contact slots first. The old random
-        // rotation could assign a lone melee fighter a "far" slot, making it
-        // stop outside every HurtBox and swing forever.
-        let ordered = orderedNear + orderedFar
+        // rotation could assign the fighter to the opposite side of the
+        // target. It then tried to cross through the target, causing pushbox
+        // jitter and alternating left/right inputs.
+        let ordered = nearSides + farSides
         let side = ordered.first { !used.contains($0) } ?? ordered[0]
         let multiplier = side == .leftFar || side == .rightFar ? 1.75 : 1.0
         let onLeft = side == .leftNear || side == .leftFar

@@ -331,7 +331,7 @@ actor LocalBrain: GoalBrain {
         } catch is CancellationError {
             return PlanOutcome(decision: nil)
         } catch {
-            NSLog("MyPet LocalBrain: 决策失败 %@", error.localizedDescription)
+            RuntimeLogger.shared.error("brain", "LocalBrain 决策失败 \(error.localizedDescription)")
             stats.invalid += 1
             let latency = Date().timeIntervalSince(t0)
             BrainDecisionLog.log(world: input.world, brain: input.brain,
@@ -385,7 +385,7 @@ actor LocalBrain: GoalBrain {
                 reply: reply, attemptOutputs: attemptOutputs,
                 rejectionReasons: rejectionReasons, error: nil)
         } catch {
-            NSLog("MyPet LocalBrain: 聊天生成失败 %@", error.localizedDescription)
+            RuntimeLogger.shared.error("brain", "LocalBrain 聊天生成失败 \(error.localizedDescription)")
             BrainDecisionLog.logSpeech(intent: input.intent, reply: nil,
                                        latency: Date().timeIntervalSince(t0),
                                        traceID: input.traceID, mode: "local")

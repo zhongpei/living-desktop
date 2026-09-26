@@ -163,10 +163,21 @@ public final class BodyWorld {
                let surface = environment.surface(id: body.currentSurfaceID) {
                 let margin = supportMargin(for: definition)
                 if !surface.contains(x: body.position.x, margin: margin) {
-                    body.currentSurfaceID = nil
-                    body.surfaceFraction = nil
-                    body.locomotion = .airborne
-                    body.position.y += 0.01
+                    if surface.kind == .floor {
+                        // The screen floor is the walkable world boundary,
+                        // not a ledge. Clamp an outward walk at its edge and
+                        // keep the body grounded; otherwise a crowd pressing
+                        // into a corner would repeatedly fall and re-land.
+                        body.position.x = min(
+                            surface.right - margin,
+                            max(surface.left + margin, body.position.x))
+                        body.velocity.x = 0
+                    } else {
+                        body.currentSurfaceID = nil
+                        body.surfaceFraction = nil
+                        body.locomotion = .airborne
+                        body.position.y += 0.01
+                    }
                 } else if surface.right - surface.left > margin * 2 {
                     body.surfaceFraction = (body.position.x - surface.left - margin) /
                         max(1, surface.right - surface.left - margin * 2)
@@ -229,28 +240,93 @@ public final class BodyWorld {
     }
 
     private func resolvePushboxes(environment: BodyEnvironment) {
-        let ids = bodies.keys.sorted()
-        guard ids.count > 1 else { return }
-        for i in 0..<(ids.count - 1) {
-            for j in (i + 1)..<ids.count {
-                guard var a = bodies[ids[i]], var b = bodies[ids[j]],
-                      let ad = definitions[ids[i]], let bd = definitions[ids[j]],
-                      ad.pushEnabled, bd.pushEnabled,
-                      ad.simulationEnabled, bd.simulationEnabled,
-                      ad.collisionMask.contains(.body), bd.collisionMask.contains(.body),
-                      a.locomotion == .grounded, b.locomotion == .grounded,
-                      let aSurfaceID = a.currentSurfaceID,
-                      let bSurfaceID = b.currentSurfaceID,
-                      aSurfaceID == bSurfaceID else { continue }
-                let overlap = ad.pushRadius + bd.pushRadius - abs(b.position.x - a.position.x)
-                guard overlap > 0 else { continue }
-                let sign = b.position.x - a.position.x >= 0 ? 1.0 : -1.0
-                a.position.x -= sign * overlap * 0.5
-                b.position.x += sign * overlap * 0.5
-                refreshSurfaceFraction(&a, definition: ad, environment: environment)
-                refreshSurfaceFraction(&b, definition: bd, environment: environment)
-                bodies[ids[i]] = a
-                bodies[ids[j]] = b
+        struct Candidate {
+            var id: String
+            var definition: BodyDefinition
+            var state: BodyState
+        }
+
+        // Resolve each surface as one ordered crowd. Pair-at-a-time resolution
+        // is order dependent: at a wall, the last pair can push an already
+        // resolved body outside the surface and the next frame repeats the
+        // correction. A bounded 1D projection gives every body a stable place
+        // in the crowd and keeps the whole group inside its walkable span.
+        var groups: [String: [Candidate]] = [:]
+        for id in bodies.keys.sorted() {
+            guard let state = bodies[id], let definition = definitions[id],
+                  definition.pushEnabled, definition.simulationEnabled,
+                  definition.collisionMask.contains(.body),
+                  state.locomotion == .grounded,
+                  let surfaceID = state.currentSurfaceID,
+                  environment.surface(id: surfaceID) != nil else { continue }
+            groups[surfaceID, default: []].append(Candidate(
+                id: id, definition: definition, state: state))
+        }
+
+        for surfaceID in groups.keys.sorted() {
+            guard var group = groups[surfaceID], group.count > 1,
+                  let surface = environment.surface(id: surfaceID) else { continue }
+            group.sort {
+                if $0.state.position.x == $1.state.position.x {
+                    return $0.id < $1.id
+                }
+                return $0.state.position.x < $1.state.position.x
+            }
+
+            let edgeMargin = group.map { supportMargin(for: $0.definition) }.max() ?? 0
+            let lower = max(environment.bounds.minX, surface.left + edgeMargin)
+            let upper = min(environment.bounds.maxX, surface.right - edgeMargin)
+            guard lower <= upper else { continue }
+
+            let requiredSpan = zip(group.dropLast(), group.dropFirst()).reduce(0.0) {
+                $0 + $1.0.definition.pushRadius + $1.1.definition.pushRadius
+            }
+            let positions: [Double]
+            if requiredSpan > upper - lower {
+                // The crowd physically cannot fit. Keep it bounded and
+                // deterministic; a later frame can spread it when a body
+                // leaves instead of leaking positions through the wall.
+                positions = group.enumerated().map { index, _ in
+                    guard group.count > 1 else { return lower }
+                    return lower + (upper - lower) * Double(index) /
+                        Double(group.count - 1)
+                }
+            } else {
+                var projected = group.map {
+                    min(upper, max(lower, $0.state.position.x))
+                }
+
+                // Alternating forward/backward passes are the 1D equivalent
+                // of projecting onto all pair-gap constraints. Unlike the old
+                // pair loop, the wall correction is applied to the complete
+                // group, so its result does not oscillate with registration
+                // order or frame-to-frame clamping.
+                for _ in 0..<8 {
+                    projected[0] = max(lower, projected[0])
+                    for index in 1..<projected.count {
+                        let gap = group[index - 1].definition.pushRadius +
+                            group[index].definition.pushRadius
+                        projected[index] = max(
+                            projected[index], projected[index - 1] + gap)
+                    }
+                    projected[projected.count - 1] = min(
+                        upper, projected[projected.count - 1])
+                    for index in stride(from: projected.count - 2, through: 0, by: -1) {
+                        let gap = group[index].definition.pushRadius +
+                            group[index + 1].definition.pushRadius
+                        projected[index] = min(
+                            projected[index], projected[index + 1] - gap)
+                    }
+                }
+                positions = projected.map { min(upper, max(lower, $0)) }
+            }
+
+            for (index, candidate) in group.enumerated() {
+                var state = candidate.state
+                state.position.x = positions[index]
+                refreshSurfaceFraction(
+                    &state, definition: candidate.definition, environment: environment)
+                bodies[candidate.id] = state
             }
         }
     }

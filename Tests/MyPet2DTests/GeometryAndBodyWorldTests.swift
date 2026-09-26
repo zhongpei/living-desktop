@@ -155,6 +155,38 @@ final class GeometryAndBodyWorldTests: XCTestCase {
         XCTAssertEqual(world.state(for: active)?.position.x, 120)
     }
 
+    func testCrowdAtSurfaceBoundaryStaysOrderedAndBounded() {
+        let world = BodyWorld()
+        let ids = ["a", "b", "c", "d"].map(EntityID.init)
+        for id in ids {
+            world.register(
+                BodyDefinition(entityID: id, pushRadius: 20),
+                state: BodyState(
+                    entityID: id,
+                    position: Vec2(x: 225, y: 200),
+                    velocity: Vec2(x: 3, y: 0),
+                    locomotion: .grounded,
+                    currentSurfaceID: "floor"))
+        }
+        let environment = BodyEnvironment(
+            bounds: Rect2D(x: 0, y: 0, width: 240, height: 240),
+            surfaces: [Surface(id: "floor", kind: .floor, left: 0, right: 240, y: 200)])
+
+        for _ in 0..<30 { world.advance(environment) }
+        let states = ids.compactMap(world.state(for:)).sorted {
+            $0.position.x < $1.position.x
+        }
+        XCTAssertEqual(states.count, ids.count)
+        XCTAssertTrue(states.allSatisfy {
+            $0.position.x >= 12 - 1e-9 && $0.position.x <= 228 + 1e-9
+        })
+        XCTAssertTrue(states.allSatisfy { $0.locomotion == .grounded })
+        for pair in zip(states, states.dropFirst()) {
+            XCTAssertGreaterThanOrEqual(
+                pair.1.position.x - pair.0.position.x, 40 - 1e-9)
+        }
+    }
+
     func testCheckpointRestoresTheAuthoritativeBodyState() throws {
         let actor = EntityID("actor")
         let world = BodyWorld()

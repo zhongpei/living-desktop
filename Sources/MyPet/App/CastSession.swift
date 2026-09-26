@@ -37,6 +37,7 @@ final class CastSession: NSObject {
     private var pointerReflex = PointerReflex()
     private var reportedMissingCastVisuals = Set<String>()
     private var nearbySpeechPairs = Set<String>()
+    private var nearbyCombatPairs = Set<String>()
     private var controller: PetController?
     var onSync: (([String]) -> Void)?
 
@@ -151,6 +152,8 @@ final class CastSession: NSObject {
         castDepartureDeadlines.removeAll()
         pointerReflex.reset()
         reportedMissingCastVisuals.removeAll()
+        nearbySpeechPairs.removeAll()
+        nearbyCombatPairs.removeAll()
         castRuntime = nil
         if wasCastActive {
             controller = nil
@@ -291,9 +294,11 @@ final class CastSession: NSObject {
             guard member.visualPackID != nil, let visualURL = visualsByActor[id] else {
                 if reportedMissingCastVisuals.insert(id).inserted {
                     if member.visualPackID == nil {
-                        NSLog("MyPet: 角色 %@ 已入场，但没有 visualPackID，暂不创建面板", member.id)
+                        RuntimeLogger.shared.info(
+                            "cast", "角色 \(member.id) 已入场，但没有 visualPackID，暂不创建面板")
                     } else {
-                        NSLog("MyPet: 角色 %@ 的视觉包 %@ 不存在，暂不创建面板", member.id, member.visualPackID ?? "")
+                        RuntimeLogger.shared.error(
+                            "cast", "角色 \(member.id) 的视觉包 \(member.visualPackID ?? "") 不存在，暂不创建面板")
                     }
                 }
                 continue
@@ -322,7 +327,8 @@ final class CastSession: NSObject {
                 pet.start()
             } catch {
                 if reportedMissingCastVisuals.insert(id).inserted {
-                    NSLog("MyPet: 角色 %@ 的视觉包加载失败 %@ — %@", id, visualURL.path, error.localizedDescription)
+                    RuntimeLogger.shared.error(
+                        "cast", "角色 \(id) 的视觉包加载失败 \(visualURL.path) — \(error.localizedDescription)")
                 }
             }
         }
@@ -404,6 +410,7 @@ final class CastSession: NSObject {
     ) {
         let ids = frames.keys.filter { castControllers[$0] != nil }.sorted()
         var currentlyNear = Set<String>()
+        var currentlyColliding = Set<String>()
         for leftIndex in ids.indices {
             for rightIndex in ids.indices where rightIndex > leftIndex {
                 let leftID = ids[leftIndex]
@@ -415,6 +422,20 @@ final class CastSession: NSObject {
                 guard abs(leftCenter - rightCenter) <= meetingDistance else { continue }
                 let pair = "\(leftID)|\(rightID)"
                 currentlyNear.insert(pair)
+                let collided = Self.characterFramesCollide(leftFrame, rightFrame)
+                if collided {
+                    currentlyColliding.insert(pair)
+                    if !nearbyCombatPairs.contains(pair),
+                       let left = castControllers[leftID],
+                       let right = castControllers[rightID] {
+                        let started = left.beginAutonomousCombat(
+                            reason: "collision", targetID: EntityID(rightID))
+                        if !started {
+                            _ = right.beginAutonomousCombat(
+                                reason: "collision", targetID: EntityID(leftID))
+                        }
+                    }
+                }
                 guard !nearbySpeechPairs.contains(pair),
                       let left = castControllers[leftID], let right = castControllers[rightID] else { continue }
                 let leftName = runtime.characterDefinition(for: leftID)?.displayNames.zhHans ?? leftID
@@ -431,6 +452,11 @@ final class CastSession: NSObject {
             }
         }
         nearbySpeechPairs = currentlyNear
+        nearbyCombatPairs = currentlyColliding
+    }
+
+    static func characterFramesCollide(_ left: LayoutRect, _ right: LayoutRect) -> Bool {
+        left.intersection(right) != nil
     }
 
     /// 把 Core 的 CastVisualProjection 接入真实工作区。道具是独立浮层，

@@ -157,7 +157,8 @@ public final class ActorPresentation {
                     player.play()
                     voicePlayer = player
                 } catch {
-                    NSLog("MyPet: 动作语音播放失败 %@: %@", url.lastPathComponent, String(describing: error))
+                    RuntimeLogger.shared.error(
+                        "render", "动作语音播放失败 \(url.lastPathComponent): \(String(describing: error))")
                 }
             }
         }
@@ -362,15 +363,16 @@ public final class ActorPresentation {
     public func displayProp(image: CGImage?, rect: CGRect) {
         propImage = image
         propFrame = rect
+        // PetController updates props immediately after the actor render. Keep
+        // the value for the next normal frame instead of rendering the whole
+        // actor a second time (including another window visibility check).
         if let snapshot = lastRenderSnapshot {
-            let updated = RenderSnapshot(
+            lastRenderSnapshot = RenderSnapshot(
                 actorID: snapshot.actorID, frame: snapshot.frame,
                 image: snapshot.image, mirrored: snapshot.mirrored,
                 opacity: snapshot.opacity, propImage: image,
                 propFrame: rect, visible: snapshot.visible,
                 combatHUD: snapshot.combatHUD)
-            renderBackend.render(snapshot: updated, interpolation: 0)
-            lastRenderSnapshot = updated
         }
     }
 

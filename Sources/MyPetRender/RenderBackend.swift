@@ -246,11 +246,23 @@ final class CoreAnimationActorSurface: ActorRenderSurface {
     }
 
     func setFrame(_ frame: CGRect) {
+        // AppKit emits window-server traffic even when the frame is unchanged.
+        // Cast renders at 60 Hz, so avoid re-applying an identical geometry.
+        guard panel.frame != frame else { return }
         panel.setFrame(frame, display: false)
     }
 
-    func show() { panel.orderFrontRegardless() }
-    func hide() { panel.orderOut(nil) }
+    func show() {
+        // `render` is called every frame; ordering an already visible panel is
+        // both redundant and noisy in the unified AppKit log.
+        guard !panel.isVisible else { return }
+        panel.orderFrontRegardless()
+    }
+
+    func hide() {
+        guard panel.isVisible else { return }
+        panel.orderOut(nil)
+    }
 }
 
 @MainActor

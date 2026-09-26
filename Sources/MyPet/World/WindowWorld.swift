@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 import MyPetPlatform
 
 /// 窗口世界的唯一事实源。
@@ -15,6 +16,15 @@ final class WindowWorld {
     var onForegroundChanged: ((WindowEntity?) -> Void)?
 
     private let source: MacWindowSource
+    private struct LiveBoundsCache {
+        let bounds: CGRect?
+        let sampledAt: TimeInterval
+    }
+    private var liveBoundsCache: [CGWindowID: LiveBoundsCache] = [:]
+    // WindowWorld is sampled by every actor's 60 Hz body step. WindowServer
+    // only needs a bounded refresh rate; 10 Hz keeps moving-window placement
+    // responsive without issuing one CGWindowList query per actor per frame.
+    private let liveBoundsTTL: TimeInterval = 0.1
     private struct ForegroundIdentity: Equatable {
         let id: CGWindowID
         let pid: pid_t
@@ -35,6 +45,10 @@ final class WindowWorld {
     func poll() {
         source.poll()
         windows = source.windows.map(Self.project)
+        let now = ProcessInfo.processInfo.systemUptime
+        liveBoundsCache = Dictionary(uniqueKeysWithValues: windows.map {
+            ($0.id, LiveBoundsCache(bounds: $0.bounds, sampledAt: now))
+        })
         observeForeground(source.foreground.map(Self.project))
     }
 
@@ -79,7 +93,13 @@ final class WindowWorld {
     /// 直接向窗口服务器重取这扇窗口的实时 bounds，栖息其上的宠物因此能跟着窗口走。
     /// 窗口关闭 / 最小化 / 挪去别的 Space 时返回 nil —— 宠物该掉下来了。
     func liveBounds(_ id: CGWindowID) -> CGRect? {
-        source.liveBounds(id)
+        let now = ProcessInfo.processInfo.systemUptime
+        if let cached = liveBoundsCache[id], now - cached.sampledAt < liveBoundsTTL {
+            return cached.bounds
+        }
+        let bounds = source.liveBounds(id)
+        liveBoundsCache[id] = LiveBoundsCache(bounds: bounds, sampledAt: now)
+        return bounds
     }
 
     /// 一扇值得拜访的窗口：多半是前台的，偶尔换换口味。

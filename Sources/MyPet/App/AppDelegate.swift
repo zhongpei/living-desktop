@@ -48,6 +48,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         discoverContent()
         var settings = Settings.load()
+        RuntimeLogger.shared.configure(settings.logLevel)
+        RuntimeLogger.shared.info(
+            "settings", "runtime logging configured level=\(settings.logLevel.rawValue)")
         if let migrated = ManualControlMappingStore().migrate(
             into: settings.gameFeatures.controls) {
             settings.gameFeatures.controls = migrated
@@ -59,7 +62,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let requested = PetPackLibrary.requestedPet() ?? saved
         let selected = library.contains { $0.id == requested } ? requested : library.first?.id
         if requested != nil && requested != selected {
-            NSLog("MyPet: 旧角色选择 %@ 不可用，回退到 %@", requested ?? "", selected ?? "无")
+            RuntimeLogger.shared.info(
+                "app", "旧角色选择 \(requested ?? "") 不可用，回退到 \(selected ?? "无")")
         }
         if settings.currentPet != (selected ?? "") {
             settings.currentPet = selected ?? ""
@@ -78,7 +82,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             startCastRuntime()
         } else if let selected {
             if settings.castSelection.isRuntimeEnabled && activeCastMembers.isEmpty {
-                NSLog("MyPet: 角色组设置没有有效候选角色，回退到当前角色 %@", selected)
+                RuntimeLogger.shared.info(
+                    "cast", "角色组设置没有有效候选角色，回退到当前角色 \(selected)")
             }
             activatePet(selected)
         }
@@ -117,12 +122,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 relationshipCatalogURL: resourcesRoot.appendingPathComponent("relationships/catalog.json"))
             contentCatalog = catalog
             contentDiagnostics = catalog.diagnostics
-            for diagnostic in catalog.diagnostics { NSLog("MyPet content: %@", diagnostic) }
+            for diagnostic in catalog.diagnostics {
+                RuntimeLogger.shared.info("content", diagnostic)
+            }
         } catch {
-            NSLog("MyPet: 内容登记不可用：%@", String(describing: error))
+            RuntimeLogger.shared.error(
+                "content", "内容登记不可用：\(String(describing: error))")
         }
-        NSLog("MyPet: 包目录角色 %d、角色组 %d、剧情 %d",
-              library.count, castPacks.count, storyPacks.count)
+        RuntimeLogger.shared.info(
+            "content", "包目录角色 \(library.count)、角色组 \(castPacks.count)、剧情 \(storyPacks.count)")
     }
 
     /// All package writes cross this App-owned barrier. The old Runtime and
@@ -193,7 +201,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try registry.purgeCache(kind: kind, id: id, source: .user)
                 if let retired { try registry.finalizeRemoval(at: retired) }
             } catch {
-                NSLog("MyPet: 内容已退出会话，旧缓存/归档清理待重试：%@", String(describing: error))
+                RuntimeLogger.shared.error(
+                    "content", "内容已退出会话，旧缓存/归档清理待重试：\(String(describing: error))")
             }
         }
     }
@@ -206,7 +215,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } afterRetirement: { registry in
             if let retired {
                 do { try registry.finalizeRemoval(at: retired) }
-                catch { NSLog("MyPet: 损坏包已退出目录，归档清理待重试：%@", String(describing: error)) }
+                catch {
+                    RuntimeLogger.shared.error(
+                        "content", "损坏包已退出目录，归档清理待重试：\(String(describing: error))")
+                }
             }
         }
     }
@@ -216,12 +228,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func activatePet(_ id: String) {
         guard var settings else { return }
         guard let entry = library.first(where: { $0.id == id }) else {
-            NSLog("MyPet: 找不到宠物素材包 %@", id)
+            RuntimeLogger.shared.error("content", "找不到宠物素材包 \(id)")
             return
         }
         do {
             let pack = try ClipLibrary.load(from: entry.visualURL)
-            for warning in pack.warnings { NSLog("MyPet petpack: %@", warning) }
+            for warning in pack.warnings {
+                RuntimeLogger.shared.info("content", warning)
+            }
 
             settings.currentPet = id
             settings.save()
@@ -246,14 +260,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             controller = newController
             newController.start()
 
-            NSLog("MyPet: 当前宠物 = %@（%@，%d 个 clip）", id, entry.visualURL.path, pack.clipCount)
+            RuntimeLogger.shared.info(
+                "content", "当前宠物 = \(id)（\(entry.visualURL.path)，\(pack.clipCount) 个 clip）")
             if let tray {
                 wireTray(tray)
                 tray.updatePets(library.map { $0.id }, current: id)
                 tray.updateCastCatalog(castPacks, selection: settings.castSelection)
             }
         } catch {
-            NSLog("MyPet: petpack 加载失败 %@ — %@", entry.visualURL.path, error.localizedDescription)
+            RuntimeLogger.shared.error(
+                "content", "petpack 加载失败 \(entry.visualURL.path) — \(error.localizedDescription)")
         }
     }
 
@@ -379,6 +395,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         normalized.storySettings.intervalTicks = max(0, normalized.storySettings.intervalTicks)
         normalized.storySettings.maxDurationTicks = max(1, normalized.storySettings.maxDurationTicks)
         if ![20, 40, 60].contains(normalized.pointerInputHz) { normalized.pointerInputHz = 20 }
+        RuntimeLogger.shared.configure(normalized.logLevel)
         normalized.save()
         settings = normalized
         if pointerOnly, let castSession {
@@ -474,9 +491,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.tray?.updateSettings(settings)
             }
             if session.inviteManually(memberID: memberID) {
-                NSLog("MyPet: 已排队手动入场角色 %@", memberID)
+                RuntimeLogger.shared.info("cast", "已排队手动入场角色 \(memberID)")
             } else {
-                NSLog("MyPet: 手动入场角色 %@ 被状态或同时人数上限拒绝", memberID)
+                RuntimeLogger.shared.info(
+                    "cast", "手动入场角色 \(memberID) 被状态或同时人数上限拒绝")
             }
         }
         tray.onSummonAllCast = { [weak self] in
@@ -546,6 +564,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // This setting is runtime-only and should not rebuild the cast.
             self.applySettings(settings, pointerOnly: true)
         }
+        tray.onLogLevelChange = { [weak self] level in
+            guard let self, var settings = self.settings else { return }
+            settings.logLevel = level
+            settings.save()
+            self.settings = settings
+            RuntimeLogger.shared.configure(level)
+            self.tray?.updateSettings(settings)
+            RuntimeLogger.shared.info(
+                "settings", "runtime logging level changed to \(level.rawValue)")
+        }
         tray.onOpenSettings = { [weak self] in self?.showSettings() }
         tray.onOpenPromptManager = { [weak self] in self?.showPromptManager() }
         tray.onOpenContentManager = { [weak self] in self?.showContentManager() }
@@ -574,32 +602,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 settings.setLaunchAtLogin(!settings.launchAtLogin)
             case .actionBrain:
                 settings.actionBrainEnabled.toggle()
-                NSLog("MyPet: 行动脑 = %@（Needle 3 / 内置场景兜底）",
-                      settings.actionBrainEnabled ? "Needle 3" : "关闭")
+                RuntimeLogger.shared.info(
+                    "brain", "行动脑 = \(settings.actionBrainEnabled ? "Needle 3" : "关闭")（Needle 3 / 内置场景兜底）")
             case .teacherBrain:
                 settings.teacherBrainEnabled.toggle()
                 if settings.teacherBrainEnabled,
                    TeacherBrain.config(settingsBaseURL: settings.teacherBrainBaseURL,
                                        settingsModel: settings.teacherBrainModel,
                                        settingsKey: settings.teacherBrainAPIKey) == nil {
-                    NSLog("MyPet: 高阶教师脑已开启但端点未配置，请在设置→大脑里探测并选择模型")
+                    RuntimeLogger.shared.error(
+                        "brain", "高阶教师脑已开启但端点未配置，请在设置→大脑里探测并选择模型")
                 } else {
-                    NSLog("MyPet: 高阶教师脑 = %@", settings.teacherBrainEnabled ? "开" : "关闭")
+                    RuntimeLogger.shared.info(
+                        "brain", "高阶教师脑 = \(settings.teacherBrainEnabled ? "开" : "关闭")")
                 }
             case .localPersonaSpeech:
                 settings.localBrainSpeechEnabled.toggle()
                 if settings.localBrainSpeechEnabled, !LocalBrainModel.isInstalled {
-                    NSLog("MyPet: 人物台词已开启但本地模型未就位（设置 → 大脑 → 下载 / 校验模型）")
+                    RuntimeLogger.shared.error(
+                        "brain", "人物台词已开启但本地模型未就位（设置 → 大脑 → 下载 / 校验模型）")
                 } else {
-                    NSLog("MyPet: 人物台词 = %@", settings.localBrainSpeechEnabled ? "开" : "关")
+                    RuntimeLogger.shared.info(
+                        "brain", "人物台词 = \(settings.localBrainSpeechEnabled ? "开" : "关")")
                 }
             case .localDecisionBrain:
                 settings.localBrainEnabled.toggle()
                 if settings.localBrainEnabled, !LocalBrainModel.isInstalled {
-                    NSLog("MyPet: 目标决策已开启但本地模型未就位（设置 → 大脑 → 下载 / 校验模型）")
+                    RuntimeLogger.shared.error(
+                        "brain", "目标决策已开启但本地模型未就位（设置 → 大脑 → 下载 / 校验模型）")
                 } else {
-                    NSLog("MyPet: 目标决策 = %@（实验，可与高阶教师脑并行）",
-                          settings.localBrainEnabled ? "开" : "关")
+                    RuntimeLogger.shared.info(
+                        "brain", "目标决策 = \(settings.localBrainEnabled ? "开" : "关")（实验，可与高阶教师脑并行）")
                 }
             case .speech:
                 settings.speechEnabled.toggle()

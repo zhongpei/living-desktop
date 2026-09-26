@@ -49,6 +49,40 @@ final class ClassicCombatCPUTests: XCTestCase {
         XCTAssertEqual(output.moveID, "light")
     }
 
+    func testEngagementReservationIsClearedWhenPerceivedTargetChanges() throws {
+        let profile = testProfile()
+        let me = CombatBodyState(actorID: EntityID("me"), x: 100, yFeet: 700)
+        let firstTarget = CombatBodyState(
+            actorID: EntityID("first"), x: 400, yFeet: 700, facing: .left)
+        let secondTarget = CombatBodyState(
+            actorID: EntityID("second"), x: 500, yFeet: 700, facing: .left)
+        var cpu = ClassicCombatCPU(
+            actorID: me.actorID, difficulty: .veryHard, seed: 13)
+
+        let first = CPUCombatObservation(
+            frame: 0, selfBody: me, opponents: [firstTarget],
+            selfProfile: profile,
+            opponentProfiles: ["first": profile, "second": profile],
+            environment: floor)
+        _ = cpu.advance(first)
+        XCTAssertEqual(cpu.reservedSlot?.targetID, firstTarget.actorID)
+
+        // Very-hard CPU perception is delayed by four frames. The new target
+        // becomes visible before a replacement reservation is issued; the
+        // old implementation leaked the first target's reservation through
+        // this interval.
+        for frame in 1...5 {
+            var next = first
+            next.frame = Int64(frame)
+            next.opponents = [secondTarget]
+            _ = cpu.advance(next)
+        }
+
+        XCTAssertEqual(cpu.checkpoint().targetID, secondTarget.actorID)
+        XCTAssertNil(cpu.checkpoint().slot)
+        XCTAssertNil(cpu.reservedSlot)
+    }
+
     func testCPUExecutesSpecialThroughSynthesizedInputFramesAndCheckpointsQueue() throws {
         let special = CombatMoveDefinition(
             id: "special", command: CombatCommand([

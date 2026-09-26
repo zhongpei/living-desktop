@@ -266,6 +266,9 @@ public final class CombatRuntime {
         } else {
             world.setProfile(profile, for: actorID)
         }
+        RuntimeLogger.shared.debug(
+            "combat.register",
+            "actor=\(actorID.raw) ready=\(realCombatReady) moves=\(profile.moves.count) x=\(x) y=\(yFeet)")
         refreshSession()
     }
 
@@ -279,6 +282,7 @@ public final class CombatRuntime {
     }
 
     public func unregister(_ actorID: EntityID) {
+        RuntimeLogger.shared.info("combat.register", "actor=\(actorID.raw) unregistered")
         let interruptedParticipants = world.session?.state == .active &&
             world.session?.participantIDs.contains(actorID) == true
             ? world.session?.participantIDs ?? [] : []
@@ -305,7 +309,11 @@ public final class CombatRuntime {
         for actorID: EntityID,
         input: FighterInputFrame = .neutral
     ) {
-        controls.activate(source, for: actorID, input: input)
+        if source == .autonomous {
+            activateAutonomousCombatControl(for: actorID, input: input)
+        } else {
+            controls.activate(source, for: actorID, input: input)
+        }
         refreshSession()
     }
 
@@ -313,9 +321,13 @@ public final class CombatRuntime {
     /// but HP-changing combat is deferred until a target is reached.
     @discardableResult
     public func requestAutonomousCombat(for actorID: EntityID) -> Bool {
-        guard eligibleCombatant(actorID) else { return false }
+        guard eligibleCombatant(actorID) else {
+            RuntimeLogger.shared.info(
+                "combat.request", "actor=\(actorID.raw) mode=autonomous rejected reason=not-ready")
+            return false
+        }
         requestedCombatActors.insert(actorID.raw)
-        controls.activate(.autonomous, for: actorID)
+        activateAutonomousCombatControl(for: actorID)
         if let target = nearestTarget(for: actorID, requireContact: false) {
             engagementTargets[actorID.raw] = target.actorID
             if isInEngagementDistance(actorID, targetID: target.actorID) {
@@ -323,16 +335,47 @@ public final class CombatRuntime {
             }
         }
         refreshSession()
+        let status = engagementStatus(for: actorID)
+        RuntimeLogger.shared.info(
+            "combat.request",
+            "actor=\(actorID.raw) mode=autonomous accepted target=\(status?.targetID?.raw ?? "<none>") phase=\(status?.phase.rawValue ?? "<none>")")
         return true
     }
 
     @discardableResult
     public func requestDraggedEngagement(for actorID: EntityID) -> Bool {
-        guard eligibleCombatant(actorID),
-              let target = nearestTarget(for: actorID, requireContact: true) else {
+        guard eligibleCombatant(actorID) else {
+            RuntimeLogger.shared.debug(
+                "combat.request", "actor=\(actorID.raw) mode=drag rejected reason=not-ready")
             return false
         }
-        return commitEngagement(actorID: actorID, targetID: target.actorID)
+        guard let target = nearestTarget(for: actorID, requireContact: true) else {
+            RuntimeLogger.shared.debug(
+                "combat.request", "actor=\(actorID.raw) mode=drag rejected reason=no-contact-target")
+            return false
+        }
+        return requestContactEngagement(for: actorID, targetID: target.actorID)
+    }
+
+    /// Starts an engagement for an already-colliding pair. The target is
+    /// explicit so a third nearby actor cannot steal a drag/collision request.
+    @discardableResult
+    public func requestContactEngagement(
+        for actorID: EntityID, targetID: EntityID
+    ) -> Bool {
+        guard eligibleCombatant(actorID), eligibleCombatant(targetID) else {
+            RuntimeLogger.shared.debug(
+                "combat.request",
+                "actor=\(actorID.raw) target=\(targetID.raw) mode=contact rejected reason=not-ready")
+            return false
+        }
+        guard isInEngagementDistance(actorID, targetID: targetID) else {
+            RuntimeLogger.shared.debug(
+                "combat.request",
+                "actor=\(actorID.raw) target=\(targetID.raw) mode=contact rejected reason=out-of-range")
+            return false
+        }
+        return commitEngagement(actorID: actorID, targetID: targetID)
     }
 
     @discardableResult
@@ -466,6 +509,11 @@ public final class CombatRuntime {
     }
 
     public func endSession(cancelled: Bool = false) {
+        if let session = world.session, session.state == .active {
+            RuntimeLogger.shared.info(
+                "combat.session",
+                "ended id=\(session.id) cancelled=\(cancelled) participants=\(session.participantIDs.map(\.raw).joined(separator: ","))")
+        }
         world.endSession(cancelled: cancelled)
         releaseNonManualCombatControls()
     }
@@ -487,7 +535,7 @@ public final class CombatRuntime {
         for body in snapshot.bodies where body.rosterRole == .incidental {
             guard case .incidentalCombatant = body.participation else { continue }
             if !controls.isActive(.autonomous, for: body.actorID) {
-                controls.activate(.autonomous, for: body.actorID)
+                activateAutonomousCombatControl(for: body.actorID)
                 setAutonomousDifficulty(
                     cpuDifficulties[body.actorID.raw] ?? .normal,
                     for: body.actorID)
@@ -592,6 +640,7 @@ public final class CombatRuntime {
             applyResolvedInput(for: body.actorID)
         }
         let events = world.step(environment: environment)
+        logCombatEvents(events)
         for event in events {
             guard event.kind == .hit || event.kind == .blocked,
                   let targetID = event.targetID else { continue }
@@ -618,6 +667,53 @@ public final class CombatRuntime {
         engagementTargets.removeAll()
         committedEngagements.removeAll()
         lastReceivedHitFrames.removeAll()
+    }
+
+    /// Combat must take over an authored route, otherwise ControlRouter's
+    /// authored priority silently suppresses the autonomous CPU input.
+    private func activateAutonomousCombatControl(
+        for actorID: EntityID, input: FighterInputFrame = .neutral
+    ) {
+        let replacedAuthored = controls.isActive(.authored, for: actorID)
+        controls.deactivate(.authored, for: actorID)
+        controls.activate(.autonomous, for: actorID, input: input)
+        if replacedAuthored {
+            RuntimeLogger.shared.debug(
+                "combat.control",
+                "actor=\(actorID.raw) takeover replaced source=authored with=autonomous")
+        }
+    }
+
+    private func logCombatEvents(_ events: [CombatEvent]) {
+        guard !events.isEmpty else { return }
+        let summary = events.map { event in
+            var fields = [
+                "frame=\(event.frame)",
+                "kind=\(event.kind.rawValue)",
+                "actor=\(event.actorID.raw)"
+            ]
+            if let targetID = event.targetID { fields.append("target=\(targetID.raw)") }
+            if let moveID = event.moveID { fields.append("move=\(moveID)") }
+            if let amount = event.amount { fields.append("amount=\(amount)") }
+            if let body = world.body(for: event.actorID) {
+                let maxHP = world.profile(for: event.actorID)?.maxHP ?? 0
+                fields.append("hp=\(body.hp)/\(maxHP)")
+                fields.append("health=\(body.healthState.rawValue)")
+            }
+            return fields.joined(separator: " ")
+        }.joined(separator: "; ")
+        RuntimeLogger.shared.debug("combat.events", summary)
+
+        for event in events {
+            switch event.kind {
+            case .knockedOut, .downed, .recoveryStarted, .recovered, .roundEnded:
+                RuntimeLogger.shared.info(
+                    "combat.state",
+                    "frame=\(event.frame) kind=\(event.kind.rawValue) actor=\(event.actorID.raw) target=\(event.targetID?.raw ?? "<none>") hp=\(world.body(for: event.actorID)?.hp ?? -1) move=\(event.moveID ?? "<none>")")
+            default:
+                break
+            }
+        }
     }
 
     private func policyAdjustedProfile(_ profile: CombatProfile) -> CombatProfile {
@@ -742,10 +838,23 @@ public final class CombatRuntime {
 
     @discardableResult
     private func commitEngagement(actorID: EntityID, targetID: EntityID) -> Bool {
-        guard actorID != targetID, eligibleCombatant(actorID), eligibleCombatant(targetID),
+        guard actorID != targetID else {
+            RuntimeLogger.shared.debug(
+                "combat.engagement", "actor=\(actorID.raw) rejected reason=self-target")
+            return false
+        }
+        guard eligibleCombatant(actorID), eligibleCombatant(targetID),
               let actor = world.body(for: actorID),
-              let target = world.body(for: targetID),
-              !sameTeam(actor, target) else {
+              let target = world.body(for: targetID) else {
+            RuntimeLogger.shared.debug(
+                "combat.engagement",
+                "actor=\(actorID.raw) target=\(targetID.raw) rejected reason=not-ready")
+            return false
+        }
+        guard !sameTeam(actor, target) else {
+            RuntimeLogger.shared.debug(
+                "combat.engagement",
+                "actor=\(actorID.raw) target=\(targetID.raw) rejected reason=same-team")
             return false
         }
         autoConfigureEngagementTeams(actorID: actorID, targetID: targetID)
@@ -753,13 +862,19 @@ public final class CombatRuntime {
         requestedCombatActors.insert(targetID.raw)
         engagementTargets[actorID.raw] = targetID
         engagementTargets[targetID.raw] = actorID
-        committedEngagements.insert(engagementKey(actorID, targetID))
-        controls.activate(.autonomous, for: actorID)
-        controls.activate(.autonomous, for: targetID)
+        let inserted = committedEngagements.insert(engagementKey(actorID, targetID)).inserted
+        activateAutonomousCombatControl(for: actorID)
+        activateAutonomousCombatControl(for: targetID)
         refreshSession()
-        return world.session?.state == .active &&
+        let active = world.session?.state == .active &&
             world.session?.participantIDs.contains(actorID) == true &&
             world.session?.participantIDs.contains(targetID) == true
+        if inserted {
+            RuntimeLogger.shared.info(
+                "combat.engagement",
+                "committed actor=\(actorID.raw) target=\(targetID.raw) active=\(active) participants=\(world.session?.participantIDs.map(\.raw).joined(separator: ",") ?? "<none>")")
+        }
+        return active
     }
 
     private func autoConfigureEngagementTeams(
@@ -892,6 +1007,9 @@ public final class CombatRuntime {
         let requested = controls.hasAnyActive([.manual, .authored, .autonomous])
         guard requested else {
             if world.session?.state == .active, world.session?.id == "runtime" {
+                RuntimeLogger.shared.info(
+                    "combat.session",
+                    "ended id=runtime reason=no-active-control participants=\(world.session?.participantIDs.map(\.raw).joined(separator: ",") ?? "<none>")")
                 world.endSession(cancelled: false)
             }
             return
@@ -901,9 +1019,20 @@ public final class CombatRuntime {
             let participants = committedParticipantIDs()
             guard participants.count >= 2 else { return }
             if world.session?.state == .active, world.session?.id == "runtime" {
+                let before = world.session?.participantIDs ?? []
                 _ = world.addParticipants(participants)
+                let after = world.session?.participantIDs ?? []
+                if before != after {
+                    RuntimeLogger.shared.info(
+                        "combat.session",
+                        "participants updated id=runtime participants=\(after.map(\.raw).joined(separator: ","))")
+                }
             } else {
-                _ = world.beginSession(id: "runtime", participants: participants)
+                if world.beginSession(id: "runtime", participants: participants) {
+                    RuntimeLogger.shared.info(
+                        "combat.session",
+                        "started id=runtime participants=\(participants.map(\.raw).joined(separator: ","))")
+                }
             }
             return
         }
@@ -914,7 +1043,11 @@ public final class CombatRuntime {
         let participants = runtimeParticipants(for: controlled)
         if participants.count >= 2,
            (world.session?.state != .active || world.session?.participantIDs != participants) {
-            _ = world.beginSession(id: "runtime", participants: participants)
+            if world.beginSession(id: "runtime", participants: participants) {
+                RuntimeLogger.shared.info(
+                    "combat.session",
+                    "started id=runtime participants=\(participants.map(\.raw).joined(separator: ","))")
+            }
         }
     }
 

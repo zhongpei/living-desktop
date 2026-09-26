@@ -1,4 +1,5 @@
 import XCTest
+import MyPet2D
 import MyPetCombat
 import MyPetCombatCPU
 import MyPetCore
@@ -145,6 +146,25 @@ final class CombatSimulationTests: XCTestCase {
         XCTAssertTrue(digests.dropFirst().allSatisfy { $0 == digests[0] })
     }
 
+    func testCombatSimulationIsIndependentOfRuntimeLogLevel() {
+        let logger = RuntimeLogger.shared
+        let original = logger.level
+        defer { logger.configure(original) }
+
+        func run() -> (events: [CombatEvent], digest: CombatRuntimeDigest) {
+            let simulation = CombatDataSimulation(scenario: makeScenario())
+            return (simulation.run(), simulation.digest)
+        }
+
+        logger.configure(.off)
+        let quiet = run()
+        logger.configure(.debug)
+        let verbose = run()
+
+        XCTAssertEqual(quiet.events, verbose.events)
+        XCTAssertEqual(quiet.digest, verbose.digest)
+    }
+
     func testAutonomousCombatProducesRepeatedButtonPresses() {
         let move = CombatMoveDefinition(
             id: "light", command: .button(.x), startupFrames: 0,
@@ -175,6 +195,73 @@ final class CombatSimulationTests: XCTestCase {
         XCTAssertLessThanOrEqual(runtime.world.body(for: EntityID("b"))?.hp ?? 1000, 980)
     }
 
+    func testAutonomousContactFacingDoesNotFlipAfterEngagement() {
+        let environment = makeScenario().desktop.combatEnvironment()
+        let runtime = CombatRuntime(cpuSeed: 7)
+        let profile = CombatProfile(moves: [])
+        runtime.register(actorID: EntityID("a"), profile: profile, x: 430, yFeet: 700)
+        runtime.register(actorID: EntityID("b"), profile: profile, x: 470, yFeet: 700,
+                         facing: .left)
+        runtime.activate(.autonomous, for: EntityID("a"))
+        runtime.activate(.autonomous, for: EntityID("b"))
+
+        var previous: [String: Facing2D] = [:]
+        var transitionFrames: [Int] = []
+        for frame in 0..<240 {
+            _ = runtime.advance(environment: environment)
+            for id in ["a", "b"] {
+                guard let facing = runtime.world.body(for: EntityID(id))?.facing else { continue }
+                if let old = previous[id], old != facing { transitionFrames.append(frame) }
+                previous[id] = facing
+            }
+        }
+
+        XCTAssertTrue(transitionFrames.allSatisfy { $0 < 30 },
+                      "contact caused late facing flips at frames \(transitionFrames)")
+        let bodies = ["a", "b"].compactMap { runtime.world.body(for: EntityID($0)) }
+        XCTAssertEqual(bodies.count, 2)
+        XCTAssertGreaterThanOrEqual(
+            abs(bodies[1].position.x - bodies[0].position.x), 48 - 1e-9)
+    }
+
+    func testSimulatorCrowdAtScreenEdgeRemainsBoundedAndEscapesCorner() {
+        let actorIDs = ["a", "b", "c", "d"].map(EntityID.init)
+        let scenario = VirtualCombatScenario(
+            id: "crowd-screen-edge",
+            desktop: VirtualDesktop(screens: [VirtualScreen(
+                id: "main",
+                frame: LayoutRect(x: 0, y: 0, width: 1000, height: 700),
+                main: true)]),
+            actors: actorIDs.enumerated().map { index, actorID in
+                VirtualCombatActor(actorID: actorID, x: 960 + Double(index) * 12, yFeet: 700)
+            },
+            inputs: actorIDs.flatMap { actorID in
+                [
+                    CombatInputEvent(
+                        frame: 0, actorID: actorID, input: FighterInputFrame(right: true)),
+                    CombatInputEvent(
+                        frame: 45, actorID: actorID, input: FighterInputFrame(left: true)),
+                ]
+            },
+            durationFrames: 180)
+        let simulation = CombatDataSimulation(scenario: scenario)
+        _ = simulation.run()
+
+        let bodies = actorIDs.compactMap(simulation.combat.body(for:)).sorted {
+            $0.position.x < $1.position.x
+        }
+        XCTAssertEqual(bodies.count, actorIDs.count)
+        XCTAssertTrue(bodies.allSatisfy {
+            $0.position.x >= 14.4 - 1e-9 && $0.position.x <= 985.6 + 1e-9
+        })
+        XCTAssertTrue(bodies.allSatisfy { $0.locomotion == .grounded })
+        for pair in zip(bodies, bodies.dropFirst()) {
+            XCTAssertGreaterThanOrEqual(
+                pair.1.position.x - pair.0.position.x, 48 - 1e-9)
+        }
+        XCTAssertLessThan(bodies.map(\.position.x).max() ?? .infinity, 900)
+    }
+
     func testUserCombatRequestSeeksTargetThenActivatesBothFighters() {
         let first = EntityID("first")
         let second = EntityID("second")
@@ -202,6 +289,126 @@ final class CombatSimulationTests: XCTestCase {
         XCTAssertEqual(runtime.engagementStatus(for: first)?.phase, .engaged)
     }
 
+    func testCombatTakeoverClearsAuthoredLocomotionBeforeCPUChase() {
+        let first = EntityID("first")
+        let second = EntityID("second")
+        let runtime = CombatRuntime()
+        runtime.register(
+            actorID: first, profile: CombatProfile(moves: []), x: 180, yFeet: 700)
+        runtime.register(
+            actorID: second, profile: CombatProfile(moves: []), x: 760, yFeet: 700,
+            facing: .left)
+        XCTAssertTrue(runtime.beginSession(id: "runtime", participants: [first, second]))
+        runtime.activate(.authored, for: first)
+        runtime.activate(.autonomous, for: second)
+
+        runtime.bodyWorld.update(second) { body in
+            body.actionTimeline = ActionTimeline(
+                instanceID: 7,
+                definition: ActionDefinition(
+                    actionID: "move_to",
+                    durationFrames: nil,
+                    animationBinding: "base/walk",
+                    domain: .locomotion,
+                    locomotionPolicy: .authored,
+                    endState: .locomotion))
+        }
+        let startingX = runtime.world.body(for: second)?.position.x ?? .nan
+
+        for _ in 0..<90 {
+            _ = runtime.advance(environment: makeScenario().desktop.combatEnvironment())
+        }
+
+        let body = runtime.world.body(for: second)
+        XCTAssertNil(body?.actionTimeline)
+        XCTAssertLessThan(body?.position.x ?? .infinity, startingX - 5)
+    }
+
+    func testCombatTakeoverClearsEveryNonCombatTimelineDomain() {
+        for domain in [ActionDomain.idle, .locomotion, .presentation] {
+            let first = EntityID("first")
+            let second = EntityID("second")
+            let runtime = CombatRuntime()
+            runtime.register(
+                actorID: first, profile: CombatProfile(moves: []), x: 180, yFeet: 700)
+            runtime.register(
+                actorID: second, profile: CombatProfile(moves: []), x: 760, yFeet: 700,
+                facing: .left)
+            XCTAssertTrue(runtime.beginSession(id: "runtime", participants: [first, second]))
+            runtime.activate(.authored, for: first)
+            runtime.activate(.autonomous, for: second)
+            runtime.bodyWorld.update(second) { body in
+                body.actionTimeline = ActionTimeline(
+                    instanceID: 7,
+                    definition: ActionDefinition(
+                        actionID: "stale-\(domain.rawValue)",
+                        durationFrames: nil,
+                        animationBinding: "base/walk",
+                        domain: domain,
+                        locomotionPolicy: .preserve,
+                        endState: .neutral))
+            }
+            let startingX = runtime.world.body(for: second)?.position.x ?? .nan
+
+            _ = runtime.advance(environment: makeScenario().desktop.combatEnvironment())
+
+            let body = runtime.world.body(for: second)
+            XCTAssertNil(body?.actionTimeline, "stale \(domain.rawValue) timeline survived")
+            XCTAssertLessThan(body?.position.x ?? .infinity, startingX,
+                              "CPU input was blocked by \(domain.rawValue) timeline")
+        }
+    }
+
+    func testAutonomousEngagementReplacesAuthoredControlRoute() {
+        let first = EntityID("first")
+        let second = EntityID("second")
+        let runtime = CombatRuntime()
+        runtime.register(
+            actorID: first, profile: CombatProfile(moves: []), x: 180, yFeet: 700)
+        runtime.register(
+            actorID: second, profile: CombatProfile(moves: []), x: 760, yFeet: 700,
+            facing: .left)
+        runtime.activate(.authored, for: first)
+        runtime.activate(.authored, for: second)
+        runtime.bodyWorld.update(first) { body in
+            body.actionTimeline = ActionTimeline(
+                instanceID: 1,
+                definition: ActionDefinition(
+                    actionID: "move_to",
+                    durationFrames: nil,
+                    animationBinding: "base/walk",
+                    domain: .locomotion,
+                    locomotionPolicy: .authored,
+                    endState: .locomotion))
+        }
+        runtime.bodyWorld.update(second) { body in
+            body.actionTimeline = ActionTimeline(
+                instanceID: 2,
+                definition: ActionDefinition(
+                    actionID: "move_to",
+                    durationFrames: nil,
+                    animationBinding: "base/walk",
+                    domain: .locomotion,
+                    locomotionPolicy: .authored,
+                    endState: .locomotion))
+        }
+
+        XCTAssertTrue(runtime.requestAutonomousCombat(for: first))
+        for _ in 0..<600 {
+            _ = runtime.advance(environment: makeScenario().desktop.combatEnvironment())
+        }
+
+        XCTAssertEqual(runtime.world.session?.state, .active)
+        XCTAssertFalse(runtime.isActive(.authored, for: first))
+        XCTAssertFalse(runtime.isActive(.authored, for: second))
+        XCTAssertTrue(runtime.isActive(.autonomous, for: first))
+        XCTAssertTrue(runtime.isActive(.autonomous, for: second))
+        XCTAssertNil(runtime.world.body(for: first)?.actionTimeline)
+        XCTAssertNil(runtime.world.body(for: second)?.actionTimeline)
+        XCTAssertGreaterThan(runtime.world.body(for: first)?.position.x ?? -.infinity, 180)
+        XCTAssertLessThan(runtime.world.body(for: second)?.position.x ?? .infinity, 760)
+    }
+
     func testDraggedContactStartsCombatForBothActors() {
         let first = EntityID("first")
         let second = EntityID("second")
@@ -218,6 +425,22 @@ final class CombatSimulationTests: XCTestCase {
         XCTAssertEqual(runtime.world.session?.state, .active)
         XCTAssertTrue(runtime.isActive(.autonomous, for: first))
         XCTAssertTrue(runtime.isActive(.autonomous, for: second))
+    }
+
+    func testExplicitContactRequestStartsTheCollidingPair() {
+        let first = EntityID("first")
+        let second = EntityID("second")
+        let runtime = CombatRuntime()
+        runtime.register(actorID: first, profile: CombatProfile(), x: 400, yFeet: 700)
+        runtime.register(
+            actorID: second, profile: CombatProfile(), x: 450, yFeet: 700,
+            facing: .left)
+
+        XCTAssertTrue(runtime.requestContactEngagement(for: first, targetID: second))
+        XCTAssertEqual(runtime.world.session?.state, .active)
+        XCTAssertEqual(
+            runtime.world.session?.participantIDs,
+            [first, second].sorted { $0.raw < $1.raw })
     }
 
     func testUserCombatRequestDoesNotPullInAThirdBystander() {

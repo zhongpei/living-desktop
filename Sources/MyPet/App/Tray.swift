@@ -14,6 +14,7 @@ final class Tray: NSObject {
     var onPointerInputToggle: (() -> Void)?
     var onPointerInputRateChange: ((Int) -> Void)?
     var onCombatPacingRateChange: ((Double) -> Void)?
+    var onLogLevelChange: ((RuntimeLogLevel) -> Void)?
     /// 角色组／角色选择变化；AppDelegate 负责持久化并把选择交给世界运行时。
     var onCastSelectionChange: ((CastSelection) -> Void)?
     /// 邀请一个候选角色出场；是否允许、是否已满由 CastRuntime 决定。
@@ -210,6 +211,7 @@ final class Tray: NSObject {
         static let brain = NSUserInterfaceItemIdentifier("brain")
         static let perception = NSUserInterfaceItemIdentifier("perception")
         static let general = NSUserInterfaceItemIdentifier("general")
+        static let logLevel = NSUserInterfaceItemIdentifier("logging.level")
         static let gameEnabled = NSUserInterfaceItemIdentifier("game.enabled")
         static let automaticCombat = NSUserInterfaceItemIdentifier("game.automatic-combat")
         static let combatHUD = NSUserInterfaceItemIdentifier("game.combat-hud")
@@ -538,6 +540,22 @@ final class Tray: NSObject {
         let submenu = NSMenu(title: "通用")
         submenu.addItem(checkmarkItem(Toggle.launchAtLogin, id: MenuID.login,
                                       on: settings.launchAtLogin))
+        submenu.addItem(.separator())
+        let logParent = NSMenuItem(
+            title: "日志级别：\(settings.logLevel.displayName)", action: nil, keyEquivalent: "")
+        logParent.identifier = MenuID.logLevel
+        let logMenu = NSMenu(title: "日志级别")
+        for level in RuntimeLogLevel.menuOrder {
+            let item = NSMenuItem(
+                title: level.displayName, action: #selector(setLogLevel(_:)), keyEquivalent: "")
+            item.target = self
+            item.identifier = NSUserInterfaceItemIdentifier("logging.level.\(level.rawValue)")
+            item.representedObject = level.rawValue
+            item.state = settings.logLevel == level ? .on : .off
+            logMenu.addItem(item)
+        }
+        logParent.submenu = logMenu
+        submenu.addItem(logParent)
         return submenu
     }
 
@@ -700,6 +718,12 @@ final class Tray: NSObject {
         onCombatPacingRateChange?(rate)
     }
 
+    @objc private func setLogLevel(_ sender: NSMenuItem) {
+        guard let rawValue = sender.representedObject as? String,
+              let level = RuntimeLogLevel(rawValue: rawValue) else { return }
+        onLogLevelChange?(level)
+    }
+
     /// 辅助功能授权引导弹窗。
     func showAccessibilityPrompt() {
         let alert = NSAlert()
@@ -767,6 +791,8 @@ extension Tray: NSMenuDelegate {
                 case MenuID.props: item.state = settings.propsEnabled ? .on : .off
                 case MenuID.senses: item.state = settings.sensesEnabled ? .on : .off
                 case MenuID.ocr: item.state = settings.ocrEnabled ? .on : .off
+                case MenuID.logLevel:
+                    item.title = "日志级别：\(settings.logLevel.displayName)"
                 default:
                     if item.identifier?.rawValue == "pointer-input.enabled" {
                         item.state = settings.pointerInputEnabled ? .on : .off
@@ -781,6 +807,10 @@ extension Tray: NSMenuDelegate {
                     if let pluginID = item.representedObject as? String,
                        item.identifier?.rawValue.hasPrefix("input-plugin.") == true {
                         item.state = settings.inputPlugins.isEnabled(pluginID) ? .on : .off
+                    }
+                    if item.identifier?.rawValue.hasPrefix("logging.level.") == true,
+                       let rawValue = item.representedObject as? String {
+                        item.state = settings.logLevel.rawValue == rawValue ? .on : .off
                     }
                 }
                 refresh(item.submenu)

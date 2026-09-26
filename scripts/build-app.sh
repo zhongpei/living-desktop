@@ -18,7 +18,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT"
-RESOURCE_ROOT="${LIVING_DESKTOP_RESOURCES:-$ROOT/Resources}"
+PRIVATE_RESOURCE_ROOT="$ROOT/../desktop-assets/Resources"
+if [ -d "$PRIVATE_RESOURCE_ROOT" ]; then
+    RESOURCE_ROOT="${LIVING_DESKTOP_RESOURCES:-$PRIVATE_RESOURCE_ROOT}"
+else
+    RESOURCE_ROOT="${LIVING_DESKTOP_RESOURCES:-$ROOT/Resources}"
+fi
 CONTENT_MODE="${LIVING_DESKTOP_CONTENT_MODE:-bundled}"
 
 if [ "$CONTENT_MODE" != bundled ] && [ "$CONTENT_MODE" != external ]; then

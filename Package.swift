@@ -75,6 +75,7 @@ let package = Package(
         .target(
             name: "MyPetAI",
             dependencies: [
+                "MyPetCore",
                 "CNeedle",
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "MLXVLM", package: "mlx-swift-lm"),

@@ -1,5 +1,6 @@
 import AppKit
 import XCTest
+import MyPetCore
 @testable import MyPetApp
 
 @MainActor
@@ -77,6 +78,31 @@ final class PointerInputSettingsTests: XCTestCase {
                       "中立 NPC 误伤参战", "自动时钟调频", "打开游戏功能设置…"] {
             XCTAssertNotNil(game.items.first { $0.title == title }, title)
         }
+    }
+
+    func testTrayExposesRuntimeLogLevelMenu() throws {
+        _ = NSApplication.shared
+        let tray = Tray(settings: Settings())
+        let general = try XCTUnwrap(tray.attachedMenu?.items.first { $0.title == "通用" }?.submenu)
+        let logParent = try XCTUnwrap(general.items.first { $0.title == "日志级别：调试（默认）" })
+        let logMenu = try XCTUnwrap(logParent.submenu)
+        XCTAssertEqual(logMenu.items.map(\.title), ["调试（默认）", "信息", "错误", "关闭"])
+        XCTAssertEqual(logMenu.items.map(\.state), [.on, .off, .off, .off])
+
+        var selected: RuntimeLogLevel?
+        tray.onLogLevelChange = { selected = $0 }
+        let info = try XCTUnwrap(logMenu.items.first { $0.title == "信息" })
+        NSApp.sendAction(try XCTUnwrap(info.action), to: info.target, from: info)
+        XCTAssertEqual(selected, .info)
+
+        var changed = Settings()
+        changed.logLevel = .error
+        tray.updateSettings(changed)
+        let updatedGeneral = try XCTUnwrap(
+            tray.attachedMenu?.items.first { $0.title == "通用" }?.submenu)
+        let updatedParent = try XCTUnwrap(
+            updatedGeneral.items.first { $0.title == "日志级别：错误" })
+        XCTAssertEqual(updatedParent.submenu?.items.map(\.state), [.off, .off, .on, .off])
     }
 
     func testSettingsWindowSavesPointerControls() throws {

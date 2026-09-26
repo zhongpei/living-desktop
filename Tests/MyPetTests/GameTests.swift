@@ -640,6 +640,37 @@ final class GameTests: XCTestCase {
         XCTAssertEqual(s.teacherBrainBaseURL, "http://192.168.2.60:8001/v1", "缺省端点 = 本机 llama.cpp")
     }
 
+    func testRuntimeLogLevelDefaultsToDebugAndRoundTrips() throws {
+        XCTAssertEqual(Settings().logLevel, .debug)
+        XCTAssertEqual(
+            try JSONDecoder().decode(Settings.self, from: Data("{}".utf8)).logLevel,
+            .debug)
+
+        var settings = Settings()
+        settings.logLevel = .info
+        let restored = try JSONDecoder().decode(
+            Settings.self, from: JSONEncoder().encode(settings))
+        XCTAssertEqual(restored.logLevel, .info)
+
+        let invalid = try JSONSerialization.data(withJSONObject: ["logLevel": "verbose"])
+        XCTAssertEqual(try JSONDecoder().decode(Settings.self, from: invalid).logLevel, .debug)
+    }
+
+    func testRuntimeLoggerGatesByConfiguredLevel() {
+        let logger = RuntimeLogger.shared
+        let original = logger.level
+        defer { logger.configure(original) }
+
+        logger.configure(.info)
+        XCTAssertTrue(logger.isEnabled(.error))
+        XCTAssertTrue(logger.isEnabled(.info))
+        XCTAssertFalse(logger.isEnabled(.debug))
+
+        logger.configure(.off)
+        XCTAssertFalse(logger.isEnabled(.error))
+        XCTAssertFalse(logger.isEnabled(.info))
+    }
+
     func testSettingsRoundTripKeepsNewKeys() throws {
         var s = Settings()
         s.teacherBrainEnabled = true
@@ -936,6 +967,15 @@ final class GameTests: XCTestCase {
         XCTAssertEqual(session.activeMemberIDs, ["logical-actor"])
         session.stop()
         XCTAssertTrue(session.activeMemberIDs.isEmpty)
+    }
+
+    func testCastCollisionRequiresActualFrameOverlap() {
+        let left = LayoutRect(x: 100, y: 100, width: 80, height: 120)
+        let overlapping = LayoutRect(x: 175, y: 100, width: 80, height: 120)
+        let separated = LayoutRect(x: 181, y: 100, width: 80, height: 120)
+
+        XCTAssertTrue(CastSession.characterFramesCollide(left, overlapping))
+        XCTAssertFalse(CastSession.characterFramesCollide(left, separated))
     }
 
     func testContentManagerCanOpenWithEmptyCatalog() {

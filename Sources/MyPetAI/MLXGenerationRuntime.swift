@@ -1,4 +1,5 @@
 import Foundation
+import MyPetCore
 import MLX
 import MLXNN
 import MLXLMCommon
@@ -216,16 +217,19 @@ enum BrainCacheManager {
             if prefixTokens.count == tokens {
                 try? FileManager.default.setAttributes(
                     [.modificationDate: Date()], ofItemAtPath: fileURL.path)
-                NSLog("MyPet BrainCache: %@ 加载磁盘前缀缓存（%d tok）", petID, tokens)
+                RuntimeLogger.shared.debug(
+                    "brain-cache", "加载磁盘前缀缓存 pet=\(petID) tokens=\(tokens)")
                 return PromptState(petID: petID, key: key, messages: messages,
                                    prefixTokens: prefixTokens, cache: cache)
             }
-            NSLog("MyPet BrainCache: %@ 磁盘缓存 token 数不符（%d vs %d），重建",
-                  petID, tokens, prefixTokens.count)
+            RuntimeLogger.shared.info(
+                "brain-cache",
+                "磁盘缓存 token 数不符 pet=\(petID) cached=\(tokens) actual=\(prefixTokens.count)，重建")
         }
 
         let cache = try await prefill(container: container, tokens: prefixTokens)
-        NSLog("MyPet BrainCache: %@ 前缀 prefill %d tok", petID, prefixTokens.count)
+        RuntimeLogger.shared.debug(
+            "brain-cache", "前缀 prefill pet=\(petID) tokens=\(prefixTokens.count)")
         if diskEntries > 0 {
             savePromptCache(cache, to: fileURL, key: key, tokenCount: prefixTokens.count)
         }
@@ -276,7 +280,9 @@ enum BrainCacheManager {
                 metadataTokens: "\(tokenCount)",
             ])
         } catch {
-            NSLog("MyPet BrainCache: 缓存保存失败 %@（下次启动重新 prefill）", String(describing: error))
+            RuntimeLogger.shared.error(
+                "brain-cache",
+                "缓存保存失败 \(String(describing: error))（下次启动重新 prefill）")
         }
     }
 
