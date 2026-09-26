@@ -102,6 +102,15 @@ final class DesktopCombatCoordinator {
         combatRuntime.deactivate(.autonomous, for: actorID)
     }
 
+    @discardableResult
+    func leaveCombat(actorID: EntityID) -> Bool {
+        combatRuntime.leaveCombat(actorID)
+    }
+
+    func leaveAllCombat() {
+        combatRuntime.leaveAllCombat()
+    }
+
     func engagementStatus(actorID: EntityID) -> CombatEngagementStatus? {
         combatRuntime.engagementStatus(for: actorID)
     }
