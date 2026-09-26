@@ -238,6 +238,7 @@ public struct ClassicCombatCPUCheckpoint: Codable, Equatable, Sendable {
     var lastCounteredHitFrame: Int64?
     var navigationPlan: CombatNavigationPlan? = nil
     var tacticalNavigationCooldownUntil: Int64? = nil
+    var tacticalSurfaceHoldUntil: Int64? = nil
 }
 
 struct CombatCPUOutputCheckpoint: Codable, Equatable, Sendable {
