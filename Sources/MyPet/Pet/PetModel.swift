@@ -475,7 +475,11 @@ final class PetModel {
     }
 
     private func perchFeetY(in bounds: CGRect) -> CGFloat {
-        let workTop = world.workBox(at: CGPoint(x: x, y: bounds.minY)).top
+        // A window may live on a different monitor from this actor. Resolve
+        // the work-area clamp from the window's own screen, never from the
+        // actor's current X coordinate.
+        let workTop = world.workBox(
+            at: CGPoint(x: bounds.midX, y: bounds.minY)).top
         return PetMath.perchFeetY(
             topY: bounds.minY,
             petHeight: displayHeight,
