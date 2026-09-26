@@ -39,7 +39,7 @@ public struct SurfaceNavigationEdge: Codable, Equatable, Sendable {
     public var risk: Double
     /// Total jumps required by this traversal, including the initial takeoff.
     /// Walk/drop edges use zero.
-    public var requiredJumpCount: Int
+    public var requiredJumpCount: Int?
 
     public init(
         fromSurfaceID: String, toSurfaceID: String,
@@ -57,6 +57,10 @@ public struct SurfaceNavigationEdge: Codable, Equatable, Sendable {
         self.expectedFrames = max(1, expectedFrames)
         self.risk = max(0, risk)
         self.requiredJumpCount = max(0, requiredJumpCount)
+    }
+
+    public var effectiveRequiredJumpCount: Int {
+        requiredJumpCount ?? (action == .jump ? 1 : 0)
     }
 
     public var cost: Double { Double(expectedFrames) + risk }
